@@ -1,0 +1,23 @@
+# ── Datos fuente del ERP (se descargan con AUTO_SSASUR.bat, no van al repo) ──
+informe_completo_recetas*.csv
+reporte_de_stock_*.xlsx
+
+# ── Sesión SSASUR (contiene cookies/credenciales — NUNCA subir) ──────────────
+.ssasur_session.json
+
+# ── Debug y temporales ────────────────────────────────────────────────────────
+debug_*.png
+~$*.xlsx
+~$*.xls
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+
+# ── Streamlit secretos (API keys locales) ────────────────────────────────────
+.streamlit/secrets.toml
