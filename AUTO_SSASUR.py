@@ -48,8 +48,7 @@ SESSION_FILE     = MAESTRO_DIR / ".ssasur_session.json"
 DASHBOARD_URL    = "https://login.ssasur.cl/dashboard"
 RECETA_INFORME   = "https://www.ssasur.cl/receta/informes/sabana"
 STOCK_REPORTE    = "https://www.ssasur.cl/abastecimiento/reportes/stock_en_momento_bodega"
-ESTAB_PITRUFQUEN = "59"   # slctHeaderEstab → "PITRUFQUEN HOSP." (única opción)
-BODEGA_TODAS     = "0"    # bodega → "TODAS"
+BODEGA_TODAS     = "0"    # bodega → "TODAS" (todas las bodegas en un archivo)
 TIMEOUT_LOGIN    = 300_000   # 5 minutos para logarse
 TIMEOUT_DESCARGA = 600_000   # 10 minutos por descarga
 
@@ -155,30 +154,32 @@ async def main():
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(2_000)
 
-        try:
-            await page.fill("#fechaInicio", fecha_inicio)
-            await page.fill("#fechaTermino", fecha_fin)
-            print(f"  Fechas: {fecha_inicio} → {fecha_fin}")
-        except Exception as e:
-            print(f"  [AVISO] No se pudieron rellenar las fechas: {e}")
+        # Setear fechas por JS (no con .fill): así NO se abre el datepicker, que
+        # si no tapa el botón "Buscar" y además no compromete bien la fecha.
+        setv = await page.evaluate(f"""()=>{{
+          const set=(id,val)=>{{const el=document.getElementById(id); if(!el) return;
+            const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+            s.call(el,val); el.dispatchEvent(new Event('input',{{bubbles:true}}));
+            el.dispatchEvent(new Event('change',{{bubbles:true}}));}};
+          set('fechaInicio','{fecha_inicio}'); set('fechaTermino','{fecha_fin}');
+          return ((document.getElementById('fechaInicio')||{{}}).value || '?') + ' → ' +
+                 ((document.getElementById('fechaTermino')||{{}}).value || '?');
+        }}""")
+        print(f"  Fechas: {setv}")
 
         print("  Descargando recetas... (puede tardar varios minutos)")
         try:
-            # Caso A: "Buscar" dispara la descarga directamente
+            # Con las fechas seteadas, "Buscar" genera y descarga el informe directo
             await descargar(
                 page, MAESTRO_DIR,
-                lambda: page.click('button:has-text("Buscar"), input[value="Buscar"], button[type="submit"]'),
-                "RECETA", timeout=120_000,
+                lambda: page.click('button[type="submit"].btn-primary, button:has-text("Buscar")'),
+                "RECETA",
             )
         except Exception:
-            # Caso B: "Buscar" solo corre la consulta; el archivo sale con "Descargar Excel"
+            # Respaldo: algunos informes exponen un botón "Descargar Excel" diferido
             try:
-                await page.wait_for_timeout(2_000)
-                await descargar(
-                    page, MAESTRO_DIR,
-                    lambda: page.click('button:has-text("Descargar Excel")'),
-                    "RECETA",
-                )
+                await page.wait_for_selector("#btn_excel_recetas", state="visible", timeout=120_000)
+                await descargar(page, MAESTRO_DIR, lambda: page.click("#btn_excel_recetas"), "RECETA")
             except Exception as e:
                 print(f"  [ERROR] Descarga RECETA falló: {e}")
                 await page.screenshot(path=str(MAESTRO_DIR / "debug_receta.png"))
@@ -208,12 +209,10 @@ async def main():
             await page.wait_for_load_state("networkidle")
             await page.wait_for_timeout(2_500)
 
-        # Configurar el reporte: establecimiento Pitrufquén + bodega TODAS
-        try:
-            await page.select_option("#slctHeaderEstab", ESTAB_PITRUFQUEN)
-            await page.wait_for_timeout(1_500)
-        except Exception as e:
-            print(f"  [info] establecimiento: {e}")
+        # Configurar el reporte: bodega = TODAS.
+        # IMPORTANTE: NO seleccionar el establecimiento — hacerlo dispara un modal
+        # ("Selección Proyecto") cuyo backdrop bloquea el botón Generar XLS.
+        # El establecimiento ya viene en "PITRUFQUEN HOSP." (única opción).
         try:
             await page.select_option("#bodega", BODEGA_TODAS)
             await page.wait_for_timeout(1_000)
@@ -223,9 +222,11 @@ async def main():
 
         print("  Generando XLS de stock... (puede tardar varios minutos)")
         try:
+            # force=True: el overlay "Generando reporte. Espere un momento."
+            # puede interponerse al clic; force lo atraviesa.
             await descargar(
                 page, MAESTRO_DIR,
-                lambda: page.click('button:has-text("Generar XLS"), button:has-text("XLS"), button:has-text("Excel")'),
+                lambda: page.click("#generarXLS_stock", force=True),
                 "ABASTECIMIENTO",
             )
         except Exception as e:
