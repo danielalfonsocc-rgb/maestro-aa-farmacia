@@ -2,7 +2,7 @@
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Author>Maestro AA Farmacia</Author>
-    <Description>Abre AUTO_SSASUR cada día hábil a las 07:30. Te logeas en SSASUR y el resto corre automáticamente.</Description>
+    <Description>Abre AUTO_SSASUR cada día hábil a las 09:00. Te logeas en SSASUR y el resto corre automáticamente.</Description>
   </RegistrationInfo>
   <Triggers>
     <CalendarTrigger>
