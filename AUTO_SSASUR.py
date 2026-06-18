@@ -88,6 +88,64 @@ async def descargar(page, dest_dir: Path, accion, etiqueta: str, timeout=TIMEOUT
     return dest
 
 
+# ── Selección de fecha por CALENDARIO (bootstrap-datepicker) ────────────────────
+# El informe de recetas usa bootstrap-datepicker. La fecha SOLO queda registrada
+# para el backend cuando se hace CLIC en una celda de día (eso dispara el evento
+# interno 'changeDate'); asignar el .value por JS deja el texto visible pero el
+# servidor la ignora y devuelve 0 filas. Por eso seleccionamos clic a clic.
+_MESES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
+             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+
+async def _cerrar_calendario(page):
+    """Cierra cualquier datepicker abierto: si no, el de un campo tapa al otro."""
+    await page.keyboard.press("Escape")
+    # Clic neutro en la franja superior vacía (lejos de campos y del calendario).
+    try:
+        await page.mouse.click(950, 130)
+    except Exception:
+        pass
+    await page.wait_for_timeout(300)
+
+
+async def seleccionar_fecha_calendario(page, input_id: str, d: date):
+    """
+    Selecciona una fecha haciendo CLIC REAL en el calendario del campo `input_id`.
+    Abre el datepicker, navega al mes/año con « / » y clica el día (excluyendo
+    los días atenuados de los meses contiguos).
+    """
+    # Abrir el calendario clicando el input.
+    await page.click(f"#{input_id}")
+    dp = page.locator(".datepicker:visible").first
+    await dp.wait_for(state="visible", timeout=10_000)
+
+    # Navegar al mes/año objetivo leyendo el encabezado «.datepicker-switch».
+    objetivo = f"{_MESES_ES[d.month - 1]} {d.year}"
+    switch = dp.locator(".datepicker-switch").first
+    for _ in range(36):  # tope de seguridad (~3 años de saltos)
+        actual = (await switch.inner_text()).strip().lower()
+        if actual == objetivo:
+            break
+        partes = actual.split()
+        try:
+            m_act = _MESES_ES.index(partes[0]) + 1   # mes 1-12
+            y_act = int(partes[1])                   # año
+        except (ValueError, IndexError):
+            break  # formato inesperado: confiar en el mes visible
+        # Comparar (año, mes) para decidir dirección.
+        if (y_act, m_act) > (d.year, d.month):
+            await dp.locator(".prev").first.click()
+        else:
+            await dp.locator(".next").first.click()
+        await page.wait_for_timeout(250)
+
+    # Clic en el día del mes vigente (sin .old / .new = meses contiguos atenuados).
+    dia = dp.locator(f"td.day:not(.old):not(.new):text-is('{d.day}')").first
+    await dia.wait_for(state="visible", timeout=5_000)
+    await dia.click()
+    await page.wait_for_timeout(300)
+
+
 async def main():
     # ── Verificar Playwright ───────────────────────────────────────────────────
     try:
@@ -157,39 +215,68 @@ async def main():
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(2_000)
 
-        # Prefill de la fecha de AYER como ayuda visual.
-        await page.evaluate(f"""()=>{{
-          const set=(id,val)=>{{const el=document.getElementById(id); if(!el) return;
-            el.value=val;
-            ['input','change','keyup','blur'].forEach(ev=>el.dispatchEvent(new Event(ev,{{bubbles:true}})));}};
-          set('fechaInicio','{fecha_inicio}'); set('fechaTermino','{fecha_fin}');
-        }}""")
+        def _contar_filas(ruta: Path) -> int:
+            try:
+                with open(ruta, encoding="latin-1") as _f:
+                    return sum(1 for _ in _f) - 1
+            except Exception:
+                return -1
 
-        # La descarga 100% programática del informe no se pudo replicar de forma fiable
-        # (depende de estado de sesión interno del navegador, no de la firma). Por eso
-        # RECETA es SEMIautomática: tú confirmas la fecha de AYER en el calendario y
-        # pulsas "Buscar" (NO requiere firma). El script captura y valida la descarga.
-        print(f"  📋 En la ventana: confirma la fecha de AYER ({fecha_inicio}) en ambos")
-        print("     campos (selecciónala en el calendario) y pulsa 'Buscar'.")
-        print("     Esperando la descarga (hasta 3 min)... si hoy no la necesitas, ignóralo.")
+        # ── Selección de fechas POR CALENDARIO (clic real) ─────────────────────
+        # Clave verificada: el backend SOLO registra la consulta si la fecha se
+        # ELIGE clicando en el calendario. Por eso seleccionamos AYER clic a clic
+        # en ambos campos (cerrando el calendario entre uno y otro). NO requiere
+        # firma. El estado por defecto del formulario (Solicitado / sin domicilio /
+        # no anuladas) es el correcto, así que no tocamos nada más.
+        recetas_ok = False
         try:
+            await seleccionar_fecha_calendario(page, "fechaInicio", ayer)
+            await _cerrar_calendario(page)
+            await seleccionar_fecha_calendario(page, "fechaTermino", ayer)
+            await _cerrar_calendario(page)
+            print(f"  ✓ Fechas seleccionadas en el calendario: {fecha_inicio} → {fecha_fin}")
+
+            print("  Buscando y descargando recetas...")
             async with page.expect_download(timeout=180_000) as dl_info:
-                pass  # la descarga la dispara el usuario al pulsar Buscar
+                await page.click(
+                    'button:has-text("Buscar"), input[type="submit"][value*="Buscar"], '
+                    'a:has-text("Buscar"), #btnBuscar',
+                    force=True,
+                )
             dl   = await dl_info.value
             dest = MAESTRO_DIR / dl.suggested_filename
             await dl.save_as(dest)
-            try:
-                with open(dest, encoding="latin-1") as _f:
-                    n_filas = sum(1 for _ in _f) - 1
-            except Exception:
-                n_filas = -1
+            n_filas = _contar_filas(dest)
             if n_filas <= 0:
                 dest.unlink(missing_ok=True)
-                print("  [AVISO] Informe VACÍO (0 filas) — reselecciona la fecha y pulsa Buscar. Archivo descartado.")
+                print("  [AVISO] Informe VACÍO (0 filas) tras selección automática — paso a modo manual.")
             else:
+                recetas_ok = True
                 print(f"  ✓ {dl.suggested_filename}  ({dest.stat().st_size // 1024:,} KB · {n_filas:,} filas)")
-        except Exception:
-            print("  [AVISO] Sin descarga de recetas. Continúo con el stock.")
+        except Exception as e:
+            print(f"  [AVISO] Selección automática de fechas falló: {e}")
+            await page.screenshot(path=str(MAESTRO_DIR / "debug_receta.png"))
+
+        # ── Respaldo SEMIautomático (si la automática no trajo datos) ──────────
+        if not recetas_ok:
+            print(f"  📋 RESPALDO MANUAL: selecciona AYER ({fecha_inicio}) en el CALENDARIO")
+            print("     de 'Fecha Inicio' y 'Fecha Término' (CLIC en el día — no escribas")
+            print("     la fecha a mano) y pulsa 'Buscar'.")
+            print("     Esperando la descarga (hasta 3 min)... si hoy no la necesitas, ignóralo.")
+            try:
+                async with page.expect_download(timeout=180_000) as dl_info:
+                    pass  # la descarga la dispara el usuario al pulsar Buscar
+                dl   = await dl_info.value
+                dest = MAESTRO_DIR / dl.suggested_filename
+                await dl.save_as(dest)
+                n_filas = _contar_filas(dest)
+                if n_filas <= 0:
+                    dest.unlink(missing_ok=True)
+                    print("  [AVISO] Informe VACÍO (0 filas) — reselecciona la fecha en el calendario. Archivo descartado.")
+                else:
+                    print(f"  ✓ {dl.suggested_filename}  ({dest.stat().st_size // 1024:,} KB · {n_filas:,} filas)")
+            except Exception:
+                print("  [AVISO] Sin descarga de recetas. Continúo con el stock.")
 
         # ════════════════════════════════════════════════════════════════════
         #  PASO 3 — ABASTECIMIENTO  (volver al dashboard → entrar → stock)
@@ -258,6 +345,12 @@ async def main():
         print("  → Consolidado_AA_MAESTRO.xlsx  actualizado")
         print("  → Resumen_Pedidos_AA.xlsx       actualizado")
         print("═" * 62)
+
+        # ── PASO 4b — AUDITORÍA DE PRESCRIPCIÓN (para la pestaña en la nube) ──
+        audit_py = MAESTRO_DIR / "auditoria_prescripcion.py"
+        if audit_py.exists():
+            print("\n  Generando auditoría de prescripción...")
+            subprocess.run([sys.executable, str(audit_py)], cwd=str(MAESTRO_DIR), env=env_utf8)
 
         # ── PASO 5 — PUBLICAR EN GITHUB ───────────────────────────────────────
         git_dir  = MAESTRO_DIR / ".git"

@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""
+Pre-cálculo de AUDITORÍA DE PRESCRIPCIÓN por medicamento → auditoria_prescripcion.json
+(la app lo lee; los CSV de recetas no se publican a la nube, este JSON sí).
+
+Para cada medicamento: consumo mensual (prescrito vs dispensado), CMP, mayores
+prescriptores, diagnósticos asociados y duplicidad de prescripción.
+"""
+import glob, json, os, re, sys, unicodedata
+import pandas as pd
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+WORK = os.path.dirname(os.path.abspath(__file__))
+
+
+# Normalización idéntica al maestro (norm_erp + homologación) para que las claves
+# de medicamento coincidan con las del Consolidado.
+def norm_erp(s: str) -> str:
+    s = unicodedata.normalize('NFD', str(s).upper())
+    s = ''.join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r' {2,}', ' ', s).strip()
+
+HOMOLOGACION_RAW = {
+    'TRAZODONA CM 100 MG': 'TRAZODONA CM  100 MG',
+    'VITAMINA D3 800 UI CAPS': 'VITAMINA D3 800 UI CM',
+    'ACIDO ALENDRONICO 70 MG CM.': 'ACIDO ALENDRONICO  CM 70 MG',
+    'ACIDO FOLICO 1 MG COMPRIMIDO': 'ACIDO FOLICO  CM 1 MG',
+    'ACIDO FOLICO 5 MG COMPRIMIDO': 'ACIDO FOLICO CM 5 MG',
+    'ACIDO URSODEOXICOLICO 250 MG COMPRIMIDO': 'ACIDO URSODEOXICOLICO CM 250 MG',
+    'ACETAZOLAMIDA 250 MG COMPRIMIDO': 'ACETAZOLAMIDA  CM 250 MG',
+}
+HOMOLOGACION = {norm_erp(k): norm_erp(v) for k, v in HOMOLOGACION_RAW.items()}
+
+
+def main():
+    files = sorted(glob.glob(os.path.join(WORK, "informe_completo_recetas*.csv")))
+    if not files:
+        print("[AVISO] No hay CSV de recetas — no se genera la auditoría.")
+        return
+    cols = ["ID Receta Detalle", "Prescripción", "RUN",
+            "Nombre Profesional", "Apellido Paterno Profesional", "Apellido Materno Profesional",
+            "Especialidad", "Cod. Diagnóstico 1", "Diagnóstico 1",
+            "Cantidad Recetada", "Cantidad Entregada", "Estado Prescripción",
+            "Fecha Atención", "Fecha Entrega Receta", "Número Receta"]
+    chunks = []
+    for f in files:
+        df = pd.read_csv(f, encoding="latin1", sep=";", on_bad_lines="skip", dtype=str)
+        chunks.append(df[[c for c in cols if c in df.columns]])
+    rec = pd.concat(chunks, ignore_index=True).drop_duplicates(subset=["ID Receta Detalle"], keep="first")
+    print(f"Recetas dedup: {len(rec):,}")
+
+    rec["_med"] = rec["Prescripción"].fillna("").apply(norm_erp).map(lambda x: HOMOLOGACION.get(x, x))
+    rec["_ent"] = pd.to_numeric(rec["Cantidad Entregada"], errors="coerce").fillna(0)
+    rec["_rec"] = pd.to_numeric(rec["Cantidad Recetada"], errors="coerce").fillna(0)
+    _fe = pd.to_datetime(rec["Fecha Entrega Receta"], dayfirst=True, errors="coerce")
+    _fa = pd.to_datetime(rec["Fecha Atención"], dayfirst=True, errors="coerce")
+    rec["_fecha"] = _fe.fillna(_fa)
+    rec["_mes"] = rec["_fecha"].dt.to_period("M").astype(str)
+    rec["_medico"] = (rec["Nombre Profesional"].fillna("") + " " +
+                      rec["Apellido Paterno Profesional"].fillna("") + " " +
+                      rec["Apellido Materno Profesional"].fillna("")).str.strip().str.upper()
+    rec["_dx"] = (rec["Cod. Diagnóstico 1"].fillna("").str.strip() + " · " +
+                  rec["Diagnóstico 1"].fillna("(sin diagnóstico)").str.strip()).str.strip(" ·")
+
+    out = {}
+    # Solo medicamentos con consumo dispensado real (evita ruido y limita tamaño)
+    meds = [m for m in rec["_med"].unique() if m and m != ""]
+    for med in meds:
+        sub = rec[rec["_med"] == med]
+        if sub["_ent"].sum() <= 0 and len(sub) < 5:
+            continue
+        # Consumo mensual
+        disp = sub[sub["_ent"] > 0].groupby("_mes")["_ent"].sum().sort_index()
+        disp = disp[disp.index != "NaT"]
+        meses = {m: int(v) for m, v in disp.items()}
+        full = list(disp.values[:-1]) if len(disp) > 1 else list(disp.values)
+        cmp_disp = round(sum(full) / len(full)) if full else 0
+        tot_rec = float(sub["_rec"].sum()); tot_ent = float(sub["_ent"].sum())
+        # Prescriptores
+        g = sub.groupby("_medico").agg(rec_n=("ID Receta Detalle", "count"),
+                                       pac=("RUN", "nunique"), ud=("_ent", "sum"),
+                                       esp=("Especialidad", lambda s: s.dropna().mode().iloc[0] if not s.dropna().empty else ""))
+        g = g.sort_values("ud", ascending=False)
+        tot_ud = g["ud"].sum() or 1
+        prescriptores = [{"medico": m[:40], "esp": str(r["esp"])[:18], "recetas": int(r["rec_n"]),
+                          "pacientes": int(r["pac"]), "unidades": int(r["ud"]),
+                          "pct": round(100 * r["ud"] / tot_ud, 1)}
+                         for m, r in g.head(10).iterrows()]
+        # Diagnósticos
+        gd = sub.groupby("_dx").agg(rec_n=("ID Receta Detalle", "count"),
+                                    pac=("RUN", "nunique")).sort_values("rec_n", ascending=False)
+        diagnosticos = [{"dx": dx[:60] or "(sin diagnóstico)", "recetas": int(r["rec_n"]),
+                         "pacientes": int(r["pac"])} for dx, r in gd.head(10).iterrows()]
+        sin_dx = int((sub["Diagnóstico 1"].fillna("").str.strip() == "").sum())
+        # Duplicidad
+        pac = sub.groupby("RUN").agg(medicos=("_medico", "nunique"))
+        dup_mes = sub.groupby(["RUN", "_mes"])["Número Receta"].nunique()
+        dup_mes_n = dup_mes[dup_mes >= 2].index.get_level_values(0).nunique()
+        out[med] = {
+            "n_lineas": int(len(sub)), "meses": meses,
+            "cmp_dispensado": cmp_disp,
+            "total_prescrito": int(tot_rec), "total_dispensado": int(tot_ent),
+            "pct_dispensado": round(100 * tot_ent / tot_rec) if tot_rec else 0,
+            "pacientes": int(sub["RUN"].nunique()),
+            "dup_2mas_medicos": int((pac["medicos"] >= 2).sum()),
+            "dup_2mas_recetas_mes": int(dup_mes_n),
+            "sin_diagnostico": sin_dx,
+            "prescriptores": prescriptores, "diagnosticos": diagnosticos,
+        }
+    dest = os.path.join(WORK, "auditoria_prescripcion.json")
+    with open(dest, "w", encoding="utf-8") as f:
+        json.dump({"generado": files[-1].split("recetas")[-1][:8] if files else "",
+                   "n_medicamentos": len(out), "data": out}, f, ensure_ascii=False)
+    print(f"[OK] auditoria_prescripcion.json · {len(out)} medicamentos · {os.path.getsize(dest)//1024} KB")
+
+
+if __name__ == "__main__":
+    main()

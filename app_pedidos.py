@@ -439,11 +439,12 @@ st.markdown(f"""
 # ═══════════════════════════════════════════════════════════════════════
 # PESTAÑAS PRINCIPALES
 # ═══════════════════════════════════════════════════════════════════════
-tab_pedido_bod, tab_pedido_farm, tab_dialisis, tab_faltantes, tab_feedback = st.tabs([
+tab_pedido_bod, tab_pedido_farm, tab_dialisis, tab_faltantes, tab_auditoria, tab_feedback = st.tabs([
     "📝  Pedido a Bodega AA",
     "🏭  Pedido a Bodega Fármacos",
     "💉  Diálisis",
     "🚨  Faltantes",
+    "🔬  Auditoría de prescripción",
     "💬  Diagnóstico y Sugerencias",
 ])
 with tab_pedido_bod:
@@ -887,6 +888,7 @@ with tab_dialisis:
         dfa = df_dial_farm.copy()
         dfa['_dial5d'] = _cn(dfa, 'Consumo_5D_Solo_Dialisis')
         dfa['_stock']  = _cn(dfa, 'Stock_Farm_Actual')
+        dfa['_factor'] = _cn(dfa, 'Factor_Empaque').replace(0, 1)
         dfa['_ord']    = dfa['Criticidad'].apply(orden_crit) if 'Criticidad' in dfa.columns \
                          else pd.Series(5, index=dfa.index)
         dfa = dfa[dfa['_dial5d'] > 0].copy()
@@ -899,7 +901,10 @@ with tab_dialisis:
         else:
             filas = []
             for _, row in dfa.iterrows():
-                cantidad = int(row['_mensual'])
+                base     = int(row['_mensual'])
+                factor   = int(row['_factor']) if int(row['_factor']) > 0 else 1
+                # Aproximar al factor de empaque (hacia arriba)
+                cantidad = ((base + factor - 1) // factor) * factor if factor > 1 else base
                 stock    = int(row['_stock'])
                 if stock >= cantidad:
                     obs = f"Se puede sacar directo de Farmacia AA (stock actual: {stock} ud)."
@@ -1185,6 +1190,78 @@ with tab_faltantes:
             f"Sin Respaldo: {n_sin} · Con Respaldo Bod. Farm.: {n_con} · "
             f"Datos al {datos['mtime'].strftime('%d/%m/%Y %H:%M')}."
         )
+with tab_auditoria:
+    import json as _json_aud
+    st.markdown("## 🔬 Auditoría de prescripción")
+    st.markdown(
+        "Análisis por medicamento: **consumo mensual** (prescrito vs dispensado), "
+        "**mayores prescriptores**, **diagnósticos asociados** y **duplicidad de prescripción**. "
+        "Datos pre-calculados de las recetas; se actualizan al regenerar el maestro."
+    )
+
+    @st.cache_data(ttl=300)
+    def _cargar_auditoria():
+        ruta = os.path.join(WORK_DIR, "auditoria_prescripcion.json")
+        if not os.path.exists(ruta):
+            return None
+        with open(ruta, encoding="utf-8") as _f:
+            return _json_aud.load(_f)
+
+    _aud = _cargar_auditoria()
+    if not _aud or not _aud.get("data"):
+        st.info("No hay auditoría disponible todavía. Ejecuta **AUTO_SSASUR.bat** "
+                "(o `py auditoria_prescripcion.py`) para generarla.")
+    else:
+        data = _aud["data"]
+        meds = sorted(data.keys())
+        _def = next((i for i, m in enumerate(meds) if "EMPAGLIFLOZINA 10" in m), 0)
+        med = st.selectbox(f"Medicamento ({len(meds):,} disponibles)", meds, index=_def)
+        a = data[med]
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("CMP dispensado", f"{a['cmp_dispensado']:,} ud/mes")
+        c2.metric("Prescrito (período)", f"{a['total_prescrito']:,} ud")
+        c3.metric("Dispensado", f"{a['total_dispensado']:,} ud", f"{a['pct_dispensado']}% de lo prescrito")
+        c4.metric("Pacientes", f"{a['pacientes']:,}")
+
+        if a['pct_dispensado'] and a['pct_dispensado'] < 70:
+            st.warning(f"⚠️ Solo se dispensó el **{a['pct_dispensado']}%** de lo prescrito — "
+                       "brecha alta prescripción/entrega (demanda no satisfecha o sobreprescripción).")
+
+        if a.get("meses"):
+            st.markdown("### 📈 Consumo mensual dispensado (unidades)")
+            st.bar_chart(pd.Series(a["meses"]))
+
+        col_p, col_d = st.columns(2)
+        with col_p:
+            st.markdown("### 👨‍⚕️ Mayores prescriptores")
+            if a.get("prescriptores"):
+                dfp = pd.DataFrame(a["prescriptores"]).rename(columns={
+                    "medico": "Médico", "esp": "Especialidad", "recetas": "Recetas",
+                    "pacientes": "Pacientes", "unidades": "Unidades", "pct": "% ud"})
+                st.dataframe(dfp, use_container_width=True, hide_index=True,
+                             column_config={"% ud": st.column_config.NumberColumn("% ud", format="%.1f %%")})
+        with col_d:
+            st.markdown("### 🩺 Diagnósticos asociados")
+            if a.get("diagnosticos"):
+                dfd = pd.DataFrame(a["diagnosticos"]).rename(columns={
+                    "dx": "Diagnóstico", "recetas": "Recetas", "pacientes": "Pacientes"})
+                st.dataframe(dfd, use_container_width=True, hide_index=True)
+            if a.get("sin_diagnostico"):
+                st.caption(f"Recetas sin Diagnóstico 1: {a['sin_diagnostico']:,}")
+
+        st.markdown("### 👥 Duplicidad de prescripción")
+        d1, d2, d3 = st.columns(3)
+        d1.metric("Pacientes distintos", f"{a['pacientes']:,}")
+        d2.metric("Con ≥2 médicos distintos", f"{a['dup_2mas_medicos']:,}")
+        d3.metric("Con ≥2 recetas el mismo mes", f"{a['dup_2mas_recetas_mes']:,}")
+        if a['pacientes']:
+            _pdup = round(100 * a['dup_2mas_medicos'] / a['pacientes'])
+            if _pdup >= 15:
+                st.warning(f"⚠️ El **{_pdup}%** de los pacientes recibieron este medicamento de ≥2 médicos "
+                           "distintos — revisar posible duplicidad de prescripción.")
+        st.caption(f"Datos al: {datos['mtime'].strftime('%d/%m/%Y %H:%M')}.")
+
 with tab_feedback:
     import json as _json
 

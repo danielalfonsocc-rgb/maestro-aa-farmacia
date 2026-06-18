@@ -17,10 +17,10 @@ set MSG=Datos %DIA%/%MES%/%ANO% %HORA%:%MIN%
 
 echo   Subiendo datos a GitHub...
 git add Consolidado_AA_MAESTRO.xlsx Resumen_Pedidos_AA.xlsx 2>nul
-git add app_pedidos.py maestro_aa.py aa_colors.py AUTO_SSASUR.py 2>nul
+git add app_pedidos.py maestro_aa.py aa_colors.py AUTO_SSASUR.py auditoria_prescripcion.py 2>nul
 git add requirements.txt .gitignore 2>nul
 git add CONFIGURAR_GITHUB.bat PUBLICAR_DATOS.bat INSTALAR_TAREA_PROGRAMADA.bat TAREA_PROGRAMADA_AUTO.xml 2>nul
-git add feedback.json 2>nul
+git add feedback.json auditoria_prescripcion.json 2>nul
 
 git diff --cached --quiet
 if errorlevel 1 (

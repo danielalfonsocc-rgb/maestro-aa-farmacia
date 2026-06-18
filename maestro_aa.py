@@ -1234,7 +1234,8 @@ idx_dial = sorted([m for m in cd_total_dial.index if cd_total_dial[m] > 0])
 
 # Master dialisis = stock compartido (df_master) + CDL/CMP de SOLO estas recetas
 _stock_cols_dial = ['Medicamento','Stock_Farmacia_AA','Stock_Bodega_AA','Stock_AA_Total',
-                    'Stock_BODEGA_FARMACOS','Stock_Hospital_Total','Prescrito_Total_Op']
+                    'Stock_BODEGA_FARMACOS','Stock_Hospital_Total','Prescrito_Total_Op',
+                    'Factor_Empaque']
 df_md = df_master[df_master['Medicamento'].isin(idx_dial)][
     [c for c in _stock_cols_dial if c in df_master.columns]
 ].copy()
@@ -1320,10 +1321,12 @@ else:
 # hojas de diálisis llevan estas columnas extra; las hojas generales no cambian.
 _farm_cols_dial = {**_farm_cols,
                    'Consumo_5D_Solo_Dialisis' : 'Consumo_5D_Dial',
-                   'Consumo_5D_Farm_NoDial'   : 'Consumo_5D_FarmNoDial'}
+                   'Consumo_5D_Farm_NoDial'   : 'Consumo_5D_FarmNoDial',
+                   'Factor_Empaque'           : 'Factor_Empaque'}
 _bod_cols_dial  = {**_bod_cols,
                    'Consumo_5D_Solo_Dialisis' : 'Consumo_5D_Dial',
-                   'Consumo_5D_Farm_NoDial'   : 'Consumo_5D_FarmNoDial'}
+                   'Consumo_5D_Farm_NoDial'   : 'Consumo_5D_FarmNoDial',
+                   'Factor_Empaque'           : 'Factor_Empaque'}
 
 df_dial_farm_pedido = (
     df_ped_dial[df_ped_dial.get('Necesidad_Farm', 0) > 0]
