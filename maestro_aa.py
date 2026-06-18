@@ -38,7 +38,7 @@ GLOSARIO:
 """
 import pandas as pd
 import numpy as np
-import re, os, glob, warnings, unicodedata
+import re, os, glob, math, warnings, unicodedata
 from datetime import datetime, timedelta
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -110,6 +110,66 @@ HOMOLOGACION_RAW = {
     'LORATADINA 5 MG/5 ML SOLUCION ORAL'         : 'LORATADINA 5 MG/5 ML FC 120 ML',
 }
 HOMOLOGACION = {norm_erp(k): norm_erp(v) for k, v in HOMOLOGACION_RAW.items()}
+
+# ─────────────────────────────────────────────
+# FACTOR DE EMPAQUE (CENABAST) — para aproximar pedidos a empaques completos
+# ─────────────────────────────────────────────
+# Formas farmacéuticas a descartar al construir la clave de emparejamiento
+_FORMAS_EMP = {
+    'CM','CP','COMPRIMIDO','COMPRIMIDOS','COM','C','CAPSULA','CAPSULAS','CAPS','CAP',
+    'REC','ENT','UD','GR','G','TAB','TABLETA','SOL','INY','AM','FAM','FA','FAMP','FRA',
+    'FCO','FC','POMO','SUSP','JBE','JRP','CREMA','GEL','UN','SOBRE','SOB','LIOF','P',
+    'INYECTABLE','ORAL','TOPICO','OFTALMICO','NEB','CAJ','CJ','AMP','PERF','IV',
+}
+
+def _clave_empaque(nombre: str) -> str:
+    """Clave de emparejamiento: ingrediente (≤3 palabras) + primera concentración."""
+    s = norm_erp(nombre).replace('/', ' ').replace('-', ' ')
+    m = re.search(r'(\d+[.,]?\d*)\s*(MG|MCG|UI|G|ML|%)', s)
+    conc = (m.group(1).replace(',', '.') + m.group(2)) if m else ''
+    pre  = s[:m.start()] if m else s
+    toks = [t for t in re.split(r'[ .,]+', pre)
+            if t and t not in _FORMAS_EMP and not any(ch.isdigit() for ch in t)]
+    return (' '.join(toks[:3]) + ' ' + conc).strip()
+
+def cargar_factores_empaque(work_dir):
+    """Lee el CSV de intermediación CENABAST y devuelve {clave_empaque: factor}."""
+    files = (glob.glob(os.path.join(work_dir, 'cenabast_intermediacion.csv')) +
+             glob.glob(os.path.join(work_dir, 'ICP-Intermediacion*.csv')))
+    if not files:
+        return {}
+    f = max(files, key=os.path.getmtime)
+    try:
+        df = pd.read_csv(f, encoding='latin1', sep=';', skiprows=3, dtype=str)
+    except Exception:
+        return {}
+    if 'NOMBRE COMERCIAL DEL PRODUCTO' not in df.columns or 'NOMBRE GENERICO' not in df.columns:
+        return {}
+    def _pack(nombre):
+        if not isinstance(nombre, str): return None
+        s = nombre.upper()
+        m = re.search(r'CAJ\s*(\d+)\s*[A-Z]', s) or re.search(r'\bX\s*(\d+)\b', s)
+        return int(m.group(1)) if m else None
+    out = {}
+    for _, r in df.iterrows():
+        fac = _pack(r['NOMBRE COMERCIAL DEL PRODUCTO'])
+        if not fac or fac <= 1:
+            continue
+        k = _clave_empaque(r['NOMBRE GENERICO'])
+        if k and k not in out:
+            out[k] = fac
+    return out
+
+def redondear_empaque(cantidad, medicamento, factores):
+    """Aproxima HACIA ARRIBA al múltiplo del factor de empaque (mínimo 1 empaque).
+    Si no hay factor conocido, redondea hacia arriba a la unidad."""
+    c = float(cantidad)
+    if c <= 0:
+        return 0
+    fac = factores.get(_clave_empaque(medicamento))
+    if not fac or fac <= 1:
+        return int(math.ceil(c))
+    return int(math.ceil(c / fac) * fac)
 
 # ─────────────────────────────────────────────
 # UNIVERSE FILTERS
@@ -535,6 +595,18 @@ def consumo_periodo(df, fecha_ini, fecha_fin):
 # Período completo operacional (Fecha_Entrega: 2026-01-01 -> FECHA_MAX)
 c_total = consumo_periodo(df_op_consumo, FECHA_INICIO_OP, FECHA_MAX)
 
+# Consumo de DIÁLISIS por medicamento (recetas de nefrólogos). Se usa para
+# SEPARAR el pedido normal: Farmacia AA repone solo lo NO-diálisis, porque el
+# pedido de diálisis se hace aparte (mensual, 3ª semana).
+df_op_consumo['Prof_Norm'] = (
+    df_op_consumo['Nombre Profesional'].fillna('') + ' ' +
+    df_op_consumo['Apellido Paterno Profesional'].fillna('') + ' ' +
+    df_op_consumo['Apellido Materno Profesional'].fillna('')
+).apply(norm_erp)
+c_total_dial = consumo_periodo(
+    df_op_consumo[df_op_consumo['Prof_Norm'].isin(MEDICOS_DIALISIS)],
+    FECHA_INICIO_OP, FECHA_MAX)
+
 # Ventanas para CMP ponderado (base Fecha_Entrega)
 c_15 = consumo_periodo(df_op_consumo, FECHA_MAX - timedelta(days=15), FECHA_MAX)
 c_30 = consumo_periodo(df_op_consumo, FECHA_MAX - timedelta(days=30), FECHA_MAX)
@@ -561,6 +633,7 @@ df_master['Stock_Hospital_Total'] = df_master[[
 
 # Consumo columns (base: Cantidad_Recetada)
 df_master['Prescrito_Total_Op']   = c_total.reindex(idx, fill_value=0)
+df_master['Prescrito_Dialisis_Op'] = c_total_dial.reindex(idx, fill_value=0)
 df_master['Prescrito_15d']        = c_15.reindex(idx, fill_value=0)
 df_master['Prescrito_30d']        = c_30.reindex(idx, fill_value=0)
 df_master['Prescrito_60d']        = c_60.reindex(idx, fill_value=0)
@@ -877,6 +950,21 @@ TARGET_COB_FARMACIA_DIAS  = 5   # 1 semana laboral en farmacia
 CICLO_PEDIDO_BODEGA_DIAS  = 10  # Bodega AA pide a Bod. Fármacos cada 2 semanas = 10 días háb.
 TARGET_COB_BODEGA_DIAS    = CICLO_PEDIDO_BODEGA_DIAS
 
+# ── Regla de reposición Farmacia AA por ROTACIÓN (decisión usuario 2026-06-18) ──
+# Alta rotación (CDL ≥ UMBRAL) → cobertura 2 días hábiles (se repone seguido desde
+# Bodega AA, en sitio). Baja rotación → 5 días, con piso de 1 empaque (el redondeo
+# por factor de empaque garantiza ≥ 1 empaque cuando hay necesidad > 0).
+UMBRAL_ALTA_ROTACION_CDL  = 30   # ud/día hábil
+COB_ALTA_ROTACION_DIAS    = 2
+COB_BAJA_ROTACION_DIAS    = 5
+
+# Factor de empaque CENABAST (para aproximar todos los pedidos a empaques completos)
+FACTOR_EMPAQUE = cargar_factores_empaque(WORK_DIR)
+_med_series_fe = df_master['Medicamento'] if 'Medicamento' in df_master.columns else df_master.index.to_series()
+df_master['Factor_Empaque'] = [FACTOR_EMPAQUE.get(_clave_empaque(m), 1) for m in _med_series_fe]
+_n_con_fe = int((df_master['Factor_Empaque'] > 1).sum())
+print(f"  Factor de empaque CENABAST: {len(FACTOR_EMPAQUE)} claves · {_n_con_fe}/{len(df_master)} meds con empaque")
+
 # ── A) CDL ajustado por semana del mes ───────────────────────────────────────
 # Fórmula: CDL_Sx = CDL × (% consumo semana x / 25)
 # Baseline = 25 % (distribución plana entre 4 semanas)
@@ -905,11 +993,13 @@ for d, s in next_5_bdays:
     print(f"    {d.strftime('%a %d-%b')}  →  S{s}")
 
 # ── C) Consumo proyectado por tendencia ──────────────────────────────────────
+_s2_list  = [s for _, s in next_5_bdays][:2]   # próximos 2 días hábiles (alta rotación)
 _s5_list  = [s for _, s in next_5_bdays]
 _s10_list = [s for _, s in next_10_bdays]
 
-# Consumo_5D_Trend  = suma CDL_Sx para cada uno de los próximos 5 días hábiles
-# Consumo_10D_Trend = suma CDL_Sx para cada uno de los próximos 10 días hábiles
+# Consumo_xD_Trend = suma CDL_Sx para cada uno de los próximos x días hábiles
+df_ped['Consumo_2D_Trend']  = df_ped.apply(
+    lambda r: round(sum(r[f'CDL_S{s}'] for s in _s2_list), 1), axis=1)
 df_ped['Consumo_5D_Trend']  = df_ped.apply(
     lambda r: round(sum(r[f'CDL_S{s}'] for s in _s5_list), 1), axis=1)
 df_ped['Consumo_10D_Trend'] = df_ped.apply(
@@ -924,10 +1014,29 @@ df_ped['Cob_Farm_Dias']  = (df_ped['Stock_Farmacia_AA'] / df_ped['CDL']).round(1
 df_ped['Cob_Bod_Dias']   = (df_ped['Stock_Bodega_AA']   / df_ped['CDL']).round(1)
 df_ped['Cob_Total_Dias'] = (df_ped['Stock_AA_Total']    / df_ped['CDL']).round(1)
 
-# ── E) Necesidad Farmacia — basada en Consumo_5D_Trend ───────────────────────
-df_ped['Necesidad_Farm']   = np.maximum(
-    df_ped['Consumo_5D_Trend'] - df_ped['Stock_Farmacia_AA'], 0
-).round(0)
+# ── E) Necesidad Farmacia — regla por ROTACIÓN + SOLO no-diálisis + empaque ───
+# Cobertura objetivo según rotación: 2 días (alta) / 5 días (baja). Usa el consumo
+# proyectado con tendencia (semana pico) para esa ventana.
+df_ped['Cobertura_Obj_Dias'] = np.where(
+    df_ped['CDL'] >= UMBRAL_ALTA_ROTACION_CDL, COB_ALTA_ROTACION_DIAS, COB_BAJA_ROTACION_DIAS)
+df_ped['Requerimiento_Farm'] = np.where(
+    df_ped['CDL'] >= UMBRAL_ALTA_ROTACION_CDL,
+    df_ped['Consumo_2D_Trend'], df_ped['Consumo_5D_Trend'])
+
+# El pedido normal cubre SOLO la demanda no-diálisis (diálisis se pide aparte,
+# mensual). Se descuenta la fracción de consumo atribuible a recetas de diálisis.
+_frac_dial = (df_ped['Prescrito_Dialisis_Op'] /
+              df_ped['Prescrito_Total_Op'].replace(0, np.nan)).fillna(0).clip(0, 1)
+df_ped['Requerimiento_Farm_NoDial'] = (df_ped['Requerimiento_Farm'] * (1 - _frac_dial)).round(1)
+
+# Necesidad bruta = requerimiento no-diálisis − stock Farmacia AA; luego redondeo
+# al factor de empaque (garantiza ≥ 1 empaque cuando hay necesidad > 0 = el "piso").
+_nec_farm_bruta = np.maximum(
+    df_ped['Requerimiento_Farm_NoDial'] - df_ped['Stock_Farmacia_AA'], 0).round(1)
+df_ped['Necesidad_Farm'] = [
+    redondear_empaque(n, m, FACTOR_EMPAQUE)
+    for n, m in zip(_nec_farm_bruta, df_ped['Medicamento'])
+]
 
 df_ped['Traspaso_Posible'] = np.minimum(
     df_ped['Necesidad_Farm'], df_ped['Stock_Bodega_AA']
@@ -972,14 +1081,20 @@ def accion_farm_externo(row):
 df_ped['Accion_Traspaso'] = df_ped.apply(accion_farm_traspaso, axis=1)
 df_ped['Accion_Externo']  = df_ped.apply(accion_farm_externo,  axis=1)
 
-# ── G) Necesidad Bodega — ciclo 2 semanas (CICLO_PEDIDO_BODEGA_DIAS = 10 días háb.) ──
-# Req_2_Semanas: consumo teórico plano para 2 semanas (referencia sin ajuste tendencia)
-# Target_Stock_Bod: consumo proyectado con tendencia semanal para el mismo período
+# ── G) Necesidad Bodega → Bodega Fármacos (decisión usuario 2026-06-18) ──────
+# Pedido = requerimiento de 10 días hábiles (con factor de semana pico)
+#          − TODO el stock de Atención Abierta (Farmacia AA + Bodega AA).
+# Así no se pide a Bodega Fármacos lo que Atención Abierta ya tiene en mano.
+# Luego se redondea al factor de empaque.
 df_ped['Req_2_Semanas']    = (df_ped['CDL'] * CICLO_PEDIDO_BODEGA_DIAS).round(0)
-df_ped['Target_Stock_Bod'] = df_ped['Consumo_10D_Trend']   # 2 semanas ajustado por tendencia
-df_ped['Necesidad_Bod']    = np.maximum(
-    df_ped['Target_Stock_Bod'] - df_ped['Stock_Bod_Post'], 0
-).round(0)
+df_ped['Target_Stock_Bod'] = df_ped['Consumo_10D_Trend']   # 10 días háb. ajustado por tendencia
+_nec_bod_bruta = np.maximum(
+    df_ped['Consumo_10D_Trend'] - df_ped['Stock_AA_Total'], 0
+).round(1)
+df_ped['Necesidad_Bod'] = [
+    redondear_empaque(n, m, FACTOR_EMPAQUE)
+    for n, m in zip(_nec_bod_bruta, df_ped['Medicamento'])
+]
 
 # ── H) Criticidad Bodega — umbrales basados en el ciclo de 2 semanas (10 días háb.) ──
 def crit_bod(row):

@@ -31,7 +31,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from datetime import date
+from datetime import date, timedelta
 
 # Forzar UTF-8 en la salida — si no, al redirigir a un archivo/pipe Windows usa
 # cp1252 y los caracteres ═ ✓ → ✗ revientan el script antes de empezar.
@@ -101,14 +101,17 @@ async def main():
             pass
         sys.exit(1)
 
+    # Solo el DÍA ANTERIOR a la ejecución (evita re-descargar días repetidos):
+    # si la tarea corre el 18/06, extrae las recetas del 17/06.
     today        = date.today()
-    fecha_inicio = fmt(today.replace(day=1))
-    fecha_fin    = fmt(today)
+    ayer         = today - timedelta(days=1)
+    fecha_inicio = fmt(ayer)
+    fecha_fin    = fmt(ayer)
 
     print()
     print("═" * 62)
     print("  AUTO SSASUR  ·  Maestro AA Farmacia")
-    print(f"  Período: {fecha_inicio}  →  {fecha_fin}")
+    print(f"  Recetas del día: {fecha_inicio}")
     print("═" * 62)
 
     async with async_playwright() as p:
@@ -147,43 +150,46 @@ async def main():
         # ════════════════════════════════════════════════════════════════════
         #  PASO 2 — RECETA  (entrar → informe → descargar)
         # ════════════════════════════════════════════════════════════════════
-        print(f"\n[2/5] Módulo RECETA  ({fecha_inicio} → {fecha_fin})...")
+        print(f"\n[2/5] Módulo RECETA  (día {fecha_inicio})...")
         await entrar_modulo(page, "RECETA")
 
         await page.goto(RECETA_INFORME)
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(2_000)
 
-        # Setear fechas por JS (no con .fill): así NO se abre el datepicker, que
-        # si no tapa el botón "Buscar" y además no compromete bien la fecha.
-        setv = await page.evaluate(f"""()=>{{
+        # Prefill de la fecha de AYER como ayuda visual.
+        await page.evaluate(f"""()=>{{
           const set=(id,val)=>{{const el=document.getElementById(id); if(!el) return;
-            const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
-            s.call(el,val); el.dispatchEvent(new Event('input',{{bubbles:true}}));
-            el.dispatchEvent(new Event('change',{{bubbles:true}}));}};
+            el.value=val;
+            ['input','change','keyup','blur'].forEach(ev=>el.dispatchEvent(new Event(ev,{{bubbles:true}})));}};
           set('fechaInicio','{fecha_inicio}'); set('fechaTermino','{fecha_fin}');
-          return ((document.getElementById('fechaInicio')||{{}}).value || '?') + ' → ' +
-                 ((document.getElementById('fechaTermino')||{{}}).value || '?');
         }}""")
-        print(f"  Fechas: {setv}")
 
-        print("  Descargando recetas... (puede tardar varios minutos)")
+        # La descarga 100% programática del informe no se pudo replicar de forma fiable
+        # (depende de estado de sesión interno del navegador, no de la firma). Por eso
+        # RECETA es SEMIautomática: tú confirmas la fecha de AYER en el calendario y
+        # pulsas "Buscar" (NO requiere firma). El script captura y valida la descarga.
+        print(f"  📋 En la ventana: confirma la fecha de AYER ({fecha_inicio}) en ambos")
+        print("     campos (selecciónala en el calendario) y pulsa 'Buscar'.")
+        print("     Esperando la descarga (hasta 3 min)... si hoy no la necesitas, ignóralo.")
         try:
-            # Con las fechas seteadas, "Buscar" genera y descarga el informe directo
-            await descargar(
-                page, MAESTRO_DIR,
-                lambda: page.click('button[type="submit"].btn-primary, button:has-text("Buscar")'),
-                "RECETA",
-            )
-        except Exception:
-            # Respaldo: algunos informes exponen un botón "Descargar Excel" diferido
+            async with page.expect_download(timeout=180_000) as dl_info:
+                pass  # la descarga la dispara el usuario al pulsar Buscar
+            dl   = await dl_info.value
+            dest = MAESTRO_DIR / dl.suggested_filename
+            await dl.save_as(dest)
             try:
-                await page.wait_for_selector("#btn_excel_recetas", state="visible", timeout=120_000)
-                await descargar(page, MAESTRO_DIR, lambda: page.click("#btn_excel_recetas"), "RECETA")
-            except Exception as e:
-                print(f"  [ERROR] Descarga RECETA falló: {e}")
-                await page.screenshot(path=str(MAESTRO_DIR / "debug_receta.png"))
-                print("  Screenshot guardado: debug_receta.png")
+                with open(dest, encoding="latin-1") as _f:
+                    n_filas = sum(1 for _ in _f) - 1
+            except Exception:
+                n_filas = -1
+            if n_filas <= 0:
+                dest.unlink(missing_ok=True)
+                print("  [AVISO] Informe VACÍO (0 filas) — reselecciona la fecha y pulsa Buscar. Archivo descartado.")
+            else:
+                print(f"  ✓ {dl.suggested_filename}  ({dest.stat().st_size // 1024:,} KB · {n_filas:,} filas)")
+        except Exception:
+            print("  [AVISO] Sin descarga de recetas. Continúo con el stock.")
 
         # ════════════════════════════════════════════════════════════════════
         #  PASO 3 — ABASTECIMIENTO  (volver al dashboard → entrar → stock)

@@ -21,3 +21,7 @@ logs/
 
 # ── Streamlit secretos (API keys locales) ────────────────────────────────────
 .streamlit/secrets.toml
+
+# Factor de empaque CENABAST (datos de intermediación)
+cenabast_intermediacion.csv
+ICP-Intermediacion*.csv
