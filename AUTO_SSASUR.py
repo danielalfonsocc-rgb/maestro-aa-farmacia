@@ -22,6 +22,11 @@ NOTA TÉCNICA — cómo navega SSASUR (verificado por inspección del DOM):
     (www.ssasur.cl/<modulo>) y acuña la sesión del módulo vía SSO.
   · Ir directo por URL a un módulo sin pasar por el clic da 403 / rebote
     al login, porque la cookie de sesión solo cubre login.ssasur.cl.
+  · RECETA: el informe sabana sale VACÍO (0 filas) si la sesión no se acuña
+    para el PROYECTO (629). Hay que entrar por la TARJETA RECETA (dispara el
+    puente SSO /sesion/obtener) — NO por RCE ni por deep-link. No es la firma
+    ni el calendario: era el proyecto. (Verificado por captura HTTP del flujo
+    manual: 30.582 filas con la sesión correcta, 0 sin ella.)
   · El reporte de stock NO requiere firma electrónica; basta elegir
     bodega = TODAS (value 0) y pulsar "Generar XLS".
 ═══════════════════════════════════════════════════════════════
@@ -88,62 +93,83 @@ async def descargar(page, dest_dir: Path, accion, etiqueta: str, timeout=TIMEOUT
     return dest
 
 
-# ── Selección de fecha por CALENDARIO (bootstrap-datepicker) ────────────────────
-# El informe de recetas usa bootstrap-datepicker. La fecha SOLO queda registrada
-# para el backend cuando se hace CLIC en una celda de día (eso dispara el evento
-# interno 'changeDate'); asignar el .value por JS deja el texto visible pero el
-# servidor la ignora y devuelve 0 filas. Por eso seleccionamos clic a clic.
-_MESES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
-             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+# ── Entrada CORRECTA al módulo RECETA + descarga del informe sabana ─────────────
+# CLAVE (descubierto por captura HTTP del flujo manual): el informe sabana sale
+# VACÍO (0 filas) si la sesión NO está acuñada para el PROYECTO (629), aunque el
+# formulario cargue y jsonValidaSabana responda {status:true}. Ni el deep-link
+# directo a /receta/informes/sabana ni entrar por RCE (araucaniasur/rce/index.php)
+# acuñan el proyecto. SOLO clicar la tarjeta RECETA del dashboard lo hace, porque
+# dispara el puente SSO (/sesion/obtener con data_proyecto=629) que deja la
+# pestaña en www.ssasur.cl/receta con la sesión correcta. Con esa sesión, el
+# informe se baja por POST directo (ni calendario ni firma hacían falta nunca).
+PROYECTO_RECETA  = 629          # informativo: proyecto que acuña la sesión receta
+ANCLA_HISTORICO  = date(2026, 6, 1)   # primer día del histórico de recetas
+BLOQUE_DIAS      = 30           # tope del servidor: máx. 30 días por consulta
 
 
-async def _cerrar_calendario(page):
-    """Cierra cualquier datepicker abierto: si no, el de un campo tapa al otro."""
-    await page.keyboard.press("Escape")
-    # Clic neutro en la franja superior vacía (lejos de campos y del calendario).
+async def entrar_receta(page):
+    """Dashboard → tarjeta RECETA → (modal proyecto) → www.ssasur.cl/receta."""
+    # Clic en la tarjeta RECETA (texto EXACTO para no pegarle a "RCE - REGISTRO ...").
     try:
-        await page.mouse.click(950, 130)
+        await page.get_by_text("RECETA", exact=True).first.click(timeout=15_000)
+    except Exception:
+        await page.click('button:has-text("RECETA")', timeout=15_000)
+    await page.wait_for_timeout(2_000)
+
+    # Si aparece el modal de selección de proyecto, aceptarlo.
+    for sel in ('button:has-text("Aceptar e ingresar")',
+                'a:has-text("Aceptar e ingresar")',
+                'button:has-text("Aceptar")'):
+        try:
+            await page.click(sel, timeout=3_000)
+            break
+        except Exception:
+            continue
+
+    # Esperar a estar en www.ssasur.cl/receta (no en araucaniasur/rce).
+    try:
+        await page.wait_for_function(
+            "location.href.includes('www.ssasur.cl/receta')", timeout=30_000
+        )
     except Exception:
         pass
-    await page.wait_for_timeout(300)
+    await page.wait_for_load_state("networkidle")
+    await page.wait_for_timeout(1_500)
+    print(f"  ✓ En módulo receta: {page.url}")
 
 
-async def seleccionar_fecha_calendario(page, input_id: str, d: date):
+async def descargar_sabana(page, fi: str, ft: str) -> str:
     """
-    Selecciona una fecha haciendo CLIC REAL en el calendario del campo `input_id`.
-    Abre el datepicker, navega al mes/año con « / » y clica el día (excluyendo
-    los días atenuados de los meses contiguos).
+    Descarga el informe completo de recetas por POST directo (con la sesión ya
+    acuñada al proyecto). Replica los dos POST exactos del flujo manual:
+      1) /receta/informes/jsonValidaSabana   (valida; fija contexto)
+      2) .../informeCompletoReceta.php        (devuelve el CSV ';' latin-1)
+    fi/ft en formato dd/mm/yyyy. Devuelve el CSV como texto latin-1.
     """
-    # Abrir el calendario clicando el input.
-    await page.click(f"#{input_id}")
-    dp = page.locator(".datepicker:visible").first
-    await dp.wait_for(state="visible", timeout=10_000)
-
-    # Navegar al mes/año objetivo leyendo el encabezado «.datepicker-switch».
-    objetivo = f"{_MESES_ES[d.month - 1]} {d.year}"
-    switch = dp.locator(".datepicker-switch").first
-    for _ in range(36):  # tope de seguridad (~3 años de saltos)
-        actual = (await switch.inner_text()).strip().lower()
-        if actual == objetivo:
-            break
-        partes = actual.split()
-        try:
-            m_act = _MESES_ES.index(partes[0]) + 1   # mes 1-12
-            y_act = int(partes[1])                   # año
-        except (ValueError, IndexError):
-            break  # formato inesperado: confiar en el mes visible
-        # Comparar (año, mes) para decidir dirección.
-        if (y_act, m_act) > (d.year, d.month):
-            await dp.locator(".prev").first.click()
-        else:
-            await dp.locator(".next").first.click()
-        await page.wait_for_timeout(250)
-
-    # Clic en el día del mes vigente (sin .old / .new = meses contiguos atenuados).
-    dia = dp.locator(f"td.day:not(.old):not(.new):text-is('{d.day}')").first
-    await dia.wait_for(state="visible", timeout=5_000)
-    await dia.click()
-    await page.wait_for_timeout(300)
+    return await page.evaluate(
+        r"""async ({fi, ft}) => {
+          const enc = encodeURIComponent;
+          const csrf = (document.querySelector('input[name=csrf_token]')||{}).value || '';
+          try {
+            await fetch('https://www.ssasur.cl/receta/informes/jsonValidaSabana', {
+              method:'POST',
+              headers:{'content-type':'application/x-www-form-urlencoded; charset=UTF-8','x-requested-with':'XMLHttpRequest'},
+              body:`csrf_token=${csrf}&fechaInicio=${enc(fi)}&fechaTermino=${enc(ft)}&estadoSolicitadoHidden=F`,
+              credentials:'include',
+            });
+          } catch(e){}
+          const r = await fetch('https://www.ssasur.cl/application/sistemas/receta/reportes/informeCompletoReceta.php', {
+            method:'POST', headers:{'content-type':'application/x-www-form-urlencoded'},
+            body:`fechaInicio=${enc(fi)}&fechaTermino=${enc(ft)}&estadoSolicitadoHidden=F&entregaDomicilio=F&estadoAnulada=N`,
+            credentials:'include',
+          });
+          const buf = await r.arrayBuffer();
+          const b = new Uint8Array(buf); let s='';
+          for (let i=0;i<b.length;i++) s += String.fromCharCode(b[i]);
+          return s;
+        }""",
+        {"fi": fi, "ft": ft},
+    )
 
 
 async def main():
@@ -159,17 +185,18 @@ async def main():
             pass
         sys.exit(1)
 
-    # Solo el DÍA ANTERIOR a la ejecución (evita re-descargar días repetidos):
-    # si la tarea corre el 18/06, extrae las recetas del 17/06.
-    today        = date.today()
-    ayer         = today - timedelta(days=1)
-    fecha_inicio = fmt(ayer)
-    fecha_fin    = fmt(ayer)
+    # Modo prueba: descarga SOLO recetas y termina (sin stock, maestro ni publicar).
+    solo_recetas = "--solo-recetas" in sys.argv
+    # No publicar en GitHub al final (útil para corridas de prueba/debug).
+    no_publicar  = "--no-publicar" in sys.argv
+
+    today = date.today()
+    ayer  = today - timedelta(days=1)
 
     print()
     print("═" * 62)
     print("  AUTO SSASUR  ·  Maestro AA Farmacia")
-    print(f"  Recetas del día: {fecha_inicio}")
+    print(f"  Recetas: bloques de 30 días desde {fmt(ANCLA_HISTORICO)} hasta {fmt(ayer)}")
     print("═" * 62)
 
     async with async_playwright() as p:
@@ -206,77 +233,64 @@ async def main():
         print("  ✓ Sesión detectada")
 
         # ════════════════════════════════════════════════════════════════════
-        #  PASO 2 — RECETA  (entrar → informe → descargar)
+        #  PASO 2 — RECETA  (entrada correcta por la tarjeta → informe sabana)
         # ════════════════════════════════════════════════════════════════════
-        print(f"\n[2/5] Módulo RECETA  (día {fecha_inicio})...")
-        await entrar_modulo(page, "RECETA")
+        # El server limita cada consulta a 30 días → se baja por BLOQUES de 30
+        # días desde ANCLA_HISTORICO (01/06/2026) hasta ayer. Cada bloque:
+        #   · mientras no cubra los 30 días → archivo PARCIAL `..._b<inicio>.csv`,
+        #     que se REESCRIBE en cada corrida (01/06→ayer va creciendo);
+        #   · al cubrir los 30 días → se SELLA como `..._b<inicio>_FULL.csv` y se
+        #     BORRA el parcial; un bloque sellado ya no se vuelve a descargar;
+        #   · un rango sin datos no deja archivo (se borra el incompleto).
+        # El maestro lee todos los informe_completo_recetas*.csv y deduplica por
+        # ID Receta Detalle, así que los bloques (rangos sin solape) no doble-cuentan.
+        print("\n[2/5] Módulo RECETA — informe completo por bloques de 30 días...")
+        await entrar_receta(page)
 
         await page.goto(RECETA_INFORME)
         await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(2_000)
+        await page.wait_for_timeout(1_500)
 
-        def _contar_filas(ruta: Path) -> int:
-            try:
-                with open(ruta, encoding="latin-1") as _f:
-                    return sum(1 for _ in _f) - 1
-            except Exception:
-                return -1
-
-        # ── Selección de fechas POR CALENDARIO (clic real) ─────────────────────
-        # Clave verificada: el backend SOLO registra la consulta si la fecha se
-        # ELIGE clicando en el calendario. Por eso seleccionamos AYER clic a clic
-        # en ambos campos (cerrando el calendario entre uno y otro). NO requiere
-        # firma. El estado por defecto del formulario (Solicitado / sin domicilio /
-        # no anuladas) es el correcto, así que no tocamos nada más.
-        recetas_ok = False
-        try:
-            await seleccionar_fecha_calendario(page, "fechaInicio", ayer)
-            await _cerrar_calendario(page)
-            await seleccionar_fecha_calendario(page, "fechaTermino", ayer)
-            await _cerrar_calendario(page)
-            print(f"  ✓ Fechas seleccionadas en el calendario: {fecha_inicio} → {fecha_fin}")
-
-            print("  Buscando y descargando recetas...")
-            async with page.expect_download(timeout=180_000) as dl_info:
-                await page.click(
-                    'button:has-text("Buscar"), input[type="submit"][value*="Buscar"], '
-                    'a:has-text("Buscar"), #btnBuscar',
-                    force=True,
-                )
-            dl   = await dl_info.value
-            dest = MAESTRO_DIR / dl.suggested_filename
-            await dl.save_as(dest)
-            n_filas = _contar_filas(dest)
-            if n_filas <= 0:
-                dest.unlink(missing_ok=True)
-                print("  [AVISO] Informe VACÍO (0 filas) tras selección automática — paso a modo manual.")
-            else:
-                recetas_ok = True
-                print(f"  ✓ {dl.suggested_filename}  ({dest.stat().st_size // 1024:,} KB · {n_filas:,} filas)")
-        except Exception as e:
-            print(f"  [AVISO] Selección automática de fechas falló: {e}")
+        if not await page.evaluate("() => !!document.getElementById('fechaInicio')"):
+            print("  [AVISO] No cargó el formulario sabana — omito recetas.")
             await page.screenshot(path=str(MAESTRO_DIR / "debug_receta.png"))
+        else:
+            bstart = ANCLA_HISTORICO
+            while bstart <= ayer:
+                bend  = bstart + timedelta(days=BLOQUE_DIAS - 1)   # bloque de 30 días (inclusive)
+                q_end = min(bend, ayer)
+                base    = f"informe_completo_recetas_b{bstart:%Y%m%d}"
+                parcial = MAESTRO_DIR / f"{base}.csv"        # rango aún sin completar 30 días
+                full    = MAESTRO_DIR / f"{base}_FULL.csv"   # bloque sellado (30 días completos)
+                # Bloque ya sellado → saltar (no se vuelve a descargar nunca).
+                if full.exists() and full.stat().st_size > 200:
+                    bstart = bend + timedelta(days=1)
+                    continue
+                # ¿Ya tenemos los 30 días del bloque disponibles (bend ≤ ayer)?
+                es_completo = (q_end == bend)
+                fi, ff = fmt(bstart), fmt(q_end)
+                print(f"  Bloque {fi} → {ff}  [{'completo → sella' if es_completo else 'parcial'}]")
+                try:
+                    csv = await descargar_sabana(page, fi, ff)
+                    n_filas = max(sum(1 for l in csv.splitlines() if l.strip()) - 1, 0)
+                    if n_filas > 0:
+                        dest = full if es_completo else parcial
+                        with open(dest, "w", encoding="latin-1", newline="") as fcsv:
+                            fcsv.write(csv)
+                        if es_completo:
+                            parcial.unlink(missing_ok=True)   # borrar el incompleto al sellar
+                        print(f"    ✓ {dest.name} · {dest.stat().st_size // 1024:,} KB · {n_filas:,} filas")
+                    else:
+                        parcial.unlink(missing_ok=True)       # rango sin datos: sin incompletos
+                        print("    (0 filas en el rango — nada que guardar)")
+                except Exception as e:
+                    print(f"    [AVISO] Falló el bloque {fi}→{ff}: {e}")
+                bstart = bend + timedelta(days=1)
 
-        # ── Respaldo SEMIautomático (si la automática no trajo datos) ──────────
-        if not recetas_ok:
-            print(f"  📋 RESPALDO MANUAL: selecciona AYER ({fecha_inicio}) en el CALENDARIO")
-            print("     de 'Fecha Inicio' y 'Fecha Término' (CLIC en el día — no escribas")
-            print("     la fecha a mano) y pulsa 'Buscar'.")
-            print("     Esperando la descarga (hasta 3 min)... si hoy no la necesitas, ignóralo.")
-            try:
-                async with page.expect_download(timeout=180_000) as dl_info:
-                    pass  # la descarga la dispara el usuario al pulsar Buscar
-                dl   = await dl_info.value
-                dest = MAESTRO_DIR / dl.suggested_filename
-                await dl.save_as(dest)
-                n_filas = _contar_filas(dest)
-                if n_filas <= 0:
-                    dest.unlink(missing_ok=True)
-                    print("  [AVISO] Informe VACÍO (0 filas) — reselecciona la fecha en el calendario. Archivo descartado.")
-                else:
-                    print(f"  ✓ {dl.suggested_filename}  ({dest.stat().st_size // 1024:,} KB · {n_filas:,} filas)")
-            except Exception:
-                print("  [AVISO] Sin descarga de recetas. Continúo con el stock.")
+        if solo_recetas:
+            print("\n[solo-recetas] Modo prueba: omito stock, maestro y publicación.")
+            await browser.close()
+            return
 
         # ════════════════════════════════════════════════════════════════════
         #  PASO 3 — ABASTECIMIENTO  (volver al dashboard → entrar → stock)
@@ -355,7 +369,9 @@ async def main():
         # ── PASO 5 — PUBLICAR EN GITHUB ───────────────────────────────────────
         git_dir  = MAESTRO_DIR / ".git"
         publicar = MAESTRO_DIR / "PUBLICAR_DATOS.bat"
-        if git_dir.exists() and publicar.exists():
+        if no_publicar:
+            print("\n[5/5] --no-publicar: omito la publicación en GitHub (modo prueba).")
+        elif git_dir.exists() and publicar.exists():
             print("\n[5/5] Publicando datos en GitHub...")
             pub = subprocess.run(
                 ["cmd", "/c", str(publicar)],
