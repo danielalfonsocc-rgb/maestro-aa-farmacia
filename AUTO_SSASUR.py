@@ -42,7 +42,12 @@ Modos (CLI):
                        Opcional: --fecha dd/mm/yyyy (un día) o
                        --desde dd/mm/yyyy --hasta dd/mm/yyyy (rango); --debug-gt
                        vuelca el formulario [DESCUBRIR …] y guarda screenshots.
+  · --no-rch           no actualiza el registro ISP de recetas cheque
   · --no-publicar      no publica en GitHub (debug)
+
+El registro ISP de recetas cheque (recetas_cheque.py) corre como PASO 5d: usa
+la MISMA sábana ya descargada para agregar los folios cheque nuevos de Farmacia
+AT Abierta al formulario ISP del mes vigente (carpeta de la QF, fuera del repo).
 ═══════════════════════════════════════════════════════════════
 """
 import asyncio
@@ -497,6 +502,8 @@ async def main():
     gt_mode  = ("--gt" in sys.argv) or ("--solo-gt" in sys.argv)
     # En corrida completa, saltar GT con --no-gt (si ya se corrió hoy por separado).
     no_gt    = "--no-gt" in sys.argv
+    # Saltar el registro ISP de recetas cheque con --no-rch.
+    no_rch   = "--no-rch" in sys.argv
     debug_gt = "--debug-gt" in sys.argv        # volcados [DESCUBRIR …] + screenshots
     _fecha   = _arg_val("--fecha")             # atajo: mismo día en desde/hasta
     today = date.today()
@@ -529,7 +536,7 @@ async def main():
         page = await context.new_page()
 
         # ── PASO 1 — DETECTAR LOGIN ────────────────────────────────────────────
-        print("\n[1/5] Logéate en SSASUR (tienes 5 minutos)...")
+        print("\n[1/6] Logéate en SSASUR (tienes 5 minutos)...")
         await page.goto(DASHBOARD_URL)
         try:
             await page.wait_for_selector(
@@ -594,7 +601,7 @@ async def main():
         #   · un rango sin datos no deja archivo (se borra el incompleto).
         # El maestro lee todos los informe_completo_recetas*.csv y deduplica por
         # ID Receta Detalle, así que los bloques (rangos sin solape) no doble-cuentan.
-        print("\n[2/5] Módulo RECETA — informe completo por bloques de 30 días...")
+        print("\n[2/6] Módulo RECETA — informe completo por bloques de 30 días...")
         await entrar_receta(page)
 
         await page.goto(RECETA_INFORME)
@@ -740,6 +747,18 @@ async def main():
             subprocess.run(
                 [sys.executable, str(cruce), str(gt_dest),
                  "--salida", str(out_gt), "--generar"],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
+
+        # ── PASO 5d — REGISTRO ISP RECETAS CHEQUE ────────────────────────────
+        # Consume la MISMA sábana ya descargada: filtra recetas cheque AT Abierta
+        # y agrega los folios nuevos al formulario ISP del mes vigente. El
+        # formulario vive fuera del repo (carpeta de la QF) → no se publica.
+        rch_py = MAESTRO_DIR / "recetas_cheque.py"
+        if not no_rch and rch_py.exists():
+            print(f"\n[5d/6] Registro ISP de recetas cheque (Farmacia AT Abierta)...")
+            subprocess.run(
+                [sys.executable, str(rch_py), "--no-pause"],
                 cwd=str(MAESTRO_DIR), env=env_utf8,
             )
 
