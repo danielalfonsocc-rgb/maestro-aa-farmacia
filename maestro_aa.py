@@ -15,7 +15,7 @@ FLUJO (secciones numeradas en el código):
   16.   Auditoría de homologación de nombres
   17.   Comparación de stocks por bodega del hospital
   18.   Resumen ejecutivo KPIs
-  19.   Escritura Excel → Consolidado_AA_MAESTRO.xlsx (16 hojas)
+  19.   Escritura Excel → Consolidado_AA_MAESTRO.xlsx (17 hojas)
   20.   Resumen Semanal operativo → Resumen_Pedidos_AA.xlsx (4 hojas)
 
 ARCHIVOS DE ENTRADA (en la misma carpeta):
@@ -24,7 +24,7 @@ ARCHIVOS DE ENTRADA (en la misma carpeta):
   Ambos se descargan con AUTO_SSASUR.bat → AUTO_SSASUR.py (Playwright)
 
 ARCHIVOS DE SALIDA:
-  - Consolidado_AA_MAESTRO.xlsx     → leído por la app Streamlit (16 hojas)
+  - Consolidado_AA_MAESTRO.xlsx     → leído por la app Streamlit (17 hojas)
   - Resumen_Pedidos_AA.xlsx         → Excel operativo simplificado (4 hojas)
 
 GLOSARIO:
@@ -43,7 +43,8 @@ from datetime import datetime, timedelta
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from aa_colors import CRIT_FILL_HEX, crit_fill
+from aa_colors import CRIT_FILL_HEX, crit_fill, crit_hex
+from sgli import calcular_sgli, FACTOR_CARGA_DEFAULT
 
 warnings.filterwarnings('ignore')
 
@@ -1425,11 +1426,11 @@ df_kpis = pd.DataFrame(list(kpis.items()), columns=['Indicador', 'Valor'])
 
 # ═══════════════════════════════════════════════
 # 19. ESCRITURA EXCEL — Consolidado_AA_MAESTRO.xlsx
-#     16 hojas: Stock_AA | Pedido_Farm_Bodega | Pedido_Repos_Bodega |
+#     17 hojas: Stock_AA | Pedido_Farm_Bodega | Pedido_Repos_Bodega |
 #               Faltas_Farmacia_AA | Faltantes_Detalle_AA |
 #               Quiebres_Totales | Tendencia_Semanal |
 #               Dialisis_Pedido_Farm | Dialisis_Pedido_Bod |
-#               Auditoria_Homologacion | Comparacion_Hospital |
+#               SGLI_Estres | Auditoria_Homologacion | Comparacion_Hospital |
 #               KPIs | (más hojas auxiliares)
 # ═══════════════════════════════════════════════
 print("Generando Excel...")
@@ -1507,6 +1508,23 @@ def style_sheet(ws, df, col_widths=None, freeze='A2',
 
     ws.freeze_panes = freeze
     ws.sheet_view.showGridLines = True
+
+# ═══════════════════════════════════════════════
+# 18-bis. SGLI — Reposicion por estres / semana pico (motor compartido sgli.py)
+#   Baseline persistido con Factor_Carga = 1.15 (sin estres extra); la pestana
+#   SGLI de la app recalcula en vivo con su propio slider. Se incluyen TODOS los
+#   meds con CDL>0 (la app filtra los accionables) y se ecoan los inputs
+#   (Stock_Farm/Stock_Bod/CDL) para que el recalculo no dependa de otras hojas.
+# ═══════════════════════════════════════════════
+_sgli_semana = f"S{_semana_mes(HOY)}"
+df_sgli = calcular_sgli(
+    df_ped,
+    factor_carga=FACTOR_CARGA_DEFAULT,
+    semana_pico=_sgli_semana,
+    semana_actual=_sgli_semana,
+    col_crit='Crit_Farm',
+)
+print(f"  Tabla SGLI (estres) : {len(df_sgli):,} meds  ·  baseline FC={FACTOR_CARGA_DEFAULT}  ·  {_sgli_semana}")
 
 with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
 
@@ -1855,6 +1873,33 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
         elif col == 'Criticidad':                  ws16.column_dimensions[ltr].width = 14
         else:                                      ws16.column_dimensions[ltr].width = 18
     ws16.freeze_panes = 'B2'
+
+    # ── 17. SGLI_Estres ───────────────────────────
+    # Reposicion por estres/semana pico (motor sgli.py). Baseline FC=1.15; la
+    # pestana SGLI de la app recalcula en vivo. Color por NIVEL de criticidad
+    # (aa_colors.crit_hex) para que '2-ALTO' (no esta en CRIT_FILL_HEX) tambien
+    # tome el color del semaforo.
+    def color_sgli(row_t, ri):
+        return PatternFill('solid', fgColor=crit_hex(str(getattr(row_t, 'Criticidad', '5-OK'))))
+
+    df_sgli.to_excel(writer, sheet_name='SGLI_Estres', index=False)
+    ws_sgli = writer.sheets['SGLI_Estres']
+    style_sheet(ws_sgli, df_sgli, row_color_fn=color_sgli,
+                header_fill=PatternFill('solid', fgColor='7C2D12'))
+    for ri, row_t in enumerate(df_sgli.itertuples(index=False), 2):
+        if str(getattr(row_t, 'Criticidad', '')) == '1-CRITICO':
+            for ci in range(1, len(df_sgli.columns) + 1):
+                ws_sgli.cell(row=ri, column=ci).font = Font(bold=True, color='FFFFFF',
+                                                            name='Arial', size=11)
+    for ci, col in enumerate(list(df_sgli.columns), 1):
+        ltr = get_column_letter(ci)
+        if   col == 'Medicamento':       ws_sgli.column_dimensions[ltr].width = 52
+        elif col == 'Accion_1_Traspaso': ws_sgli.column_dimensions[ltr].width = 30
+        elif col == 'Accion_2_Externa':  ws_sgli.column_dimensions[ltr].width = 26
+        elif col == 'Criticidad':        ws_sgli.column_dimensions[ltr].width = 13
+        elif col == 'Alerta_Estres':     ws_sgli.column_dimensions[ltr].width = 16
+        else:                            ws_sgli.column_dimensions[ltr].width = 15
+    ws_sgli.freeze_panes = 'B2'
 
 # ═══════════════════════════════════════════════
 # 20. RESUMEN SEMANAL — Resumen_Pedidos_AA.xlsx

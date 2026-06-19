@@ -38,7 +38,8 @@ Modos (CLI):
                        marca ORIGEN y baja el listado de recetas (Excel).
                        Luego corre cruce_gt.py --generar automáticamente: cruza con
                        el histórico, clasifica refrigerados/controlados/pendientes y
-                       genera planillas + letreros por destino en out_gt/.
+                       genera planillas + letreros por destino en
+                       out_gt/<desde>_<hasta>/ (una carpeta por rango, no se pisan).
                        Opcional: --fecha dd/mm/yyyy (un día) o
                        --desde dd/mm/yyyy --hasta dd/mm/yyyy (rango); --debug-gt
                        vuelca el formulario [DESCUBRIR …] y guarda screenshots.
@@ -102,6 +103,16 @@ SELS_EXCEL  = ('button:has-text("Excel")', 'a:has-text("Excel")',
 
 def fmt(d: date) -> str:
     return d.strftime("%d/%m/%Y")
+
+
+def gt_salida(dest: Path) -> Path:
+    """Carpeta de salida del cruce GT, SEPARADA por rango de fechas del reporte.
+    Deriva el slug del nombre del Excel descargado
+    (reporteGestionTerritorial_<desde>_<hasta> → out_gt/<desde>_<hasta>/),
+    para que cada captura tenga su propia carpeta y no pise a las anteriores."""
+    pref = "reporteGestionTerritorial_"
+    slug = dest.stem[len(pref):] if dest.stem.startswith(pref) and len(dest.stem) > len(pref) else dest.stem
+    return MAESTRO_DIR / "out_gt" / slug
 
 
 def _arg_val(flag, default=None):
@@ -569,8 +580,9 @@ async def main():
                 print("═" * 62)
                 # ── Cruce + planillas automático ──────────────────────────────
                 cruce = MAESTRO_DIR / "cruce_gt.py"
-                out_gt = MAESTRO_DIR / "out_gt"
+                out_gt = gt_salida(dest)   # carpeta propia por rango de fechas
                 print(f"\n[GT] Cruzando con histórico y generando planillas...")
+                print(f"     Salida: out_gt/{out_gt.name}/")
                 ret = subprocess.run(
                     [sys.executable, str(cruce), str(dest),
                      "--salida", str(out_gt), "--generar"],
@@ -741,9 +753,9 @@ async def main():
 
         # ── PASO 5c — CRUCE GT + PLANILLAS ───────────────────────────────────
         if gt_dest:
-            print(f"\n[5c/6] Cruce GT + generando planillas...")
+            out_gt = gt_salida(gt_dest)   # carpeta propia por rango de fechas
+            print(f"\n[5c/6] Cruce GT + generando planillas → out_gt/{out_gt.name}/ ...")
             cruce = MAESTRO_DIR / "cruce_gt.py"
-            out_gt = MAESTRO_DIR / "out_gt"
             subprocess.run(
                 [sys.executable, str(cruce), str(gt_dest),
                  "--salida", str(out_gt), "--generar"],

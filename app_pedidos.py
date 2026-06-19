@@ -10,6 +10,7 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 from aa_colors import CRIT_FILL_HEX, crit_fill, crit_nivel, crit_hex
+from sgli import calcular_sgli, to_markdown, FACTOR_CARGA_DEFAULT, UMBRAL_ESTRES
 
 # PDF
 from reportlab.lib.pagesizes import letter, landscape
@@ -346,10 +347,16 @@ def cargar_datos():
             dial_bod = pd.read_excel(XLS_MAESTRO, sheet_name='Dialisis_Pedido_Bod', engine='openpyxl')
         except Exception:
             dial_bod = pd.DataFrame()
+        # SGLI (reposicion por estres / semana pico) — opcional para compatibilidad
+        try:
+            sgli = pd.read_excel(XLS_MAESTRO, sheet_name='SGLI_Estres', engine='openpyxl')
+        except Exception:
+            sgli = pd.DataFrame()
         mtime    = datetime.fromtimestamp(os.path.getmtime(XLS_MAESTRO))
         return {'stock': stock, 'farm': farm, 'bod': bod,
                 'falt': falt, 'falt_det': falt_det,
-                'dial_farm': dial_farm, 'dial_bod': dial_bod, 'mtime': mtime}
+                'dial_farm': dial_farm, 'dial_bod': dial_bod,
+                'sgli': sgli, 'mtime': mtime}
     except Exception as e:
         st.error(f"Error cargando datos: {e}")
         return None
@@ -405,6 +412,7 @@ df_falt     = datos['falt']
 df_falt_det = datos['falt_det']
 df_dial_farm = datos.get('dial_farm', pd.DataFrame())
 df_dial_bod  = datos.get('dial_bod',  pd.DataFrame())
+df_sgli_base = datos.get('sgli',      pd.DataFrame())
 todos_meds = sorted(df_stock['Medicamento'].dropna().unique().tolist())
 
 if 'pedido' not in st.session_state:
@@ -439,11 +447,12 @@ st.markdown(f"""
 # ═══════════════════════════════════════════════════════════════════════
 # PESTAÑAS PRINCIPALES
 # ═══════════════════════════════════════════════════════════════════════
-tab_pedido_bod, tab_pedido_farm, tab_dialisis, tab_faltantes, tab_auditoria, tab_feedback = st.tabs([
+tab_pedido_bod, tab_pedido_farm, tab_dialisis, tab_faltantes, tab_sgli, tab_auditoria, tab_feedback = st.tabs([
     "📝  Pedido a Bodega AA",
     "🏭  Pedido a Bodega Fármacos",
     "💉  Diálisis",
     "🚨  Faltantes",
+    "🚦  SGLI · Estrés",
     "🔬  Auditoría de prescripción",
     "💬  Diagnóstico y Sugerencias",
 ])
@@ -1190,6 +1199,183 @@ with tab_faltantes:
             f"Sin Respaldo: {n_sin} · Con Respaldo Bod. Farm.: {n_con} · "
             f"Datos al {datos['mtime'].strftime('%d/%m/%Y %H:%M')}."
         )
+with tab_sgli:
+    st.markdown("## 🚦 SGLI · Reposición por estrés / semana pico")
+    st.markdown(
+        "Motor de **Gestión Logística (SGLI)**: calcula el nivel objetivo de "
+        "Farmacia AA bajo un escenario de **estrés de demanda** y decide el "
+        "traspaso desde Bodega AA o la compra urgente. Mueve el **factor de "
+        "carga** para simular *qué pasa si* la demanda se intensifica."
+    )
+
+    if df_sgli_base is None or df_sgli_base.empty:
+        st.info(
+            "La hoja **SGLI_Estres** aún no está en el Consolidado. Ejecuta "
+            "`ACTUALIZAR_DATOS.bat` (o `py maestro_aa.py`) para generarla y vuelve a recargar."
+        )
+    else:
+        with st.expander("ℹ️ Cómo se calcula"):
+            st.markdown(
+                "- **IR** (días de reposición) = `mín(5, ⌊5 / Factor_Carga⌋)` — nunca supera 5.\n"
+                "- **Demanda** = `IR × CDL × Factor_Carga`  ·  **Nivel Objetivo (T)** = `Demanda × 1.25`.\n"
+                "- **Déficit** = `máx(0, T − Stock Farmacia)`.\n"
+                "- **Decisión:** si hay déficit, primero se **traspasa desde Bodega AA** lo "
+                "disponible y el resto va a **compra urgente**.\n"
+                "- **Alerta de estrés**: se activa cuando la *semana actual* coincide con la "
+                "*semana pico* **y** el Factor_Carga supera 1.15 (configuración global: aplica "
+                "a todos los medicamentos)."
+            )
+
+        c1, c2, c3 = st.columns([2, 1.4, 1.4])
+        with c1:
+            factor = st.slider(
+                "Factor de carga (estrés)", min_value=1.00, max_value=2.00,
+                value=float(FACTOR_CARGA_DEFAULT), step=0.05,
+                help="1.15 = sin estrés extra (baseline). Súbelo para simular mayor demanda.",
+            )
+        with c2:
+            _opts_sp = ['S1', 'S2', 'S3', 'S4']
+            semana_pico_sel = st.selectbox(
+                "Semana pico de la campaña", _opts_sp,
+                index=min(semana, 4) - 1,
+                help="Semana del mes con mayor demanda esperada.",
+            )
+        with c3:
+            solo_acc = st.toggle("Solo con déficit", value=True,
+                                 help="Oculta los medicamentos sin déficit (Déficit = 0).")
+
+        df_calc = calcular_sgli(
+            df_sgli_base, factor_carga=factor, semana_pico=semana_pico_sel,
+            semana_actual=f"S{semana}",
+            col_crit='Criticidad', col_farm='Stock_Farm', col_bod='Stock_Bod',
+            col_cdl='CDL', col_sp_hist='Semana_Pico_Hist', col_fc_hist='Factor_Carga_Hist',
+        )
+
+        _def = pd.to_numeric(df_calc['Deficit'],   errors='coerce').fillna(0)
+        _bod = pd.to_numeric(df_calc['Stock_Bod'], errors='coerce').fillna(0)
+        _mask = _def > 0
+        ir_val       = int(df_calc['Dias_Reposicion_IR'].iloc[0]) if len(df_calc) else 0
+        n_def        = int(_mask.sum())
+        traspaso_tot = int(np.minimum(_def, _bod)[_mask].sum())
+        compra_tot   = int(np.maximum(_def - _bod, 0)[_mask].sum())
+        alerta_on    = bool((df_calc['Alerta_Estres'] != '').any())
+
+        if alerta_on:
+            st.error(
+                f"🔴 **[ALERTA_ESTRES]** activa — semana actual **S{semana}** = semana pico "
+                f"**{semana_pico_sel}** y Factor_Carga **{factor:.2f}** > {UMBRAL_ESTRES:.2f}."
+            )
+        else:
+            st.success(
+                f"🟢 Sin alerta de estrés (S{semana} vs pico {semana_pico_sel} · "
+                f"Factor {factor:.2f}). Súbelo sobre {UMBRAL_ESTRES:.2f} en la semana pico para activarla."
+            )
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Días reposición (IR)", ir_val)
+        m2.metric("Con déficit", n_def)
+        m3.metric("A traspasar (ud)", f"{traspaso_tot:,}".replace(",", "."))
+        m4.metric("Compra urgente (ud)", f"{compra_tot:,}".replace(",", "."))
+
+        df_show = df_calc[_mask].reset_index(drop=True) if solo_acc else df_calc
+
+        if len(df_show) == 0:
+            st.info("Ningún medicamento presenta déficit con el factor de carga actual. ✅")
+        else:
+            st.dataframe(
+                estilo_tabla(df_show),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    'Medicamento'        : st.column_config.TextColumn("Medicamento", width="large"),
+                    'Criticidad'         : st.column_config.TextColumn("Criticidad", width="small"),
+                    'Dias_Reposicion_IR' : st.column_config.NumberColumn("Días Rep. (IR)", format="%d"),
+                    'Alerta_Estres'      : st.column_config.TextColumn("Alerta Estrés", width="small"),
+                    'Nivel_Objetivo_T'   : st.column_config.NumberColumn("Nivel Obj. (T)", format="%d"),
+                    'Deficit'            : st.column_config.NumberColumn("Déficit", format="%d"),
+                    'Accion_1_Traspaso'  : st.column_config.TextColumn("Acción 1: Traspaso", width="medium"),
+                    'Accion_2_Externa'   : st.column_config.TextColumn("Acción 2: Externa", width="medium"),
+                    'Stock_Farm'         : st.column_config.NumberColumn("Stock Farm.", format="%d"),
+                    'Stock_Bod'          : st.column_config.NumberColumn("Stock Bod.", format="%d"),
+                    'CDL'                : st.column_config.NumberColumn("CDL", format="%.2f"),
+                    'Semana_Pico_Hist'   : st.column_config.TextColumn("Sem. pico hist.", width="small"),
+                    'Factor_Carga_Hist'  : st.column_config.NumberColumn("Factor hist.", format="%.2f"),
+                },
+                height=min(50 + len(df_show) * 35, 640),
+            )
+
+            def build_sgli_excel():
+                wb = Workbook(); ws = wb.active; ws.title = "SGLI_Estres"
+                hfill = PatternFill('solid', fgColor='7C2D12')
+                hfont = Font(bold=True, color='FFFFFF', name='Arial', size=10)
+                cols = list(df_show.columns)
+                for ci, h in enumerate(cols, 1):
+                    c = ws.cell(row=1, column=ci, value=h)
+                    c.fill = hfill; c.font = hfont
+                    c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                ws.row_dimensions[1].height = 28
+                for ri, (_, row) in enumerate(df_show.iterrows(), 2):
+                    crit = str(row.get('Criticidad', '5-OK'))
+                    fill = PatternFill('solid', fgColor=crit_hex(crit))
+                    is_c1 = crit == '1-CRITICO'
+                    for ci, col in enumerate(cols, 1):
+                        v = row.get(col, '')
+                        v = '' if pd.isna(v) else v
+                        c = ws.cell(row=ri, column=ci, value=v)
+                        c.fill = fill
+                        c.font = Font(name='Arial', size=10, bold=is_c1,
+                                      color='FFFFFF' if is_c1 else '000000')
+                        c.alignment = Alignment(vertical='center',
+                                                wrap_text=(col in ('Medicamento', 'Accion_1_Traspaso',
+                                                                   'Accion_2_Externa')))
+                for ci, col in enumerate(cols, 1):
+                    ltr = get_column_letter(ci)
+                    if   col == 'Medicamento':       ws.column_dimensions[ltr].width = 50
+                    elif col == 'Accion_1_Traspaso': ws.column_dimensions[ltr].width = 30
+                    elif col == 'Accion_2_Externa':  ws.column_dimensions[ltr].width = 26
+                    else:                            ws.column_dimensions[ltr].width = 15
+                ws.freeze_panes = 'B2'
+                buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+                return buf
+
+            d1, d2, d3 = st.columns([2, 2, 2])
+            with d1:
+                st.download_button(
+                    "📥 Excel", data=build_sgli_excel(),
+                    file_name=f"SGLI_Estres_{hoy.strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary", use_container_width=True,
+                )
+            with d2:
+                _cols_pdf_sgli = [
+                    {'name': 'Medicamento',        'label': 'Medicamento',     'width': 5.5, 'align': 'left'},
+                    {'name': 'Criticidad',         'label': 'Criticidad',      'width': 2.2, 'align': 'center'},
+                    {'name': 'Dias_Reposicion_IR', 'label': 'IR (d)',          'width': 1.6, 'align': 'center'},
+                    {'name': 'Alerta_Estres',      'label': 'Alerta',          'width': 2.4, 'align': 'center'},
+                    {'name': 'Nivel_Objetivo_T',   'label': 'Nivel Obj. (T)',  'width': 1.9, 'align': 'center'},
+                    {'name': 'Deficit',            'label': 'Deficit',         'width': 1.6, 'align': 'center'},
+                    {'name': 'Accion_1_Traspaso',  'label': 'Accion 1: Traspaso', 'width': 3.3, 'align': 'left'},
+                    {'name': 'Accion_2_Externa',   'label': 'Accion 2: Externa',  'width': 3.3, 'align': 'left'},
+                ]
+                st.download_button(
+                    "📄 PDF Carta",
+                    data=build_pdf(
+                        f"SGLI · REPOSICIÓN POR ESTRÉS  |  S{semana} · {hoy.strftime('%d/%m/%Y')}",
+                        f"Factor de carga: {factor:.2f}  ·  Semana pico: {semana_pico_sel}  ·  "
+                        f"IR: {ir_val} d  ·  {len(df_show)} medicamentos",
+                        df_show, _cols_pdf_sgli, orientacion='landscape',
+                    ),
+                    file_name=f"SGLI_Estres_{hoy.strftime('%Y%m%d_%H%M')}.pdf",
+                    mime="application/pdf", use_container_width=True,
+                )
+            with d3:
+                st.caption(
+                    f"{len(df_show)} medicamentos · Factor {factor:.2f} · "
+                    f"datos al {datos['mtime'].strftime('%d/%m/%Y %H:%M')}"
+                )
+
+            with st.expander("📋 Ver como tabla Markdown (Formato de Salida Obligatorio)"):
+                st.code(to_markdown(df_show), language="markdown")
+
 with tab_auditoria:
     import json as _json_aud
     st.markdown("## 🔬 Auditoría de prescripción")
