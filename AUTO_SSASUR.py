@@ -29,6 +29,20 @@ NOTA TÉCNICA — cómo navega SSASUR (verificado por inspección del DOM):
     manual: 30.582 filas con la sesión correcta, 0 sin ella.)
   · El reporte de stock NO requiere firma electrónica; basta elegir
     bodega = TODAS (value 0) y pulsar "Generar XLS".
+
+Modos (CLI):
+  · (sin flags)        corrida completa: recetas + GT + stock + maestro + planillas GT + publicar
+  · --solo-recetas     solo baja recetas y termina
+  · --gt / --solo-gt   GESTIÓN TERRITORIAL: entra por la tarjeta RECETA → Reporte
+                       → Gestión Territorial; define fechas (default: ayer→hoy),
+                       marca ORIGEN y baja el listado de recetas (Excel).
+                       Luego corre cruce_gt.py --generar automáticamente: cruza con
+                       el histórico, clasifica refrigerados/controlados/pendientes y
+                       genera planillas + letreros por destino en out_gt/.
+                       Opcional: --fecha dd/mm/yyyy (un día) o
+                       --desde dd/mm/yyyy --hasta dd/mm/yyyy (rango); --debug-gt
+                       vuelca el formulario [DESCUBRIR …] y guarda screenshots.
+  · --no-publicar      no publica en GitHub (debug)
 ═══════════════════════════════════════════════════════════════
 """
 import asyncio
@@ -57,9 +71,41 @@ BODEGA_TODAS     = "0"    # bodega → "TODAS" (todas las bodegas en un archivo)
 TIMEOUT_LOGIN    = 300_000   # 5 minutos para logarse
 TIMEOUT_DESCARGA = 600_000   # 10 minutos por descarga
 
+# ── GT · Gestión territorial (informe de modalidad de despacho) ────────────────
+# Reporte que alimenta el skill de gestión territorial: el LISTADO de recetas a
+# despachar. Vive DENTRO del módulo RECETA (misma sesión proyecto 629 que la
+# sabana). Flujo en la página: definir fechas → marcar ORIGEN en Origen/Destino →
+# aparece el listado → botón Excel. El .xlsx cae en la carpeta de gestión
+# territorial (NO entra al maestro_aa); el skill lo cruza con el histórico de
+# recetas por día de despacho y cuenta refrigerados/pendientes/controlados.
+GT_DIR = MAESTRO_DIR.parent / "04_Farmacia_Gestion_Territorial"
+# URL real del reporte (confirmada por el usuario). Si no carga el formulario, el
+# script navega por el menú Reporte → Gestión Territorial.
+GESTION_TERRITORIAL_URL = "https://www.ssasur.cl/receta/informes/gestionTerritorial"
+# Campos de fecha del reporte (ids reales confirmados en vivo 18-06-2026, dd/mm/aaaa).
+SEL_FECHA_INI = "fechaInicio"
+SEL_FECHA_FIN = "fechaTermino"
+# Botones (se prueba el primero que exista). AJUSTAR tras la 1ª corrida en vivo
+# leyendo la salida [DESCUBRIR …] que imprime el script.
+SELS_BUSCAR = ('button:has-text("Buscar")', 'a:has-text("Buscar")',
+               'input[type="submit"][value*="Buscar" i]', '#buscar', '#btnBuscar')
+SELS_EXCEL  = ('button:has-text("Excel")', 'a:has-text("Excel")',
+               'button:has-text("XLS")', 'a:has-text("XLS")',
+               '[id*="xls" i]', '[id*="excel" i]', '[class*="excel" i]',
+               'img[src*="excel" i]', 'i.fa-file-excel')
+
 
 def fmt(d: date) -> str:
     return d.strftime("%d/%m/%Y")
+
+
+def _arg_val(flag, default=None):
+    """Devuelve el valor que sigue a un flag CLI (p.ej. `--fecha 17/06/2026`)."""
+    if flag in sys.argv:
+        i = sys.argv.index(flag)
+        if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("--"):
+            return sys.argv[i + 1]
+    return default
 
 
 async def entrar_modulo(page, nombre: str):
@@ -93,6 +139,17 @@ async def descargar(page, dest_dir: Path, accion, etiqueta: str, timeout=TIMEOUT
     return dest
 
 
+async def descargar_como(page, dest_path: Path, accion, timeout=TIMEOUT_DESCARGA):
+    """Como descargar(), pero guarda con un nombre FIJO (dest_path)."""
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    async with page.expect_download(timeout=timeout) as dl_info:
+        await accion()
+    dl = await dl_info.value
+    await dl.save_as(dest_path)
+    print(f"  ✓ {dest_path.name}  ({dest_path.stat().st_size // 1024:,} KB)")
+    return dest_path
+
+
 # ── Entrada CORRECTA al módulo RECETA + descarga del informe sabana ─────────────
 # CLAVE (descubierto por captura HTTP del flujo manual): el informe sabana sale
 # VACÍO (0 filas) si la sesión NO está acuñada para el PROYECTO (629), aunque el
@@ -108,7 +165,15 @@ BLOQUE_DIAS      = 30           # tope del servidor: máx. 30 días por consulta
 
 
 async def entrar_receta(page):
-    """Dashboard → tarjeta RECETA → (modal proyecto) → www.ssasur.cl/receta."""
+    """Dashboard → tarjeta RECETA → (modal proyecto) → www.ssasur.cl/receta.
+    Si ya estamos dentro del módulo receta, vuelve al inicio del módulo sin
+    pasar por el dashboard (evita el timeout del botón RECETA)."""
+    if "www.ssasur.cl/receta" in page.url:
+        await page.goto("https://www.ssasur.cl/receta", wait_until="networkidle")
+        await page.wait_for_timeout(1_000)
+        print(f"  ✓ En módulo receta: {page.url}")
+        return
+
     # Clic en la tarjeta RECETA (texto EXACTO para no pegarle a "RCE - REGISTRO ...").
     try:
         await page.get_by_text("RECETA", exact=True).first.click(timeout=15_000)
@@ -172,6 +237,245 @@ async def descargar_sabana(page, fi: str, ft: str) -> str:
     )
 
 
+# ── GT · Modalidad de despacho (entra por la tarjeta RECETA, igual que la sabana) ─
+async def _dump_formulario(page, etiqueta="form"):
+    """Imprime los <select> (id/name + opciones) y los botones/enlaces visibles.
+    Sirve para DESCUBRIR los selectores/controles reales la 1ª vez en vivo: revisa
+    la salida y ajusta SELS_BUSCAR / SELS_EXCEL (y confirma el control Origen) arriba."""
+    try:
+        info = await page.evaluate(r"""() => {
+          const sels = [...document.querySelectorAll('select')].map(s => ({
+            id: s.id, name: s.name,
+            opts: [...s.options].slice(0, 30).map(o => `${o.value}=${(o.textContent||'').trim()}`)
+          }));
+          const inps = [...document.querySelectorAll('input')]
+            .filter(i => !['button','submit','image','hidden'].includes(i.type))
+            .map(i => ({id: i.id, name: i.name, type: i.type,
+                        value: i.value, ph: i.placeholder || '', checked: i.checked}));
+          const btns = [...document.querySelectorAll('button,a,input[type=button],input[type=submit]')]
+            .map(b => (b.textContent || b.value || '').trim()).filter(Boolean).slice(0, 60);
+          return {sels, inps, btns, url: location.href};
+        }""")
+    except Exception as e:
+        print(f"  [dump] no se pudo inspeccionar: {e}")
+        return
+    print(f"  [DESCUBRIR · {etiqueta}] {info['url']}")
+    for s in info["sels"]:
+        print(f"    <select id='{s['id']}' name='{s['name']}'>  {s['opts']}")
+    for i in info["inps"]:
+        chk = " checked" if i.get("checked") else ""
+        print(f"    <input id='{i['id']}' name='{i['name']}' type='{i['type']}'{chk}> "
+              f"value='{i['value']}' ph='{i['ph']}'")
+    print(f"    botones/enlaces: {info['btns']}")
+
+
+async def _hay_form_gt(page):
+    """Heurística de 'el reporte de gestión territorial cargó': URL del reporte,
+    o un input de fecha, o aparecen las palabras origen/destino en la página."""
+    return await page.evaluate(r"""() => {
+      if (/gestionterritorial/i.test(location.href)) return true;
+      if (document.querySelector('input[type=date]')) return true;
+      const txt = (document.body.innerText || '').toLowerCase();
+      return /origen/.test(txt) && /destino/.test(txt);
+    }""")
+
+
+async def _abrir_reporte_gt(page):
+    """Abre el reporte de gestión territorial dentro de RECETA: prueba el deep-link
+    y, si no aparece el formulario, navega por el menú Reporte → Gestión Territorial
+    (o 'Modalidad de despacho'). Devuelve True si el formulario cargó."""
+    try:
+        await page.goto(GESTION_TERRITORIAL_URL)
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(1_500)
+    except Exception:
+        pass
+    if await _hay_form_gt(page):
+        return True
+    print("  [info] Deep-link sin formulario — navego por el menú Reporte → Gestión Territorial")
+    for sel in ('a:has-text("Reporte")', 'button:has-text("Reporte")',
+                'li:has-text("Reporte")', 'span:has-text("Reporte")'):
+        try:
+            await page.click(sel, timeout=3_000)
+            await page.wait_for_timeout(700)
+            break
+        except Exception:
+            continue
+    for sel in ('a:has-text("Gestión Territorial")', 'a:has-text("Gestion Territorial")',
+                'a:has-text("Modalidad de despacho")', ':text("Gestión Territorial")',
+                ':text("Modalidad de despacho")'):
+        try:
+            await page.click(sel, timeout=3_000)
+            break
+        except Exception:
+            continue
+    await page.wait_for_load_state("networkidle")
+    await page.wait_for_timeout(1_500)
+    return await _hay_form_gt(page)
+
+
+async def _marcar_origen(page):
+    """Marca SIEMPRE 'Origen' en el control Origen/Destino (radio, checkbox, select
+    o pestaña). Devuelve una etiqueta de lo que marcó, o None si no lo encontró."""
+    return await page.evaluate(r"""() => {
+      const isOrigen = s => /origen/i.test(s || '');
+      // 1) radios / checkboxes (por label, value, id o name)
+      for (const r of document.querySelectorAll('input[type=radio], input[type=checkbox]')) {
+        const lbl  = (r.labels && r.labels[0]) ? r.labels[0].textContent : '';
+        const meta = `${lbl} ${r.value || ''} ${r.id || ''} ${r.name || ''}`;
+        if (isOrigen(meta)) {
+          if (!r.checked) r.click();
+          r.dispatchEvent(new Event('change', {bubbles: true}));
+          return 'radio:' + (r.id || r.name || r.value || 'origen');
+        }
+      }
+      // 2) select con opción Origen
+      for (const s of document.querySelectorAll('select')) {
+        const o = [...s.options].find(o => isOrigen(o.textContent));
+        if (o) {
+          s.value = o.value;
+          s.dispatchEvent(new Event('change', {bubbles: true}));
+          return 'select:' + (s.id || s.name || 'origen');
+        }
+      }
+      // 3) botón / pestaña / label con texto Origen
+      for (const b of document.querySelectorAll('button, a, label, [role=tab], .tab, .nav-link')) {
+        if (isOrigen(b.textContent) && b.textContent.trim().length < 30) {
+          b.click();
+          return 'tab:' + b.textContent.trim().slice(0, 20);
+        }
+      }
+      return null;
+    }""")
+
+
+async def _click_primero(page, selectores, etiqueta, force=False):
+    """Clic en el primer selector que exista. Lanza si ninguno aparece."""
+    for sel in selectores:
+        try:
+            await page.click(sel, timeout=4_000, force=force)
+            return
+        except Exception:
+            continue
+    raise RuntimeError(f"No encontré el botón '{etiqueta}' (probé: {selectores})")
+
+
+async def _set_fechas(page, desde, hasta):
+    """Rellena fechaInicio/fechaTermino por su id real (gestionTerritorial),
+    disparando input/change/blur/keyup para que el datepicker tome el valor. Cae a
+    una heurística por nombre si los ids no existen. Fechas en dd/mm/yyyy."""
+    try:
+        await page.evaluate(r"""({ini, fin, desde, hasta}) => {
+          const fire = el => ['input','change','blur','keyup']
+              .forEach(ev => el.dispatchEvent(new Event(ev, {bubbles: true})));
+          const setById = (id, v) => {
+            const el = document.getElementById(id);
+            if (el && v) { el.value = v; fire(el); return true; }
+            return false;
+          };
+          let ok = setById(ini, desde);
+          ok = setById(fin, hasta) || ok;
+          if (!ok) {   // fallback: por nombre/placeholder
+            const ins = [...document.querySelectorAll('input')].filter(i => {
+              const k = ((i.name||'') + (i.id||'') + (i.placeholder||'')).toLowerCase();
+              return i.type !== 'hidden' && (i.type === 'date' || /fecha|dia/.test(k));
+            });
+            if (ins[0] && desde) { ins[0].value = desde; fire(ins[0]); }
+            if (ins[1] && hasta) { ins[1].value = hasta; fire(ins[1]); }
+          }
+        }""", {"ini": SEL_FECHA_INI, "fin": SEL_FECHA_FIN, "desde": desde, "hasta": hasta})
+    except Exception:
+        pass
+
+
+async def _filas_resultado(page):
+    """Heurística de cuántos pacientes trae el resultado: filas de la tabla más
+    grande. 0 si hay mensaje de 'sin datos'; None si no hay tabla (desconocido)."""
+    return await page.evaluate(r"""() => {
+      const body = (document.body.innerText || '').toLowerCase();
+      if (/no se encontraron|sin datos|no hay (registros|datos|resultados)|0 registros/.test(body)) return 0;
+      const tablas = [...document.querySelectorAll('table')];
+      if (!tablas.length) return null;
+      let max = 0;
+      for (const t of tablas) max = Math.max(max, t.querySelectorAll('tbody tr').length);
+      return max;
+    }""")
+
+
+def _contar_filas_xlsx(path):
+    """Nº de filas de datos del Excel descargado (descuenta título + encabezado).
+    Best-effort; -1 si no se puede leer."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, read_only=True)
+        ws = wb.worksheets[0]
+        n = sum(1 for r in ws.iter_rows(values_only=True) if any(c is not None for c in r))
+        wb.close()
+        return max(n - 2, 0)   # fila de título + fila de encabezado
+    except Exception:
+        return -1
+
+
+async def paso_gt(page, desde=None, hasta=None, debug=False):
+    """RECETA → Reporte → Gestión Territorial (informe de modalidad de despacho).
+    Define las fechas, marca SIEMPRE 'Origen' en Origen/Destino, espera el listado
+    de recetas y baja el Excel a GT_DIR. Devuelve (archivo|None, n_filas):
+    n = 0 → sin recetas (no descarga); n = -1 → error. `debug` imprime los volcados
+    [DESCUBRIR …] y guarda screenshots para inspeccionar el formulario."""
+    GT_DIR.mkdir(parents=True, exist_ok=True)
+    print("\n[GT] Módulo RECETA — Reporte de gestión territorial (modalidad de despacho)")
+    await entrar_receta(page)
+    if not await _abrir_reporte_gt(page):
+        print("  [ERROR] No cargó el formulario de gestión territorial.")
+        await _dump_formulario(page, "gt-fallo")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_gt.png"))
+        return (None, -1)
+    if debug:
+        await _dump_formulario(page, "gestion-territorial")
+
+    # 1) Fechas (solo si se pasaron; si no, se respeta el default del formulario).
+    if desde or hasta:
+        await _set_fechas(page, desde or hasta, hasta or desde)
+        print(f"  Fechas: {desde or hasta} → {hasta or desde}")
+        await page.wait_for_timeout(800)
+
+    # 2) Origen/Destino → SIEMPRE Origen (radio tipoEstablecimiento=0).
+    marca = await _marcar_origen(page)
+    print(f"  Origen/Destino → ORIGEN ({marca})" if marca
+          else "  [AVISO] No encontré el control Origen/Destino.")
+    await page.wait_for_timeout(800)
+
+    # 3) Buscar y esperar el listado (DataTable tablaGestionTerritorial).
+    try:
+        await _click_primero(page, SELS_BUSCAR, "Buscar")
+    except Exception:
+        pass   # por si el listado cargara solo al marcar origen
+    await page.wait_for_load_state("networkidle")
+    await page.wait_for_timeout(2_500)
+    if debug:
+        await _dump_formulario(page, "post-buscar")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_gt.png"))
+
+    n = await _filas_resultado(page)
+    if n == 0:
+        print("  (sin recetas en el listado — no hay despacho para esas fechas)")
+        return (None, 0)
+
+    # 4) Excel (la firma electrónica NO es necesaria para este reporte).
+    d = (desde or hasta or "").replace("/", "-")
+    h = (hasta or "").replace("/", "-")
+    suf = (f"_{d}" + (f"_{h}" if h and h != d else "")) if d else ""
+    dest = GT_DIR / f"reporteGestionTerritorial{suf}.xlsx"
+    try:
+        await descargar_como(page, dest,
+                             lambda: _click_primero(page, SELS_EXCEL, "Excel", force=True))
+    except Exception as e:
+        print(f"  [ERROR] No se pudo bajar el Excel: {e}")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_gt.png"))
+        return (None, -1)
+    return (dest, _contar_filas_xlsx(dest))
+
+
 async def main():
     # ── Verificar Playwright ───────────────────────────────────────────────────
     try:
@@ -189,9 +493,17 @@ async def main():
     solo_recetas = "--solo-recetas" in sys.argv
     # No publicar en GitHub al final (útil para corridas de prueba/debug).
     no_publicar  = "--no-publicar" in sys.argv
-
+    # Modo GT exclusivo: solo gestión territorial y termina (sin sábana/stock/maestro).
+    gt_mode  = ("--gt" in sys.argv) or ("--solo-gt" in sys.argv)
+    # En corrida completa, saltar GT con --no-gt (si ya se corrió hoy por separado).
+    no_gt    = "--no-gt" in sys.argv
+    debug_gt = "--debug-gt" in sys.argv        # volcados [DESCUBRIR …] + screenshots
+    _fecha   = _arg_val("--fecha")             # atajo: mismo día en desde/hasta
     today = date.today()
     ayer  = today - timedelta(days=1)
+    # Default GT: ayer → hoy (siempre cubre el despacho del día anterior y el actual)
+    desde_gt = _arg_val("--desde", _fecha or fmt(ayer))
+    hasta_gt = _arg_val("--hasta", _fecha or fmt(today))
 
     print()
     print("═" * 62)
@@ -231,6 +543,44 @@ async def main():
             )
         await context.storage_state(path=str(SESSION_FILE))
         print("  ✓ Sesión detectada")
+
+        # ── MODO GT — modalidad de despacho (gestión territorial) ───────────────
+        # Independiente del maestro: baja el/los Excel de despacho por
+        # establecimiento de destino y termina. Uso:
+        #   py AUTO_SSASUR.py --gt                  (todos los destinos)
+        #   py AUTO_SSASUR.py --gt --estab FREIRE   (solo ese destino)
+        #   py AUTO_SSASUR.py --gt --fecha 17/06/2026
+        if gt_mode:
+            dest, n = await paso_gt(page, desde_gt, hasta_gt, debug_gt)
+            await browser.close()
+            print("\n" + "═" * 62)
+            print("  GT · gestión territorial (modalidad de despacho) — resumen")
+            if dest:
+                cnt = f"{n} recetas" if isinstance(n, int) and n >= 0 else "recetas ?"
+                print(f"    ✓ {dest.name}  ({cnt})")
+                print(f"  Carpeta: {GT_DIR}")
+                print("═" * 62)
+                # ── Cruce + planillas automático ──────────────────────────────
+                cruce = MAESTRO_DIR / "cruce_gt.py"
+                out_gt = MAESTRO_DIR / "out_gt"
+                print(f"\n[GT] Cruzando con histórico y generando planillas...")
+                ret = subprocess.run(
+                    [sys.executable, str(cruce), str(dest),
+                     "--salida", str(out_gt), "--generar"],
+                    env={**dict(__import__("os").environ),
+                         "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                )
+                if ret.returncode != 0:
+                    print(f"  [aviso] cruce_gt.py terminó con código {ret.returncode}")
+            elif n == 0:
+                print("    · Sin recetas en el listado — no hay despacho para esas fechas.")
+                print(f"  Carpeta: {GT_DIR}")
+                print("═" * 62)
+            else:
+                print("    [ERROR] No se generó el Excel — revisa debug_gt.png y el dump [DESCUBRIR].")
+                print(f"  Carpeta: {GT_DIR}")
+                print("═" * 62)
+            return
 
         # ════════════════════════════════════════════════════════════════════
         #  PASO 2 — RECETA  (entrada correcta por la tarjeta → informe sabana)
@@ -293,9 +643,25 @@ async def main():
             return
 
         # ════════════════════════════════════════════════════════════════════
-        #  PASO 3 — ABASTECIMIENTO  (volver al dashboard → entrar → stock)
+        #  PASO 3 — GT  (gestión territorial — mismo módulo RECETA, sesión 629)
         # ════════════════════════════════════════════════════════════════════
-        print("\n[3/5] Módulo ABASTECIMIENTO...")
+        gt_dest = None   # path del xlsx descargado; None si se omite o falla
+        if no_gt:
+            print("\n[3/6] GT — omitido (--no-gt).")
+        else:
+            print(f"\n[3/6] GT — Gestión Territorial ({desde_gt} → {hasta_gt})...")
+            gt_dest, n_gt = await paso_gt(page, desde_gt, hasta_gt, debug_gt)
+            if gt_dest:
+                print(f"  ✓ {gt_dest.name}  ({n_gt} recetas)")
+            elif n_gt == 0:
+                print("  · Sin recetas GT para ese período.")
+            else:
+                print("  [AVISO] No se generó el Excel GT — continúo con el resto.")
+
+        # ════════════════════════════════════════════════════════════════════
+        #  PASO 4 — ABASTECIMIENTO  (volver al dashboard → entrar → stock)
+        # ════════════════════════════════════════════════════════════════════
+        print("\n[4/6] Módulo ABASTECIMIENTO...")
         await page.goto(DASHBOARD_URL)
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(1_500)
@@ -344,7 +710,7 @@ async def main():
         await browser.close()
 
     # ── PASO 4 — MAESTRO AA ────────────────────────────────────────────────────
-    print("\n[4/5] Actualizando Maestro AA...")
+    print("\n[5/6] Actualizando Maestro AA...")
     env_utf8 = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     result = subprocess.run(
         [sys.executable, str(MAESTRO_DIR / "maestro_aa.py")],
@@ -360,19 +726,30 @@ async def main():
         print("  → Resumen_Pedidos_AA.xlsx       actualizado")
         print("═" * 62)
 
-        # ── PASO 4b — AUDITORÍA DE PRESCRIPCIÓN (para la pestaña en la nube) ──
+        # ── PASO 5b — AUDITORÍA DE PRESCRIPCIÓN ──────────────────────────────
         audit_py = MAESTRO_DIR / "auditoria_prescripcion.py"
         if audit_py.exists():
             print("\n  Generando auditoría de prescripción...")
             subprocess.run([sys.executable, str(audit_py)], cwd=str(MAESTRO_DIR), env=env_utf8)
 
-        # ── PASO 5 — PUBLICAR EN GITHUB ───────────────────────────────────────
+        # ── PASO 5c — CRUCE GT + PLANILLAS ───────────────────────────────────
+        if gt_dest:
+            print(f"\n[5c/6] Cruce GT + generando planillas...")
+            cruce = MAESTRO_DIR / "cruce_gt.py"
+            out_gt = MAESTRO_DIR / "out_gt"
+            subprocess.run(
+                [sys.executable, str(cruce), str(gt_dest),
+                 "--salida", str(out_gt), "--generar"],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
+
+        # ── PASO 6 — PUBLICAR EN GITHUB ───────────────────────────────────────
         git_dir  = MAESTRO_DIR / ".git"
         publicar = MAESTRO_DIR / "PUBLICAR_DATOS.bat"
         if no_publicar:
-            print("\n[5/5] --no-publicar: omito la publicación en GitHub (modo prueba).")
+            print("\n[6/6] --no-publicar: omito la publicación en GitHub (modo prueba).")
         elif git_dir.exists() and publicar.exists():
-            print("\n[5/5] Publicando datos en GitHub...")
+            print("\n[6/6] Publicando datos en GitHub...")
             pub = subprocess.run(
                 ["cmd", "/c", str(publicar)],
                 cwd=str(MAESTRO_DIR),
@@ -380,7 +757,7 @@ async def main():
             if pub.returncode != 0:
                 print("  [AVISO] Publicación falló — ejecuta PUBLICAR_DATOS.bat manualmente.")
         else:
-            print("\n[5/5] GitHub no configurado — omitiendo publicación.")
+            print("\n[6/6] GitHub no configurado — omitiendo publicación.")
             print("      Ejecuta CONFIGURAR_GITHUB.bat para activarlo.")
     else:
         print("  [ERROR] maestro_aa.py falló — revisa los mensajes arriba")
