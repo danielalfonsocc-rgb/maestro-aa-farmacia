@@ -9,8 +9,9 @@ from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
-from aa_colors import CRIT_FILL_HEX, crit_fill, crit_nivel, crit_hex
-from sgli import calcular_sgli, to_markdown, FACTOR_CARGA_DEFAULT, UMBRAL_ESTRES
+from aa_colors import CRIT_FILL_HEX, crit_fill, crit_nivel, crit_hex, soften, darken, text_on
+from sgli import calcular_sgli, to_markdown, FACTOR_CARGA_DEFAULT
+from reposicion_dias_habiles import calcular_reposicion, cargar_feriados
 
 # PDF
 from reportlab.lib.pagesizes import letter, landscape
@@ -240,7 +241,7 @@ def build_pdf(titulo, subtitulo, df_data, col_config, orientacion='landscape'):
                                   fontSize=7.5, leading=9, wordWrap='CJK')
     style_hdr    = ParagraphStyle('hdr', parent=styles['Normal'],
                                   fontSize=8, fontName='Helvetica-Bold',
-                                  textColor=colors.white, alignment=TA_CENTER)
+                                  textColor=colors.HexColor('#' + darken('1F4E78')), alignment=TA_CENTER)
 
     # Columnas de datos + columna SOLICITADO al final
     all_cols    = col_config + [{'name': '_solicitado', 'label': 'Solicitado',
@@ -250,9 +251,9 @@ def build_pdf(titulo, subtitulo, df_data, col_config, orientacion='landscape'):
     # Cabecera
     header_row  = [Paragraph(c['label'], style_hdr) for c in all_cols]
 
-    # Filas 1-CRITICO: texto blanco/negrita para que se lea sobre el rojo fuerte B71C1C
+    # Filas 1-CRITICO: texto vino oscuro/negrita sobre el rosa pastel (tinta-economico)
     style_cell_critico = ParagraphStyle('cel_crit', parent=style_cell,
-                                         textColor=colors.white, fontName='Helvetica-Bold')
+                                         textColor=colors.HexColor('#7F1D1D'), fontName='Helvetica-Bold')
 
     data_rows = []
     row_crits = []
@@ -275,13 +276,13 @@ def build_pdf(titulo, subtitulo, df_data, col_config, orientacion='landscape'):
     # Estilos de tabla
     t_style = [
         # Cabecera
-        ('BACKGROUND',  (0,0), (-1,0), colors.HexColor('#1F4E78')),
-        ('TEXTCOLOR',   (0,0), (-1,0), colors.white),
+        ('BACKGROUND',  (0,0), (-1,0), colors.HexColor('#' + soften('1F4E78'))),
+        ('TEXTCOLOR',   (0,0), (-1,0), colors.HexColor('#' + darken('1F4E78'))),
         ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
         ('FONTSIZE',    (0,0), (-1,0), 8),
         ('ALIGN',       (0,0), (-1,0), 'CENTER'),
         ('VALIGN',      (0,0), (-1,-1), 'MIDDLE'),
-        ('ROWBACKGROUND',(0,0),(-1,0), colors.HexColor('#1F4E78')),
+        ('ROWBACKGROUND',(0,0),(-1,0), colors.HexColor('#' + soften('1F4E78'))),
         # Bordes
         ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#CCCCCC')),
         ('LINEBELOW',   (0,0), (-1,0),  0.8, colors.HexColor('#AAAAAA')),
@@ -447,12 +448,13 @@ st.markdown(f"""
 # ═══════════════════════════════════════════════════════════════════════
 # PESTAÑAS PRINCIPALES
 # ═══════════════════════════════════════════════════════════════════════
-tab_pedido_bod, tab_pedido_farm, tab_dialisis, tab_faltantes, tab_sgli, tab_auditoria, tab_feedback = st.tabs([
+tab_pedido_bod, tab_pedido_farm, tab_dialisis, tab_faltantes, tab_sgli, tab_reposicion, tab_auditoria, tab_feedback = st.tabs([
     "📝  Pedido a Bodega AA",
     "🏭  Pedido a Bodega Fármacos",
     "💉  Diálisis",
     "🚨  Faltantes",
-    "🚦  SGLI · Estrés",
+    "🚦  SGLI · Capacidad",
+    "📅  Reposición (días hábiles)",
     "🔬  Auditoría de prescripción",
     "💬  Diagnóstico y Sugerencias",
 ])
@@ -565,8 +567,8 @@ with tab_pedido_bod:
 
             # Fila 1 — Título
             ws['A1'] = f'PEDIDO FARMACIA AA → BODEGA AA   |   S{semana}  {hoy.strftime("%d/%m/%Y")}'
-            ws['A1'].fill = PatternFill('solid', fgColor='1A237E')
-            ws['A1'].font = Font(bold=True, color='FFFFFF', name='Arial', size=13)
+            ws['A1'].fill = PatternFill('solid', fgColor=soften('1A237E'))
+            ws['A1'].font = Font(bold=True, color=darken('1A237E'), name='Arial', size=13)
             ws.merge_cells('A1:H1')
             ws.row_dimensions[1].height = 28
 
@@ -579,8 +581,8 @@ with tab_pedido_bod:
             # Fila 3 — Encabezados
             headers = ['N°','Medicamento','Criticidad','Stock Farmacia',
                        'Cob. actual (dias)','Disponible Bodega','A Solicitar (ud)','Accion sugerida']
-            hfill = PatternFill('solid', fgColor='1F4E78')
-            hfont = Font(bold=True, color='FFFFFF', name='Arial', size=10)
+            hfill = PatternFill('solid', fgColor=soften('1F4E78'))
+            hfont = Font(bold=True, color=darken('1F4E78'), name='Arial', size=10)
             for ci, h in enumerate(headers, 1):
                 c = ws.cell(row=3, column=ci, value=h)
                 c.fill = hfill; c.font = hfont
@@ -605,7 +607,7 @@ with tab_pedido_bod:
                     c.fill = fill
                     c.font = Font(name='Arial', size=10,
                                   bold=is_crit1,
-                                  color='FFFFFF' if is_crit1 else '000000')
+                                  color='7F1D1D' if is_crit1 else '000000')
                     c.alignment = Alignment(vertical='center',
                                             wrap_text=(ci == 2 or ci == 8))
 
@@ -774,8 +776,8 @@ with tab_pedido_farm:
             ws.title = "Pedido a Bodega Farmacos"
 
             ws['A1'] = f'PEDIDO BODEGA AA → BODEGA FARMACOS  (CICLO 2 SEMANAS)  |   S{semana}  {hoy.strftime("%d/%m/%Y")}'
-            ws['A1'].fill = PatternFill('solid', fgColor='1B5E20')
-            ws['A1'].font = Font(bold=True, color='FFFFFF', name='Arial', size=13)
+            ws['A1'].fill = PatternFill('solid', fgColor=soften('1B5E20'))
+            ws['A1'].font = Font(bold=True, color=darken('1B5E20'), name='Arial', size=13)
             ws.merge_cells('A1:J1')
             ws.row_dimensions[1].height = 28
 
@@ -785,8 +787,8 @@ with tab_pedido_farm:
 
             hdrs = ['N°','Medicamento','Criticidad','Stock Bod.AA','Cob.(días)',
                     'Req. 2 Semanas','Consumo 10D tend.','Disp.Bod.Farm.','Solicitar','Compra Externa']
-            hfill = PatternFill('solid', fgColor='2E7D32')
-            hfont = Font(bold=True, color='FFFFFF', name='Arial', size=10)
+            hfill = PatternFill('solid', fgColor=soften('2E7D32'))
+            hfont = Font(bold=True, color=darken('2E7D32'), name='Arial', size=10)
             for ci, h in enumerate(hdrs, 1):
                 c = ws.cell(row=3, column=ci, value=h)
                 c.fill = hfill; c.font = hfont
@@ -813,7 +815,7 @@ with tab_pedido_farm:
                     c.fill = fill
                     c.font = Font(name='Arial', size=10,
                                   bold=is_crit1,
-                                  color='FFFFFF' if is_crit1 else '000000')
+                                  color='7F1D1D' if is_crit1 else '000000')
                     c.alignment = Alignment(vertical='center', wrap_text=(ci==2))
 
             for ci, w in enumerate([4,48,13,10,12,13,13,14,12,13], 1):
@@ -946,15 +948,15 @@ with tab_dialisis:
             def build_dial_simple_excel():
                 wb = Workbook(); ws = wb.active; ws.title = "Pedido Dialisis"
                 ws['A1'] = f'PEDIDO DE DIÁLISIS (MENSUAL · 3ª SEMANA)   |   {hoy.strftime("%d/%m/%Y")}'
-                ws['A1'].fill = PatternFill('solid', fgColor='0F766E')
-                ws['A1'].font = Font(bold=True, color='FFFFFF', name='Arial', size=13)
+                ws['A1'].fill = PatternFill('solid', fgColor=soften('0F766E'))
+                ws['A1'].font = Font(bold=True, color=darken('0F766E'), name='Arial', size=13)
                 ws.merge_cells('A1:C1'); ws.row_dimensions[1].height = 28
                 ws['A2'] = 'Consumo segun recetas de: Dr. Yasmani Ortiz Amador - Dra. Martha Peralta - Dra. Monica Amaya'
                 ws['A2'].font = Font(italic=True, name='Arial', size=10, color='444444')
                 ws.merge_cells('A2:C2')
                 hdrs = ['Medicamento', 'Cantidad sugerida', 'Observaciones']
-                hfill = PatternFill('solid', fgColor='0F766E')
-                hfont = Font(bold=True, color='FFFFFF', name='Arial', size=11)
+                hfill = PatternFill('solid', fgColor=soften('0F766E'))
+                hfont = Font(bold=True, color=darken('0F766E'), name='Arial', size=11)
                 for ci, h in enumerate(hdrs, 1):
                     c = ws.cell(row=3, column=ci, value=h)
                     c.fill = hfill; c.font = hfont
@@ -1108,14 +1110,14 @@ with tab_faltantes:
 
         def _hoja(ws, titulo, color_tit, color_h, df_rows, hdrs, extractor):
             ws['A1'] = titulo
-            ws['A1'].fill = PatternFill('solid', fgColor=color_tit)
-            ws['A1'].font = Font(bold=True, color='FFFFFF', name='Arial', size=13)
+            ws['A1'].fill = PatternFill('solid', fgColor=soften(color_tit))
+            ws['A1'].font = Font(bold=True, color=darken(color_tit), name='Arial', size=13)
             ws.merge_cells(f'A1:{get_column_letter(len(hdrs))}1')
             ws.row_dimensions[1].height = 26
             for ci, h in enumerate(hdrs, 1):
                 c = ws.cell(row=2, column=ci, value=h)
-                c.fill = PatternFill('solid', fgColor=color_h)
-                c.font = fh
+                c.fill = PatternFill('solid', fgColor=soften(color_h))
+                c.font = Font(bold=True, color=darken(color_h), name='Arial', size=11)
                 c.alignment = Alignment(horizontal='center', vertical='center')
             ws.row_dimensions[2].height = 22
             for ri, (_, row) in enumerate(df_rows.iterrows(), 3):
@@ -1200,12 +1202,13 @@ with tab_faltantes:
             f"Datos al {datos['mtime'].strftime('%d/%m/%Y %H:%M')}."
         )
 with tab_sgli:
-    st.markdown("## 🚦 SGLI · Reposición por estrés / semana pico")
+    st.markdown("## 🚦 SGLI · Reposición por capacidad y demanda")
     st.markdown(
         "Motor de **Gestión Logística (SGLI)**: calcula el nivel objetivo de "
-        "Farmacia AA bajo un escenario de **estrés de demanda** y decide el "
-        "traspaso desde Bodega AA o la compra urgente. Mueve el **factor de "
-        "carga** para simular *qué pasa si* la demanda se intensifica."
+        "Farmacia AA **restringido por la capacidad física de las gavetas** y la "
+        "demanda, y decide el traspaso desde Bodega AA o la compra urgente. Todo "
+        "el cálculo es **en unidades** (la farmacia fracciona y ordena por unidad). "
+        "Mueve el **factor de carga** para simular mayor demanda."
     )
 
     if df_sgli_base is None or df_sgli_base.empty:
@@ -1216,66 +1219,58 @@ with tab_sgli:
     else:
         with st.expander("ℹ️ Cómo se calcula"):
             st.markdown(
-                "- **IR** (días de reposición) = `mín(5, ⌊5 / Factor_Carga⌋)` — nunca supera 5.\n"
-                "- **Demanda** = `IR × CDL × Factor_Carga`  ·  **Nivel Objetivo (T)** = `Demanda × 1.25`.\n"
+                "- **Cap. Máx (ud)** = (cajas que caben en la gaveta × {3 si rotación ALTA · "
+                "1 si NORMAL}) × **unidades por caja**. Cajas/gaveta por talla: S=23, M=15, "
+                "L=9 (o `⌊2790 / Vol_Caja⌋` para EXTERNO).\n"
+                "- **IR** (días) = `máx(1, mín(5, ⌊Cap_Máx / CDL⌋, ⌊5 / Factor_Carga⌋))`.\n"
+                "- **Demanda** = `IR × CDL × Factor_Carga`  ·  **Nivel Objetivo (T)** = "
+                "`mín(Cap_Máx, ⌊Demanda × 1.25⌋)` — nunca excede la capacidad física.\n"
                 "- **Déficit** = `máx(0, T − Stock Farmacia)`.\n"
-                "- **Decisión:** si hay déficit, primero se **traspasa desde Bodega AA** lo "
-                "disponible y el resto va a **compra urgente**.\n"
-                "- **Alerta de estrés**: se activa cuando la *semana actual* coincide con la "
-                "*semana pico* **y** el Factor_Carga supera 1.15 (configuración global: aplica "
-                "a todos los medicamentos)."
+                "- **Decisión:** si hay déficit, se **traspasa desde Bodega AA** lo disponible "
+                "y el resto va a **compra urgente**.\n"
+                "- **Rotación** = ALTA si CDL ≥ 30 ud/día (usa 3 gavetas), si no NORMAL (1 "
+                "gaveta). **Talla** asignada por forma farmacéutica; editable por medicamento "
+                "en `cenabast_tallas.csv`."
             )
 
-        c1, c2, c3 = st.columns([2, 1.4, 1.4])
+        c1, c2 = st.columns([2, 1.4])
         with c1:
             factor = st.slider(
-                "Factor de carga (estrés)", min_value=1.00, max_value=2.00,
+                "Factor de carga (estrés de demanda)", min_value=1.00, max_value=2.00,
                 value=float(FACTOR_CARGA_DEFAULT), step=0.05,
-                help="1.15 = sin estrés extra (baseline). Súbelo para simular mayor demanda.",
+                help="1.15 = baseline. Súbelo para simular mayor demanda (acorta el IR y sube el objetivo).",
             )
         with c2:
-            _opts_sp = ['S1', 'S2', 'S3', 'S4']
-            semana_pico_sel = st.selectbox(
-                "Semana pico de la campaña", _opts_sp,
-                index=min(semana, 4) - 1,
-                help="Semana del mes con mayor demanda esperada.",
-            )
-        with c3:
             solo_acc = st.toggle("Solo con déficit", value=True,
                                  help="Oculta los medicamentos sin déficit (Déficit = 0).")
 
         df_calc = calcular_sgli(
-            df_sgli_base, factor_carga=factor, semana_pico=semana_pico_sel,
-            semana_actual=f"S{semana}",
+            df_sgli_base, factor_carga=factor,
             col_crit='Criticidad', col_farm='Stock_Farm', col_bod='Stock_Bod',
-            col_cdl='CDL', col_sp_hist='Semana_Pico_Hist', col_fc_hist='Factor_Carga_Hist',
+            col_cdl='CDL',
         )
 
         _def = pd.to_numeric(df_calc['Deficit'],   errors='coerce').fillna(0)
         _bod = pd.to_numeric(df_calc['Stock_Bod'], errors='coerce').fillna(0)
+        _cap = pd.to_numeric(df_calc['Cap_Max'],   errors='coerce').fillna(0)
+        _tt  = pd.to_numeric(df_calc['Nivel_Objetivo_T'], errors='coerce').fillna(0)
         _mask = _def > 0
-        ir_val       = int(df_calc['Dias_Reposicion_IR'].iloc[0]) if len(df_calc) else 0
+        ir_tope      = max(1, int(5 / factor + 1e-9))
         n_def        = int(_mask.sum())
         traspaso_tot = int(np.minimum(_def, _bod)[_mask].sum())
         compra_tot   = int(np.maximum(_def - _bod, 0)[_mask].sum())
-        alerta_on    = bool((df_calc['Alerta_Estres'] != '').any())
-
-        if alerta_on:
-            st.error(
-                f"🔴 **[ALERTA_ESTRES]** activa — semana actual **S{semana}** = semana pico "
-                f"**{semana_pico_sel}** y Factor_Carga **{factor:.2f}** > {UMBRAL_ESTRES:.2f}."
-            )
-        else:
-            st.success(
-                f"🟢 Sin alerta de estrés (S{semana} vs pico {semana_pico_sel} · "
-                f"Factor {factor:.2f}). Súbelo sobre {UMBRAL_ESTRES:.2f} en la semana pico para activarla."
-            )
+        cap_lim      = int(((_tt == _cap) & (_cap > 0) & _mask).sum())
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Días reposición (IR)", ir_val)
+        m1.metric("Medicamentos", len(df_calc))
         m2.metric("Con déficit", n_def)
         m3.metric("A traspasar (ud)", f"{traspaso_tot:,}".replace(",", "."))
         m4.metric("Compra urgente (ud)", f"{compra_tot:,}".replace(",", "."))
+        _cap_txt = f"  ·  🧱 {cap_lim} con objetivo limitado por capacidad física" if cap_lim else ""
+        st.caption(
+            f"IR tope por estrés = ⌊5/{factor:.2f}⌋ = **{ir_tope} días** "
+            f"(el IR por medicamento puede ser menor si la gaveta lo limita).{_cap_txt}"
+        )
 
         df_show = df_calc[_mask].reset_index(drop=True) if solo_acc else df_calc
 
@@ -1289,24 +1284,25 @@ with tab_sgli:
                     'Medicamento'        : st.column_config.TextColumn("Medicamento", width="large"),
                     'Criticidad'         : st.column_config.TextColumn("Criticidad", width="small"),
                     'Dias_Reposicion_IR' : st.column_config.NumberColumn("Días Rep. (IR)", format="%d"),
-                    'Alerta_Estres'      : st.column_config.TextColumn("Alerta Estrés", width="small"),
+                    'Cap_Max'            : st.column_config.NumberColumn("Cap. Máx (ud)", format="%d"),
                     'Nivel_Objetivo_T'   : st.column_config.NumberColumn("Nivel Obj. (T)", format="%d"),
                     'Deficit'            : st.column_config.NumberColumn("Déficit", format="%d"),
                     'Accion_1_Traspaso'  : st.column_config.TextColumn("Acción 1: Traspaso", width="medium"),
                     'Accion_2_Externa'   : st.column_config.TextColumn("Acción 2: Externa", width="medium"),
+                    'Talla'              : st.column_config.TextColumn("Talla", width="small"),
+                    'Rotacion'           : st.column_config.TextColumn("Rotación", width="small"),
+                    'Unidades_Caja'      : st.column_config.NumberColumn("Ud/caja", format="%d"),
                     'Stock_Farm'         : st.column_config.NumberColumn("Stock Farm.", format="%d"),
                     'Stock_Bod'          : st.column_config.NumberColumn("Stock Bod.", format="%d"),
                     'CDL'                : st.column_config.NumberColumn("CDL", format="%.2f"),
-                    'Semana_Pico_Hist'   : st.column_config.TextColumn("Sem. pico hist.", width="small"),
-                    'Factor_Carga_Hist'  : st.column_config.NumberColumn("Factor hist.", format="%.2f"),
                 },
                 height=min(50 + len(df_show) * 35, 640),
             )
 
             def build_sgli_excel():
                 wb = Workbook(); ws = wb.active; ws.title = "SGLI_Estres"
-                hfill = PatternFill('solid', fgColor='7C2D12')
-                hfont = Font(bold=True, color='FFFFFF', name='Arial', size=10)
+                hfill = PatternFill('solid', fgColor=soften('7C2D12'))
+                hfont = Font(bold=True, color=darken('7C2D12'), name='Arial', size=10)
                 cols = list(df_show.columns)
                 for ci, h in enumerate(cols, 1):
                     c = ws.cell(row=1, column=ci, value=h)
@@ -1323,7 +1319,7 @@ with tab_sgli:
                         c = ws.cell(row=ri, column=ci, value=v)
                         c.fill = fill
                         c.font = Font(name='Arial', size=10, bold=is_c1,
-                                      color='FFFFFF' if is_c1 else '000000')
+                                      color='7F1D1D' if is_c1 else '000000')
                         c.alignment = Alignment(vertical='center',
                                                 wrap_text=(col in ('Medicamento', 'Accion_1_Traspaso',
                                                                    'Accion_2_Externa')))
@@ -1347,21 +1343,21 @@ with tab_sgli:
                 )
             with d2:
                 _cols_pdf_sgli = [
-                    {'name': 'Medicamento',        'label': 'Medicamento',     'width': 5.5, 'align': 'left'},
-                    {'name': 'Criticidad',         'label': 'Criticidad',      'width': 2.2, 'align': 'center'},
-                    {'name': 'Dias_Reposicion_IR', 'label': 'IR (d)',          'width': 1.6, 'align': 'center'},
-                    {'name': 'Alerta_Estres',      'label': 'Alerta',          'width': 2.4, 'align': 'center'},
+                    {'name': 'Medicamento',        'label': 'Medicamento',     'width': 5.3, 'align': 'left'},
+                    {'name': 'Criticidad',         'label': 'Criticidad',      'width': 2.1, 'align': 'center'},
+                    {'name': 'Dias_Reposicion_IR', 'label': 'IR (d)',          'width': 1.4, 'align': 'center'},
+                    {'name': 'Cap_Max',            'label': 'Cap.Max (ud)',    'width': 1.9, 'align': 'center'},
                     {'name': 'Nivel_Objetivo_T',   'label': 'Nivel Obj. (T)',  'width': 1.9, 'align': 'center'},
                     {'name': 'Deficit',            'label': 'Deficit',         'width': 1.6, 'align': 'center'},
-                    {'name': 'Accion_1_Traspaso',  'label': 'Accion 1: Traspaso', 'width': 3.3, 'align': 'left'},
-                    {'name': 'Accion_2_Externa',   'label': 'Accion 2: Externa',  'width': 3.3, 'align': 'left'},
+                    {'name': 'Accion_1_Traspaso',  'label': 'Accion 1: Traspaso', 'width': 3.4, 'align': 'left'},
+                    {'name': 'Accion_2_Externa',   'label': 'Accion 2: Externa',  'width': 3.4, 'align': 'left'},
                 ]
                 st.download_button(
                     "📄 PDF Carta",
                     data=build_pdf(
-                        f"SGLI · REPOSICIÓN POR ESTRÉS  |  S{semana} · {hoy.strftime('%d/%m/%Y')}",
-                        f"Factor de carga: {factor:.2f}  ·  Semana pico: {semana_pico_sel}  ·  "
-                        f"IR: {ir_val} d  ·  {len(df_show)} medicamentos",
+                        f"SGLI · REPOSICIÓN POR CAPACIDAD Y DEMANDA  |  {hoy.strftime('%d/%m/%Y')}",
+                        f"Factor de carga: {factor:.2f}  ·  IR tope: {ir_tope} d  ·  "
+                        f"{len(df_show)} medicamentos",
                         df_show, _cols_pdf_sgli, orientacion='landscape',
                     ),
                     file_name=f"SGLI_Estres_{hoy.strftime('%Y%m%d_%H%M')}.pdf",
@@ -1375,6 +1371,166 @@ with tab_sgli:
 
             with st.expander("📋 Ver como tabla Markdown (Formato de Salida Obligatorio)"):
                 st.code(to_markdown(df_show), language="markdown")
+
+with tab_reposicion:
+    st.markdown("## 📅 Reposición en días hábiles")
+    st.markdown(
+        "Plan de reposición **Bodega AA → Farmacia AT Abierta** restringido a "
+        "**días hábiles**. La bodega no repone sáb/dom ni feriados, y la farmacia "
+        "prácticamente **no dispensa el fin de semana** (medido: 0,19%). Por eso el "
+        "blindaje asegura **reabrir el lunes** con stock, no stockear consumo de finde."
+    )
+
+    if df_sgli_base is None or df_sgli_base.empty:
+        st.info(
+            "La hoja **SGLI_Estres** aún no está en el Consolidado. Ejecuta "
+            "`ACTUALIZAR_DATOS.bat` (o `py maestro_aa.py`) y vuelve a recargar."
+        )
+    else:
+        feriados_rep = cargar_feriados()
+        with st.expander("ℹ️ Cómo se calcula / criterio de blindaje"):
+            st.markdown(
+                "- **CDL** = consumo por **día hábil** (de fecha de entrega real → sin "
+                "'pico fantasma' del lunes).\n"
+                "- **Stock de Seguridad** = `CDL × (1 reapertura + 1 extra si criticidad 1-2)`.\n"
+                "- **Stock Mínimo (ROP)** = `CDL × IR + Stock de Seguridad`. Cuando el stock "
+                "cae a este nivel → reponer el próximo día hábil.\n"
+                "- **IR** = frecuencia en días hábiles (motor SGLI: rotación + capacidad).\n"
+                "- **Próxima Reposición** = día hábil en que el stock proyectado toca el ROP, "
+                "saltando sáb/dom y feriados → nunca cae en día cerrado (adelanto a viernes "
+                "automático). **Cubre Cierre** marca las entregas que deben puentear un "
+                "fin de semana o feriado.\n"
+                "- **[ALERTA_ESTRES]** = el ROP supera la capacidad física de la gaveta "
+                "(no caben las unidades de un ciclo+colchón → sobrecarga de viernes / ampliar estante)."
+            )
+
+        c1, c2 = st.columns([2, 1.4])
+        with c1:
+            buf_finde = st.slider(
+                "Colchón de reapertura (días hábiles de seguridad)",
+                min_value=0, max_value=3, value=1, step=1,
+                help="Días de consumo que el stock de seguridad cubre para reabrir tras el "
+                     "cierre. =1 porque la demanda sáb/dom es ~0. Súbelo para una postura "
+                     "más conservadora.",
+            )
+        with c2:
+            solo_acc_rep = st.toggle("Solo accionables", value=True,
+                                     help="Muestra solo REPONER AHORA, BAJO MÍNIMO o [ALERTA_ESTRES].")
+
+        df_rep = calcular_reposicion(df_sgli_base, df_stock, feriados_rep, hoy,
+                                     buffer_finde=buf_finde)
+
+        al = df_rep["Alertas"]
+        n_rep = int(al.str.contains("REPONER AHORA").sum())
+        n_baj = int(al.str.contains("BAJO MINIMO").sum())
+        n_est = int(al.str.contains("ALERTA_ESTRES").sum())
+        n_cub = int((df_rep["Cubre_Cierre"] == "Si").sum())
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("🔴 Reponer ahora", n_rep)
+        m2.metric("🟠 Bajo mínimo", n_baj)
+        m3.metric("🧱 Alerta estrés", n_est)
+        m4.metric("📅 Cubren cierre", n_cub)
+
+        prox_fer = sorted(d for d in feriados_rep if d >= hoy.date())
+        if prox_fer:
+            _d = prox_fer[0]
+            st.caption(f"Próximo feriado considerado: **{_d.strftime('%d/%m/%Y')}** — "
+                       f"{feriados_rep[_d][0]}  ·  `feriados_chile.csv` "
+                       f"({len(feriados_rep)} feriados cargados).")
+
+        df_show = (df_rep[al.str.contains("REPONER AHORA|BAJO MINIMO|ALERTA_ESTRES")]
+                   .reset_index(drop=True)) if solo_acc_rep else df_rep
+
+        if len(df_show) == 0:
+            st.info("Ningún medicamento accionable con el colchón actual. ✅")
+        else:
+            st.dataframe(
+                estilo_tabla(df_show),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    'Medicamento'        : st.column_config.TextColumn("Medicamento", width="large"),
+                    'Criticidad'         : st.column_config.TextColumn("Criticidad", width="small"),
+                    'Stock_Actual'       : st.column_config.NumberColumn("Stock Actual", format="%d"),
+                    'Stock_Bodega'       : st.column_config.NumberColumn("Stock Bodega", format="%d"),
+                    'CDL'                : st.column_config.NumberColumn("CDL (ud/día háb)", format="%.1f"),
+                    'Frecuencia'         : st.column_config.TextColumn("Frecuencia (días háb.)", width="small"),
+                    'Stock_Seguridad'    : st.column_config.NumberColumn("Stock Seg.", format="%d"),
+                    'Stock_Minimo_ROP'   : st.column_config.NumberColumn("Stock Mín. (ROP)", format="%d"),
+                    'Cap_Fisica'         : st.column_config.NumberColumn("Cap. gaveta", format="%d"),
+                    'Cobertura_Dias'     : st.column_config.TextColumn("Cobertura (d háb.)", width="small"),
+                    'Proxima_Reposicion' : st.column_config.TextColumn("Próx. Reposición", width="small"),
+                    'Cubre_Cierre'       : st.column_config.TextColumn("Cubre Cierre", width="small"),
+                    'Alertas'            : st.column_config.TextColumn("Alertas", width="medium"),
+                },
+                height=min(50 + len(df_show) * 35, 640),
+            )
+
+            def build_repos_excel():
+                wb = Workbook(); ws = wb.active; ws.title = "Plan_Reposicion"
+                hfill = PatternFill('solid', fgColor=soften('0F766E', 0.18))
+                hfont = Font(bold=True, color=darken('0F766E'), name='Arial', size=10)
+                cols = list(df_show.columns)
+                for ci, h in enumerate(cols, 1):
+                    c = ws.cell(row=1, column=ci, value=h)
+                    c.fill = hfill; c.font = hfont
+                    c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                ws.row_dimensions[1].height = 28
+                for ri, (_, row) in enumerate(df_show.iterrows(), 2):
+                    crit = str(row.get('Criticidad', '5-OK'))
+                    fill = PatternFill('solid', fgColor=crit_hex(crit))
+                    rep  = 'REPONER AHORA' in str(row.get('Alertas', ''))
+                    for ci, col in enumerate(cols, 1):
+                        v = row.get(col, ''); v = '' if pd.isna(v) else v
+                        c = ws.cell(row=ri, column=ci, value=v)
+                        c.fill = fill
+                        c.font = Font(name='Arial', size=10, bold=rep,
+                                      color='7F1D1D' if rep else '1F2937')
+                        c.alignment = Alignment(vertical='center',
+                                                wrap_text=(col in ('Medicamento', 'Alertas')))
+                for ci, col in enumerate(cols, 1):
+                    ltr = get_column_letter(ci)
+                    ws.column_dimensions[ltr].width = (
+                        46 if col == 'Medicamento' else 30 if col == 'Alertas' else 16)
+                ws.freeze_panes = 'B2'
+                buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+                return buf
+
+            d1, d2, d3 = st.columns([2, 2, 2])
+            with d1:
+                st.download_button(
+                    "📥 Excel", data=build_repos_excel(),
+                    file_name=f"Reposicion_DiasHabiles_AA_{hoy.strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary", use_container_width=True,
+                )
+            with d2:
+                _cols_pdf_rep = [
+                    {'name': 'Medicamento',        'label': 'Medicamento',     'width': 4.8, 'align': 'left'},
+                    {'name': 'Criticidad',         'label': 'Criticidad',      'width': 2.0, 'align': 'center'},
+                    {'name': 'Stock_Actual',       'label': 'Stock',           'width': 1.5, 'align': 'center'},
+                    {'name': 'Stock_Minimo_ROP',   'label': 'Stock Min (ROP)', 'width': 1.9, 'align': 'center'},
+                    {'name': 'Frecuencia',         'label': 'Frecuencia',      'width': 2.6, 'align': 'left'},
+                    {'name': 'Proxima_Reposicion', 'label': 'Prox. Repos.',    'width': 2.0, 'align': 'center'},
+                    {'name': 'Cubre_Cierre',       'label': 'Cubre Cierre',    'width': 1.5, 'align': 'center'},
+                    {'name': 'Alertas',            'label': 'Alertas',         'width': 3.4, 'align': 'left'},
+                ]
+                st.download_button(
+                    "📄 PDF Carta",
+                    data=build_pdf(
+                        f"PLAN DE REPOSICIÓN EN DÍAS HÁBILES  |  {hoy.strftime('%d/%m/%Y')}",
+                        f"Bodega AA → Farmacia AT Abierta  ·  colchón {buf_finde} día(s) háb.  ·  "
+                        f"{len(df_show)} medicamentos  ·  {n_rep} reponer ahora",
+                        df_show, _cols_pdf_rep, orientacion='landscape',
+                    ),
+                    file_name=f"Reposicion_DiasHabiles_AA_{hoy.strftime('%Y%m%d_%H%M')}.pdf",
+                    mime="application/pdf", use_container_width=True,
+                )
+            with d3:
+                st.caption(
+                    f"{len(df_show)} de {len(df_rep)} medicamentos · colchón {buf_finde} d · "
+                    f"datos al {datos['mtime'].strftime('%d/%m/%Y %H:%M')}"
+                )
 
 with tab_auditoria:
     import json as _json_aud
@@ -1440,7 +1596,9 @@ with tab_auditoria:
         d1, d2, d3 = st.columns(3)
         d1.metric("Pacientes distintos", f"{a['pacientes']:,}")
         d2.metric("Con ≥2 médicos distintos", f"{a['dup_2mas_medicos']:,}")
-        d3.metric("Con ≥2 recetas el mismo mes", f"{a['dup_2mas_recetas_mes']:,}")
+        d3.metric("Con ≥2 prescripciones el mismo mes", f"{a['dup_2mas_recetas_mes']:,}",
+                  help="Eventos de prescripción distintos (RUN+médico+fecha) en un mismo mes. "
+                       "Las cuotas mensuales de una receta anual se cuentan como 1, no como ~12.")
         if a['pacientes']:
             _pdup = round(100 * a['dup_2mas_medicos'] / a['pacientes'])
             if _pdup >= 15:

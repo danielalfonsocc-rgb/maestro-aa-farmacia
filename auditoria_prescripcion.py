@@ -55,7 +55,9 @@ def main():
     _fe = pd.to_datetime(rec["Fecha Entrega Receta"], dayfirst=True, errors="coerce")
     _fa = pd.to_datetime(rec["Fecha Atención"], dayfirst=True, errors="coerce")
     rec["_fecha"] = _fe.fillna(_fa)
-    rec["_mes"] = rec["_fecha"].dt.to_period("M").astype(str)
+    rec["_mes"] = rec["_fecha"].dt.to_period("M").astype(str)            # mes de ENTREGA (consumo)
+    rec["_fpresc"] = _fa.fillna(_fe)                                     # fecha de PRESCRIPCIÓN (atención)
+    rec["_mespresc"] = rec["_fpresc"].dt.to_period("M").astype(str)      # mes de prescripción (duplicidad)
     rec["_medico"] = (rec["Nombre Profesional"].fillna("") + " " +
                       rec["Apellido Paterno Profesional"].fillna("") + " " +
                       rec["Apellido Materno Profesional"].fillna("")).str.strip().str.upper()
@@ -92,10 +94,15 @@ def main():
         diagnosticos = [{"dx": dx[:60] or "(sin diagnóstico)", "recetas": int(r["rec_n"]),
                          "pacientes": int(r["pac"])} for dx, r in gd.head(10).iterrows()]
         sin_dx = int((sub["Diagnóstico 1"].fillna("").str.strip() == "").sum())
-        # Duplicidad
+        # Duplicidad — se colapsan las cuotas mensuales de una misma receta anual en
+        # EVENTOS de prescripción (RUN+médico+fecha de atención). El ERP SSASUR emite
+        # un Número Receta SEPARADO por cada cuota ("X de 12" → ~12 N° el mismo día),
+        # así que contar Número Receta inflaba la duplicidad ~4-19× (ver memoria
+        # ssasur-cuotas-receta; misma lógica de evento que recetas_duplicadas.py).
         pac = sub.groupby("RUN").agg(medicos=("_medico", "nunique"))
-        dup_mes = sub.groupby(["RUN", "_mes"])["Número Receta"].nunique()
-        dup_mes_n = dup_mes[dup_mes >= 2].index.get_level_values(0).nunique()
+        ev = sub[sub["_fpresc"].notna()].drop_duplicates(subset=["RUN", "_medico", "_fpresc"])
+        ev_mes = ev.groupby(["RUN", "_mespresc"]).size()
+        dup_mes_n = ev_mes[ev_mes >= 2].index.get_level_values(0).nunique()
         out[med] = {
             "n_lineas": int(len(sub)), "meses": meses,
             "cmp_dispensado": cmp_disp,

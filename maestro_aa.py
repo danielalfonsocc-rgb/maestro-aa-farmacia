@@ -43,8 +43,8 @@ from datetime import datetime, timedelta
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from aa_colors import CRIT_FILL_HEX, crit_fill, crit_hex
-from sgli import calcular_sgli, FACTOR_CARGA_DEFAULT
+from aa_colors import CRIT_FILL_HEX, crit_fill, crit_hex, soften, darken, text_on, fill_hex, FONT_CRITICO
+from sgli import calcular_sgli, cargar_tallas, FACTOR_CARGA_DEFAULT
 
 warnings.filterwarnings('ignore')
 
@@ -1437,7 +1437,7 @@ print("Generando Excel...")
 
 # ─── Style helpers ───
 HEAD_FILL        = PatternFill('solid', fgColor='1F4E78')
-HEAD_FONT        = Font(bold=True, color='FFFFFF', name='Arial', size=11)
+HEAD_FONT        = Font(bold=True, color='7F1D1D', name='Arial', size=11)
 ROW_ALT          = PatternFill('solid', fgColor='F9FAFB')
 ROJO_FILL        = PatternFill('solid', fgColor='FFCDD2')  # rojo suave (quiebres / sin stock)
 ROJO_CRITICO_FILL= crit_fill('1-CRITICO')  # rojo fuerte estandar — nivel CRITICO (aa_colors)
@@ -1445,7 +1445,7 @@ NARANJA          = PatternFill('solid', fgColor='FFF3E0')
 AMARILLO   = PatternFill('solid', fgColor='FFF9C4')
 VERDE_FILL = PatternFill('solid', fgColor='E8F5E9')
 AZUL_FILL  = PatternFill('solid', fgColor='0D47A1')
-AZUL_FONT  = Font(bold=True, color='FFFFFF', name='Arial', size=11)
+AZUL_FONT  = Font(bold=True, color='7F1D1D', name='Arial', size=11)
 
 # ─── Leyenda de colores de Criticidad (para que el operador entienda el semaforo) ───
 LEYENDA_CRIT = [
@@ -1464,19 +1464,21 @@ def add_leyenda(ws, fila_inicio, col=1):
         c = ws.cell(row=fila_inicio + i, column=col, value=label)
         c.fill = crit_fill(k)
         c.font = Font(name='Arial', size=10, bold=(k == '1-CRITICO'),
-                      color='FFFFFF' if k == '1-CRITICO' else '000000')
+                      color='7F1D1D' if k == '1-CRITICO' else '000000')
         c.alignment = Alignment(vertical='center')
 
 def style_sheet(ws, df, col_widths=None, freeze='A2',
                 row_color_fn=None, header_fill=None):
     """Apply standard formatting to a worksheet."""
-    hf   = header_fill or HEAD_FILL
+    hf_hex  = fill_hex(header_fill, '1F4E78')
+    hf      = PatternFill('solid', fgColor=soften(hf_hex))
+    hf_font = Font(bold=True, color=darken(hf_hex), name='Arial', size=11)
     cols = list(df.columns)
-    # Header row (row 1)
+    # Header row (row 1) — banda pastel + texto del mismo matiz oscurecido (tinta-economico)
     for ci, col in enumerate(cols, 1):
         cell = ws.cell(row=1, column=ci, value=col)
         cell.fill    = hf
-        cell.font    = HEAD_FONT
+        cell.font    = hf_font
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
     ws.row_dimensions[1].height = 25
 
@@ -1510,21 +1512,22 @@ def style_sheet(ws, df, col_widths=None, freeze='A2',
     ws.sheet_view.showGridLines = True
 
 # ═══════════════════════════════════════════════
-# 18-bis. SGLI — Reposicion por estres / semana pico (motor compartido sgli.py)
-#   Baseline persistido con Factor_Carga = 1.15 (sin estres extra); la pestana
-#   SGLI de la app recalcula en vivo con su propio slider. Se incluyen TODOS los
-#   meds con CDL>0 (la app filtra los accionables) y se ecoan los inputs
-#   (Stock_Farm/Stock_Bod/CDL) para que el recalculo no dependa de otras hojas.
+# 18-bis. SGLI — Reposicion restringida por CAPACIDAD FISICA (motor sgli.py)
+#   Baseline persistido con Factor_Carga = 1.15; la pestana SGLI de la app
+#   recalcula en vivo con su slider. Incluye TODOS los meds con CDL>0 (la app
+#   filtra los accionables) y ecoa Talla/Rotacion/Unidades_Caja + Stock/CDL para
+#   que el recalculo no dependa de otras hojas. Talla por forma farmaceutica
+#   (overrides por med en cenabast_tallas.csv). Cap_Max en UNIDADES (la farmacia
+#   fracciona y ordena por unidad, no por empaque).
 # ═══════════════════════════════════════════════
-_sgli_semana = f"S{_semana_mes(HOY)}"
+_sgli_overrides = cargar_tallas(WORK_DIR)
 df_sgli = calcular_sgli(
     df_ped,
     factor_carga=FACTOR_CARGA_DEFAULT,
-    semana_pico=_sgli_semana,
-    semana_actual=_sgli_semana,
+    overrides=_sgli_overrides,
     col_crit='Crit_Farm',
 )
-print(f"  Tabla SGLI (estres) : {len(df_sgli):,} meds  ·  baseline FC={FACTOR_CARGA_DEFAULT}  ·  {_sgli_semana}")
+print(f"  Tabla SGLI (capacidad): {len(df_sgli):,} meds  ·  baseline FC={FACTOR_CARGA_DEFAULT}  ·  overrides talla={len(_sgli_overrides)}")
 
 with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
 
@@ -1535,8 +1538,8 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
     # KPI title banner
     ws.insert_rows(1)
     ws['A1'] = 'CONSOLIDADO OPERACIONAL — FARMACIA ATENCIÓN ABIERTA'
-    ws['A1'].fill = AZUL_FILL
-    ws['A1'].font = Font(bold=True, color='FFFFFF', name='Arial', size=14)
+    ws['A1'].fill = PatternFill('solid', fgColor=soften('0D47A1'))
+    ws['A1'].font = Font(bold=True, color=darken('0D47A1'), name='Arial', size=14)
     ws.row_dimensions[1].height = 30
     ws.freeze_panes = 'A3'
 
@@ -1780,7 +1783,7 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
     # Cubre ambas escalas (Crit_Farm y Crit_Bod) — ver aa_colors.py
     CRIT_COLOR = {k: crit_fill(k) for k in CRIT_FILL_HEX}
     CRIT_FONT = {
-        '1-CRITICO': Font(bold=True, color='FFFFFF', name='Arial', size=11),
+        '1-CRITICO': Font(bold=True, color='7F1D1D', name='Arial', size=11),
     }
     def color_pedido_farm(row_t, ri):
         crit = str(getattr(row_t, 'Criticidad', '5-OK'))
@@ -1795,7 +1798,7 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
         crit = str(getattr(row_t, 'Criticidad', ''))
         if crit == '1-CRITICO':
             for ci in range(1, len(df_farm_pedido.columns)+1):
-                ws13.cell(row=ri, column=ci).font = Font(bold=True, color='FFFFFF',
+                ws13.cell(row=ri, column=ci).font = Font(bold=True, color='7F1D1D',
                                                           name='Arial', size=11)
     # Anchos
     farm_ped_cols = list(df_farm_pedido.columns)
@@ -1822,7 +1825,7 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
         crit = str(getattr(row_t, 'Criticidad', ''))
         if crit == '1-CRITICO':
             for ci in range(1, len(df_bod_pedido.columns)+1):
-                ws14.cell(row=ri, column=ci).font = Font(bold=True, color='FFFFFF',
+                ws14.cell(row=ri, column=ci).font = Font(bold=True, color='7F1D1D',
                                                           name='Arial', size=11)
     bod_ped_cols = list(df_bod_pedido.columns)
     for ci, col in enumerate(bod_ped_cols, 1):
@@ -1843,7 +1846,7 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
     for ri, row_t in enumerate(df_dial_farm_pedido.itertuples(index=False), 2):
         if str(getattr(row_t, 'Criticidad', '')) == '1-CRITICO':
             for ci in range(1, len(df_dial_farm_pedido.columns)+1):
-                ws15.cell(row=ri, column=ci).font = Font(bold=True, color='FFFFFF',
+                ws15.cell(row=ri, column=ci).font = Font(bold=True, color='7F1D1D',
                                                           name='Arial', size=11)
     for ci, col in enumerate(list(df_dial_farm_pedido.columns), 1):
         ltr = get_column_letter(ci)
@@ -1863,7 +1866,7 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
     for ri, row_t in enumerate(df_dial_bod_pedido.itertuples(index=False), 2):
         if str(getattr(row_t, 'Criticidad', '')) == '1-CRITICO':
             for ci in range(1, len(df_dial_bod_pedido.columns)+1):
-                ws16.cell(row=ri, column=ci).font = Font(bold=True, color='FFFFFF',
+                ws16.cell(row=ri, column=ci).font = Font(bold=True, color='7F1D1D',
                                                           name='Arial', size=11)
     for ci, col in enumerate(list(df_dial_bod_pedido.columns), 1):
         ltr = get_column_letter(ci)
@@ -1875,10 +1878,10 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
     ws16.freeze_panes = 'B2'
 
     # ── 17. SGLI_Estres ───────────────────────────
-    # Reposicion por estres/semana pico (motor sgli.py). Baseline FC=1.15; la
-    # pestana SGLI de la app recalcula en vivo. Color por NIVEL de criticidad
-    # (aa_colors.crit_hex) para que '2-ALTO' (no esta en CRIT_FILL_HEX) tambien
-    # tome el color del semaforo.
+    # Reposicion restringida por CAPACIDAD FISICA (motor sgli.py). Baseline
+    # FC=1.15; la pestana SGLI de la app recalcula en vivo. Color por NIVEL de
+    # criticidad (aa_colors.crit_hex) para que '2-ALTO' (no esta en
+    # CRIT_FILL_HEX) tambien tome el color del semaforo.
     def color_sgli(row_t, ri):
         return PatternFill('solid', fgColor=crit_hex(str(getattr(row_t, 'Criticidad', '5-OK'))))
 
@@ -1889,7 +1892,7 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
     for ri, row_t in enumerate(df_sgli.itertuples(index=False), 2):
         if str(getattr(row_t, 'Criticidad', '')) == '1-CRITICO':
             for ci in range(1, len(df_sgli.columns) + 1):
-                ws_sgli.cell(row=ri, column=ci).font = Font(bold=True, color='FFFFFF',
+                ws_sgli.cell(row=ri, column=ci).font = Font(bold=True, color='7F1D1D',
                                                             name='Arial', size=11)
     for ci, col in enumerate(list(df_sgli.columns), 1):
         ltr = get_column_letter(ci)
@@ -1897,8 +1900,7 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
         elif col == 'Accion_1_Traspaso': ws_sgli.column_dimensions[ltr].width = 30
         elif col == 'Accion_2_Externa':  ws_sgli.column_dimensions[ltr].width = 26
         elif col == 'Criticidad':        ws_sgli.column_dimensions[ltr].width = 13
-        elif col == 'Alerta_Estres':     ws_sgli.column_dimensions[ltr].width = 16
-        else:                            ws_sgli.column_dimensions[ltr].width = 15
+        else:                            ws_sgli.column_dimensions[ltr].width = 13
     ws_sgli.freeze_panes = 'B2'
 
 # ═══════════════════════════════════════════════
@@ -1952,8 +1954,8 @@ df_dial_bod_res  = df_dial_bod_pedido [[c for c in _bod_res_dial  if c in df_dia
 def _titulo(ws, texto, color_hex):
     ws.insert_rows(1)
     ws['A1'] = texto
-    ws['A1'].fill = PatternFill('solid', fgColor=color_hex)
-    ws['A1'].font = Font(bold=True, color='FFFFFF', name='Arial', size=12)
+    ws['A1'].fill = PatternFill('solid', fgColor=soften(color_hex))
+    ws['A1'].font = Font(bold=True, color=darken(color_hex), name='Arial', size=12)
     ws.row_dimensions[1].height = 24
     ws.freeze_panes = 'A3'
 
@@ -1990,7 +1992,7 @@ with pd.ExcelWriter(RESUMEN_XLS, engine='openpyxl') as rw:
     for ri, row_t in enumerate(df_farm_res.itertuples(index=False), 2):
         if str(getattr(row_t, 'Criticidad', '')) == '1-CRITICO':
             for ci in range(1, len(df_farm_res.columns)+1):
-                ws_r2.cell(row=ri+1, column=ci).font = Font(bold=True, color='FFFFFF',
+                ws_r2.cell(row=ri+1, column=ci).font = Font(bold=True, color='7F1D1D',
                                                              name='Arial', size=11)
     add_leyenda(ws_r2, len(df_farm_res) + 4)
 
@@ -2010,7 +2012,7 @@ with pd.ExcelWriter(RESUMEN_XLS, engine='openpyxl') as rw:
     for ri, row_t in enumerate(df_bod_res.itertuples(index=False), 2):
         if str(getattr(row_t, 'Criticidad', '')) == '1-CRITICO':
             for ci in range(1, len(df_bod_res.columns)+1):
-                ws_r3.cell(row=ri+1, column=ci).font = Font(bold=True, color='FFFFFF',
+                ws_r3.cell(row=ri+1, column=ci).font = Font(bold=True, color='7F1D1D',
                                                              name='Arial', size=11)
     add_leyenda(ws_r3, len(df_bod_res) + 4)
 
@@ -2030,7 +2032,7 @@ with pd.ExcelWriter(RESUMEN_XLS, engine='openpyxl') as rw:
     for ri, row_t in enumerate(df_dial_farm_res.itertuples(index=False), 2):
         if str(getattr(row_t, 'Criticidad', '')) == '1-CRITICO':
             for ci in range(1, len(df_dial_farm_res.columns)+1):
-                ws_r4.cell(row=ri+1, column=ci).font = Font(bold=True, color='FFFFFF',
+                ws_r4.cell(row=ri+1, column=ci).font = Font(bold=True, color='7F1D1D',
                                                              name='Arial', size=11)
     add_leyenda(ws_r4, len(df_dial_farm_res) + 4)
 
@@ -2050,7 +2052,7 @@ with pd.ExcelWriter(RESUMEN_XLS, engine='openpyxl') as rw:
     for ri, row_t in enumerate(df_dial_bod_res.itertuples(index=False), 2):
         if str(getattr(row_t, 'Criticidad', '')) == '1-CRITICO':
             for ci in range(1, len(df_dial_bod_res.columns)+1):
-                ws_r5.cell(row=ri+1, column=ci).font = Font(bold=True, color='FFFFFF',
+                ws_r5.cell(row=ri+1, column=ci).font = Font(bold=True, color='7F1D1D',
                                                              name='Arial', size=11)
     add_leyenda(ws_r5, len(df_dial_bod_res) + 4)
 

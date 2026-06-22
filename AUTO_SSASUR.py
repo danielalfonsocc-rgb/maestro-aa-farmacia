@@ -774,6 +774,18 @@ async def main():
                 cwd=str(MAESTRO_DIR), env=env_utf8,
             )
 
+        # ── PASO 5e — REPORTE CENTINELA (Campaña Invierno) ───────────────────
+        # Auto-detecta los CSV + XLSX ya descargados en este mismo flujo y
+        # genera el PDF semanal para el MINSAL. No requiere parámetros: usa
+        # los archivos más recientes de la carpeta del proyecto.
+        centinela_py = MAESTRO_DIR / "centinela_reporte.py"
+        if centinela_py.exists():
+            print(f"\n[5e/6] Reporte Centinela — Campaña Invierno 2026...")
+            subprocess.run(
+                [sys.executable, str(centinela_py), "--no-pause"],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
+
         # ── PASO 6 — PUBLICAR EN GITHUB ───────────────────────────────────────
         git_dir  = MAESTRO_DIR / ".git"
         publicar = MAESTRO_DIR / "PUBLICAR_DATOS.bat"
@@ -790,6 +802,18 @@ async def main():
         else:
             print("\n[6/6] GitHub no configurado — omitiendo publicación.")
             print("      Ejecuta CONFIGURAR_GITHUB.bat para activarlo.")
+
+        # ── PASO 7 — COPIAR RESULTADOS AL ESCRITORIO ─────────────────────────
+        # Deja copias legibles de TODAS las salidas (app, GT, recetas cheque y
+        # auditoría) en el Escritorio → carpeta «Farmacia AA», para revisarlas
+        # sin entrar al repo. Copia, no mueve: el repo sigue siendo la fuente.
+        pub_esc = MAESTRO_DIR / "publicar_escritorio.py"
+        if pub_esc.exists():
+            print("\n[7] Copiando resultados al Escritorio (carpeta «Farmacia AA»)...")
+            subprocess.run(
+                [sys.executable, str(pub_esc)],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
     else:
         print("  [ERROR] maestro_aa.py falló — revisa los mensajes arriba")
 
