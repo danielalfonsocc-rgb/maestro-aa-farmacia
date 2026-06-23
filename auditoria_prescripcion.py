@@ -6,47 +6,26 @@ Pre-cálculo de AUDITORÍA DE PRESCRIPCIÓN por medicamento → auditoria_prescr
 Para cada medicamento: consumo mensual (prescrito vs dispensado), CMP, mayores
 prescriptores, diagnósticos asociados y duplicidad de prescripción.
 """
-import glob, json, os, re, sys, unicodedata
+import json, os, sys
 import pandas as pd
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+from utils_aa import norm_erp, HOMOLOGACION, cargar_recetas_csv, setup_stdout
+
+setup_stdout()
 WORK = os.path.dirname(os.path.abspath(__file__))
 
 
-# Normalización idéntica al maestro (norm_erp + homologación) para que las claves
-# de medicamento coincidan con las del Consolidado.
-def norm_erp(s: str) -> str:
-    s = unicodedata.normalize('NFD', str(s).upper())
-    s = ''.join(c for c in s if not unicodedata.combining(c))
-    return re.sub(r' {2,}', ' ', s).strip()
-
-HOMOLOGACION_RAW = {
-    'TRAZODONA CM 100 MG': 'TRAZODONA CM  100 MG',
-    'VITAMINA D3 800 UI CAPS': 'VITAMINA D3 800 UI CM',
-    'ACIDO ALENDRONICO 70 MG CM.': 'ACIDO ALENDRONICO  CM 70 MG',
-    'ACIDO FOLICO 1 MG COMPRIMIDO': 'ACIDO FOLICO  CM 1 MG',
-    'ACIDO FOLICO 5 MG COMPRIMIDO': 'ACIDO FOLICO CM 5 MG',
-    'ACIDO URSODEOXICOLICO 250 MG COMPRIMIDO': 'ACIDO URSODEOXICOLICO CM 250 MG',
-    'ACETAZOLAMIDA 250 MG COMPRIMIDO': 'ACETAZOLAMIDA  CM 250 MG',
-}
-HOMOLOGACION = {norm_erp(k): norm_erp(v) for k, v in HOMOLOGACION_RAW.items()}
-
-
 def main():
-    files = sorted(glob.glob(os.path.join(WORK, "informe_completo_recetas*.csv")))
-    if not files:
-        print("[AVISO] No hay CSV de recetas — no se genera la auditoría.")
-        return
     cols = ["ID Receta Detalle", "Prescripción", "RUN",
             "Nombre Profesional", "Apellido Paterno Profesional", "Apellido Materno Profesional",
             "Especialidad", "Cod. Diagnóstico 1", "Diagnóstico 1",
             "Cantidad Recetada", "Cantidad Entregada", "Estado Prescripción",
             "Fecha Atención", "Fecha Entrega Receta", "Número Receta"]
-    chunks = []
-    for f in files:
-        df = pd.read_csv(f, encoding="latin1", sep=";", on_bad_lines="skip", dtype=str)
-        chunks.append(df[[c for c in cols if c in df.columns]])
-    rec = pd.concat(chunks, ignore_index=True).drop_duplicates(subset=["ID Receta Detalle"], keep="first")
+    try:
+        rec = cargar_recetas_csv(WORK, cols=cols)
+    except FileNotFoundError:
+        print("[AVISO] No hay CSV de recetas — no se genera la auditoría.")
+        return
     print(f"Recetas dedup: {len(rec):,}")
 
     rec["_med"] = rec["Prescripción"].fillna("").apply(norm_erp).map(lambda x: HOMOLOGACION.get(x, x))

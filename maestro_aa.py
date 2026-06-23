@@ -45,6 +45,7 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from aa_colors import CRIT_FILL_HEX, crit_fill, crit_hex, soften, darken, text_on, fill_hex, FONT_CRITICO
 from sgli import calcular_sgli, cargar_tallas, FACTOR_CARGA_DEFAULT
+from utils_aa import norm_erp, HOMOLOGACION_RAW, HOMOLOGACION
 
 warnings.filterwarnings('ignore')
 
@@ -81,46 +82,10 @@ def norm_col(name: str) -> str:
     return ''.join(c for c in nfkd if not unicodedata.combining(c)).strip()
 
 # ─────────────────────────────────────────────
-# RULE 2 – ERP NAME NORMALISER
+# RULE 2 – ERP NAME NORMALISER  (importado desde utils_aa)
+# RULE 3 – HOMOLOGATION TABLE   (importado desde utils_aa)
 # ─────────────────────────────────────────────
-def norm_erp(s: str) -> str:
-    s = unicodedata.normalize('NFD', str(s).upper())
-    s = ''.join(c for c in s if not unicodedata.combining(c))
-    s = re.sub(r' {2,}', ' ', s).strip()
-    return s
-
-# ─────────────────────────────────────────────
-# RULE 3 – HOMOLOGATION TABLE
-# ─────────────────────────────────────────────
-HOMOLOGACION_RAW = {
-    'TRAZODONA CM 100 MG'                        : 'TRAZODONA CM  100 MG',
-    'VITAMINA D3 800 UI CAPS'                    : 'VITAMINA D3 800 UI CM',
-    'BUPROPION 150 MG COMPRIMIDO LIBERACION MODIFICADA'
-        : 'BUPROPION (ANFEBUTAMONA) 150 MG CM LIBERACION MODIFICADA',
-    'ACIDO ALENDRONICO 70 MG CM.'                : 'ACIDO ALENDRONICO  CM 70 MG',
-    'ACIDO FOLICO 1 MG COMPRIMIDO'               : 'ACIDO FOLICO  CM 1 MG',
-    'ACIDO FOLICO 5 MG COMPRIMIDO'               : 'ACIDO FOLICO CM 5 MG',
-    'ACIDO URSODEOXICOLICO 250 MG COMPRIMIDO'    : 'ACIDO URSODEOXICOLICO CM 250 MG',
-    'ACETAZOLAMIDA 250 MG COMPRIMIDO'            : 'ACETAZOLAMIDA  CM 250 MG',
-    'TRAMADOL 100 MG/ML FC 10 ML'               : 'TRAMADOL FRASCO GOTAS 100 MG/ML /10 ML',
-    'LAGRIMAS ARTIFICIALES'                      : 'LAGRIMAS ARTIFICIALES 0,4% X 10 ML',
-    'BUDESONIDA 200 MCG/DO INH FC 200DO'         : 'BUDESONIDA 200 MCG/DO INH FC',
-    'RISPERIDONA 1 MG/ ML FC 30 ML'              : 'RISPERIDONA 1 MG/ ML FC X 30 ML.',
-    'FIERRO COMPLEJO HIERRO III POLIMALTOSA 100 MG'
-        : 'FIERRO COMPLEJO HIERRO III POLIMALTOSA  COMPRIMIDOS100 MG',
-    'LORATADINA 5 MG/5 ML SOLUCION ORAL'         : 'LORATADINA 5 MG/5 ML FC 120 ML',
-    # ── Auditoria 2026-06-22: nombre invertido stock ──────────────────────────
-    'BROMURO DE ROCURONIO 50 MG AM (REP)'        : 'ROCURONIO BROMURO AM 50 MG/5 ML',
-    'BROMURO DE ROCURONIO AMP 100 MG/10 ML'      : 'ROCURONIO BROMURO AM 50 MG/5 ML',
-    'BICARBONATO DE SODIO 8,4% AM 10 ML'         : 'SODIO BICARBONATO 8,4 % AM 10 ML',
-    # ── Auditoria 2026-06-22: diferencia de formato ───────────────────────────
-    'FERROSO SULFATO 125 MG/ML SOL. ORAL EN GOTAS FC 30 ML'
-        : 'FERROSO SULFATO 125 MG/ML SOL. ORAL EN GOTAS FC 30 ML.',
-    'LIDOCAINA CLORHIDRATO 2 % AM 5 ML'          : 'LIDOCAINA CLORHIDRATO 2 % AM 5ML',
-    # ── Auditoria 2026-06-22: receta usa abreviatura CM = Comprimido ──────────
-    'ACIDO TRANEXAMICO CM 500 MG'                : 'ACIDO TRANEXAMICO 500 MG COMPRIMIDO',
-}
-HOMOLOGACION = {norm_erp(k): norm_erp(v) for k, v in HOMOLOGACION_RAW.items()}
+# norm_erp, HOMOLOGACION_RAW, HOMOLOGACION vienen del import de arriba.
 
 # ─────────────────────────────────────────────
 # FACTOR DE EMPAQUE (CENABAST) — para aproximar pedidos a empaques completos
@@ -1536,6 +1501,7 @@ df_sgli = calcular_sgli(
     factor_carga=FACTOR_CARGA_DEFAULT,
     overrides=_sgli_overrides,
     col_crit='Crit_Farm',
+    col_cdl_pond='CDL_Pond',
 )
 print(f"  Tabla SGLI (capacidad): {len(df_sgli):,} meds  ·  baseline FC={FACTOR_CARGA_DEFAULT}  ·  overrides talla={len(_sgli_overrides)}")
 

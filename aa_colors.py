@@ -121,3 +121,16 @@ def fill_hex(fill, default='FFFFFF'):
         return str(fill.fgColor.rgb)[-6:]
     except Exception:
         return default
+
+
+# ─────────────────────────────────────────────
+# PALETA UI REPORTES — colores de interfaz compartidos (agentes, reportes Excel)
+# Fuente única de verdad para agente_duplicados.py y recetas_duplicadas.py.
+# ─────────────────────────────────────────────
+TEAL     = "0F766E"   # encabezados principales
+ROJO     = "DC2626"   # prioridad ALTA / alerta / distintos médicos
+NARANJA  = "EA580C"   # prioridad MEDIA / mismo médico
+AMBAR    = "F59E0B"   # prioridad BAJA / advertencia
+VERDE    = "16A34A"   # estado OK / positivo
+GRIS     = "F3F4F6"   # filas alternadas / fondos neutros
+GRIS_CLR = GRIS       # alias (usado en agente_duplicados)
