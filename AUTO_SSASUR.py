@@ -525,13 +525,14 @@ async def main():
     _fecha   = _arg_val("--fecha")             # atajo: mismo día en desde/hasta
     today = date.today()
     ayer  = today - timedelta(days=1)
-    # Default GT: ventana de 7 días (6 días atrás → hoy). Una ventana de 2 días
-    # (ayer→hoy) da 0 recetas en días sin despacho y el Excel no se descarga.
-    # Con 7 días siempre hay datos acumulados.
-    # Se puede reducir con --desde dd/mm/yyyy o --fecha dd/mm/yyyy.
-    _gt_inicio = _fecha or fmt(today - timedelta(days=6))
+    # Default GT: ayer → +13 días (2 semanas hacia adelante). Captura despachos
+    # próximos programados (el reporte muestra pendientes, no histórico entregado).
+    # Los despachos pasados desaparecen del listado al ser procesados, por eso se
+    # mira al FUTURO en lugar de hacia atrás.
+    # Se puede acotar con --desde dd/mm/yyyy o --fecha dd/mm/yyyy.
+    _gt_inicio = _fecha or fmt(today - timedelta(days=1))
     desde_gt = _arg_val("--desde", _gt_inicio)
-    hasta_gt = _arg_val("--hasta", _fecha or fmt(today))
+    hasta_gt = _arg_val("--hasta", _fecha or fmt(today + timedelta(days=13)))
 
     print()
     print("═" * 62)
@@ -826,6 +827,39 @@ async def main():
                 [sys.executable, str(pub_esc)],
                 cwd=str(MAESTRO_DIR), env=env_utf8,
             )
+
+        # ── PASO 8 — DEDUPLICAR RECETAS GT ───────────────────────────────────
+        # Detecta y limpia recetas duplicadas entre archivos GT descargados con
+        # rangos solapados (sobre-extracción). Actúa en modo --limpiar: crea .bak
+        # antes de modificar cualquier archivo.
+        dedup_py = MAESTRO_DIR / "dedup_recetas.py"
+        if dedup_py.exists():
+            print("\n[8] Deduplicando recetas GT por sobre-extracción...")
+            ddup = subprocess.run(
+                [sys.executable, str(dedup_py), "--limpiar"],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
+            if ddup.returncode != 0:
+                print(f"  [aviso] dedup_recetas.py terminó con código {ddup.returncode}")
+
+        # ── PASO 9 — SUBIR A GOOGLE DRIVE ────────────────────────────────────
+        # Sube las salidas (Consolidado, GT, Auditoría, Reposición) a la carpeta
+        # «Farmacia AA» en Drive, con la misma estructura que el Escritorio.
+        # Los datos de pacientes (Recetas Cheque, CSV sábana) NO se suben (Ley 19.628).
+        # Requiere token_drive.json generado previamente con --setup.
+        pub_drive = MAESTRO_DIR / "publicar_drive.py"
+        token_drive = MAESTRO_DIR / "token_drive.json"
+        if pub_drive.exists() and token_drive.exists():
+            print("\n[9] Subiendo resultados a Google Drive...")
+            dret = subprocess.run(
+                [sys.executable, str(pub_drive)],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
+            if dret.returncode != 0:
+                print(f"  [aviso] publicar_drive.py terminó con código {dret.returncode}")
+                print("  Ejecuta manualmente:  py publicar_drive.py")
+        elif pub_drive.exists():
+            print("\n[9] Google Drive: sin token — ejecuta 'py publicar_drive.py --setup' para activar.")
     else:
         print("  [ERROR] maestro_aa.py falló — revisa los mensajes arriba")
 

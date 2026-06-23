@@ -57,7 +57,7 @@ if errorlevel 1 (
     echo.
     type auto_ssasur_error.log
     echo.
-    pause
+    echo %* | findstr /i "no-pause" >nul || pause
 )
 
 echo.

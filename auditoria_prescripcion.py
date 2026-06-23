@@ -6,7 +6,7 @@ Pre-cálculo de AUDITORÍA DE PRESCRIPCIÓN por medicamento → auditoria_prescr
 Para cada medicamento: consumo mensual (prescrito vs dispensado), CMP, mayores
 prescriptores, diagnósticos asociados y duplicidad de prescripción.
 """
-import json, os, sys
+import glob, json, os, re, sys
 import pandas as pd
 
 from utils_aa import norm_erp, HOMOLOGACION, cargar_recetas_csv, setup_stdout
@@ -93,9 +93,12 @@ def main():
             "sin_diagnostico": sin_dx,
             "prescriptores": prescriptores, "diagnosticos": diagnosticos,
         }
+    csv_files = sorted(glob.glob(os.path.join(WORK, "informe_completo_recetas*.csv")))
+    m = re.search(r"\d{8}", os.path.basename(csv_files[-1])) if csv_files else None
+    generado = m.group() if m else ""
     dest = os.path.join(WORK, "auditoria_prescripcion.json")
     with open(dest, "w", encoding="utf-8") as f:
-        json.dump({"generado": files[-1].split("recetas")[-1][:8] if files else "",
+        json.dump({"generado": generado,
                    "n_medicamentos": len(out), "data": out}, f, ensure_ascii=False)
     print(f"[OK] auditoria_prescripcion.json · {len(out)} medicamentos · {os.path.getsize(dest)//1024} KB")
 
