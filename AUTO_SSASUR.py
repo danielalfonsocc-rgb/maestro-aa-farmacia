@@ -308,18 +308,22 @@ async def _abrir_reporte_gt(page):
         pass
     if await _hay_form_gt(page):
         return True
-    print("  [info] Deep-link sin formulario — navego por el menú Reporte → Gestión Territorial")
-    for sel in ('a:has-text("Reporte")', 'button:has-text("Reporte")',
-                'li:has-text("Reporte")', 'span:has-text("Reporte")'):
+    # El menú real (verificado en DOM 18-06-2026) es "Reportes" → "Informe Modalidad Despacho"
+    print("  [info] Deep-link sin formulario — navego por el menú Reportes → Informe Modalidad Despacho")
+    for sel in ('a:has-text("Reportes")', 'button:has-text("Reportes")',
+                'a:has-text("Reporte")', 'button:has-text("Reporte")',
+                'li:has-text("Reportes")', 'span:has-text("Reportes")'):
         try:
             await page.click(sel, timeout=3_000)
             await page.wait_for_timeout(700)
             break
         except Exception:
             continue
-    for sel in ('a:has-text("Gestión Territorial")', 'a:has-text("Gestion Territorial")',
-                'a:has-text("Modalidad de despacho")', ':text("Gestión Territorial")',
-                ':text("Modalidad de despacho")'):
+    for sel in ('a:has-text("Informe Modalidad Despacho")',
+                'a:has-text("Modalidad Despacho")',
+                'a:has-text("Gestión Territorial")', 'a:has-text("Gestion Territorial")',
+                'a:has-text("Modalidad de despacho")', ':text("Informe Modalidad Despacho")',
+                ':text("Gestión Territorial")', ':text("Modalidad de despacho")'):
         try:
             await page.click(sel, timeout=3_000)
             break
@@ -521,8 +525,12 @@ async def main():
     _fecha   = _arg_val("--fecha")             # atajo: mismo día en desde/hasta
     today = date.today()
     ayer  = today - timedelta(days=1)
-    # Default GT: ayer → hoy (siempre cubre el despacho del día anterior y el actual)
-    desde_gt = _arg_val("--desde", _fecha or fmt(ayer))
+    # Default GT: ventana de 7 días (6 días atrás → hoy). Una ventana de 2 días
+    # (ayer→hoy) da 0 recetas en días sin despacho y el Excel no se descarga.
+    # Con 7 días siempre hay datos acumulados.
+    # Se puede reducir con --desde dd/mm/yyyy o --fecha dd/mm/yyyy.
+    _gt_inicio = _fecha or fmt(today - timedelta(days=6))
+    desde_gt = _arg_val("--desde", _gt_inicio)
     hasta_gt = _arg_val("--hasta", _fecha or fmt(today))
 
     print()
@@ -574,10 +582,11 @@ async def main():
             dest, n = await paso_gt(page, desde_gt, hasta_gt, debug_gt)
             await browser.close()
             print("\n" + "═" * 62)
-            print("  GT · gestión territorial (modalidad de despacho) — resumen")
+            print("  Informe Modalidad Despacho (GT) — resumen")
             if dest:
                 cnt = f"{n} recetas" if isinstance(n, int) and n >= 0 else "recetas ?"
                 print(f"    ✓ {dest.name}  ({cnt})")
+                print(f"  Archivo: {dest}")
                 print(f"  Carpeta: {GT_DIR}")
                 print("═" * 62)
                 # ── Cruce + planillas automático ──────────────────────────────
@@ -668,16 +677,20 @@ async def main():
         # ════════════════════════════════════════════════════════════════════
         gt_dest = None   # path del xlsx descargado; None si se omite o falla
         if no_gt:
-            print("\n[3/7] GT — omitido (--no-gt).")
+            print("\n[3/7] Modalidad de Despacho (GT) — omitido (--no-gt).")
         else:
-            print(f"\n[3/7] GT — Gestión Territorial ({desde_gt} → {hasta_gt})...")
+            print(f"\n[3/7] Modalidad de Despacho — Informe GT ({desde_gt} → {hasta_gt})...")
             gt_dest, n_gt = await paso_gt(page, desde_gt, hasta_gt, debug_gt)
             if gt_dest:
-                print(f"  ✓ {gt_dest.name}  ({n_gt} recetas)")
+                cnt = f"{n_gt} recetas" if isinstance(n_gt, int) and n_gt >= 0 else "recetas ?"
+                print(f"  ✓ {gt_dest.name}  ({cnt})")
+                print(f"  → {gt_dest}")
             elif n_gt == 0:
-                print("  · Sin recetas GT para ese período.")
+                print(f"  · Sin recetas de despacho en {desde_gt} → {hasta_gt}.")
+                print(f"    (Usa --desde dd/mm/yyyy --hasta dd/mm/yyyy para otro rango)")
             else:
                 print("  [AVISO] No se generó el Excel GT — continúo con el resto.")
+                print(f"    Revisa debug_gt.png en {MAESTRO_DIR}")
 
         # ════════════════════════════════════════════════════════════════════
         #  PASO 4 — ABASTECIMIENTO  (volver al dashboard → entrar → stock)

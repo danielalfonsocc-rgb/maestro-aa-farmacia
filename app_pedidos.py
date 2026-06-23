@@ -1295,7 +1295,13 @@ with tab_sgli:
                 column_config={
                     'Medicamento'        : st.column_config.TextColumn("Medicamento", width="large"),
                     'Criticidad'         : st.column_config.TextColumn("Criticidad", width="small"),
-                    'Dias_Reposicion_IR' : st.column_config.NumberColumn("Días Rep. (IR)", format="%d"),
+                    'Freq_Revision'      : st.column_config.NumberColumn("Rev. (d.hab)", format="%d",
+                                            help="Días hábiles entre revisiones: 1=diario … 5=semanal. "
+                                                 "Calculado por CDL + criticidad + variabilidad de consumo."),
+                    'Stock_Minimo'       : st.column_config.NumberColumn("Stock Mín. (ud)", format="%d",
+                                            help="ROP per-med = CDL × Freq_Revision + Stock_Seguridad. "
+                                                 "No bajar de este nivel sin reponer."),
+                    'Dias_Reposicion_IR' : st.column_config.NumberColumn("IR global (d)", format="%d"),
                     'Cap_Max'            : st.column_config.NumberColumn("Cap. Máx (ud)", format="%d"),
                     'Nivel_Objetivo_T'   : st.column_config.NumberColumn("Nivel Obj. (T)", format="%d"),
                     'Deficit'            : st.column_config.NumberColumn("Déficit", format="%d"),

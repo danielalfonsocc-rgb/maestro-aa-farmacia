@@ -1,6 +1,8 @@
 @echo off
 title AUTO SSASUR - Maestro AA Farmacia
 cd /d "%~dp0"
+chcp 65001 >nul
+set PYTHONUTF8=1
 
 echo.
 echo  ============================================================
@@ -44,6 +46,18 @@ echo.
 echo  Iniciando automatizacion...
 echo.
 
-py AUTO_SSASUR.py
+py AUTO_SSASUR.py %* 2>> auto_ssasur_error.log
+
+if errorlevel 1 (
+    echo.
+    echo  [ERROR] AUTO_SSASUR.py termino con error (codigo %errorlevel%).
+    echo.
+    echo  El traceback completo esta en: auto_ssasur_error.log
+    echo  (en la misma carpeta que este bat)
+    echo.
+    type auto_ssasur_error.log
+    echo.
+    pause
+)
 
 echo.

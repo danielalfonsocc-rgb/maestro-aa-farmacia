@@ -40,10 +40,14 @@ py maestro_aa.py
 
 if %errorlevel% == 0 (
     echo.
+    echo  Copiando resultados al Escritorio...
+    py publicar_escritorio.py --app
+    echo.
     echo  ============================================================
     echo   LISTO
     echo   - Consolidado_AA_MAESTRO.xlsx
     echo   - Resumen_Pedidos_AA.xlsx
+    echo   - Copia en el Escritorio: Farmacia AA\1 - App Pedidos
     echo  ============================================================
 ) else (
     echo.
