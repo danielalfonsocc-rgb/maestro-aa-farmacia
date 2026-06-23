@@ -493,16 +493,18 @@ async def paso_gt(page, desde=None, hasta=None, debug=False):
 
 
 async def main():
+    no_pause = "--no-pause" in sys.argv
     # ── Verificar Playwright ───────────────────────────────────────────────────
     try:
         from playwright.async_api import async_playwright
     except ImportError:
         print("\n[ERROR] Playwright no está instalado.")
         print("  Ejecuta AUTO_SSASUR.bat para instalarlo automáticamente.\n")
-        try:
-            input("Presiona Enter para cerrar...")
-        except EOFError:
-            pass
+        if not no_pause:
+            try:
+                input("Presiona Enter para cerrar...")
+            except EOFError:
+                pass
         sys.exit(1)
 
     # Modo prueba: descarga SOLO recetas y termina (sin stock, maestro ni publicar).
@@ -547,7 +549,7 @@ async def main():
         page = await context.new_page()
 
         # ── PASO 1 — DETECTAR LOGIN ────────────────────────────────────────────
-        print("\n[1/6] Logéate en SSASUR (tienes 5 minutos)...")
+        print("\n[1/7] Logéate en SSASUR (tienes 5 minutos)...")
         await page.goto(DASHBOARD_URL)
         try:
             await page.wait_for_selector(
@@ -613,7 +615,7 @@ async def main():
         #   · un rango sin datos no deja archivo (se borra el incompleto).
         # El maestro lee todos los informe_completo_recetas*.csv y deduplica por
         # ID Receta Detalle, así que los bloques (rangos sin solape) no doble-cuentan.
-        print("\n[2/6] Módulo RECETA — informe completo por bloques de 30 días...")
+        print("\n[2/7] Módulo RECETA — informe completo por bloques de 30 días...")
         await entrar_receta(page)
 
         await page.goto(RECETA_INFORME)
@@ -666,9 +668,9 @@ async def main():
         # ════════════════════════════════════════════════════════════════════
         gt_dest = None   # path del xlsx descargado; None si se omite o falla
         if no_gt:
-            print("\n[3/6] GT — omitido (--no-gt).")
+            print("\n[3/7] GT — omitido (--no-gt).")
         else:
-            print(f"\n[3/6] GT — Gestión Territorial ({desde_gt} → {hasta_gt})...")
+            print(f"\n[3/7] GT — Gestión Territorial ({desde_gt} → {hasta_gt})...")
             gt_dest, n_gt = await paso_gt(page, desde_gt, hasta_gt, debug_gt)
             if gt_dest:
                 print(f"  ✓ {gt_dest.name}  ({n_gt} recetas)")
@@ -680,7 +682,7 @@ async def main():
         # ════════════════════════════════════════════════════════════════════
         #  PASO 4 — ABASTECIMIENTO  (volver al dashboard → entrar → stock)
         # ════════════════════════════════════════════════════════════════════
-        print("\n[4/6] Módulo ABASTECIMIENTO...")
+        print("\n[4/7] Módulo ABASTECIMIENTO...")
         await page.goto(DASHBOARD_URL)
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(1_500)
@@ -729,7 +731,7 @@ async def main():
         await browser.close()
 
     # ── PASO 4 — MAESTRO AA ────────────────────────────────────────────────────
-    print("\n[5/6] Actualizando Maestro AA...")
+    print("\n[5/7] Actualizando Maestro AA...")
     env_utf8 = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     result = subprocess.run(
         [sys.executable, str(MAESTRO_DIR / "maestro_aa.py")],
@@ -748,13 +750,15 @@ async def main():
         # ── PASO 5b — AUDITORÍA DE PRESCRIPCIÓN ──────────────────────────────
         audit_py = MAESTRO_DIR / "auditoria_prescripcion.py"
         if audit_py.exists():
-            print("\n  Generando auditoría de prescripción...")
-            subprocess.run([sys.executable, str(audit_py)], cwd=str(MAESTRO_DIR), env=env_utf8)
+            print("\n[5b/7] Generando auditoría de prescripción...")
+            aret = subprocess.run([sys.executable, str(audit_py)], cwd=str(MAESTRO_DIR), env=env_utf8)
+            if aret.returncode != 0:
+                print(f"  [aviso] auditoria_prescripcion.py terminó con código {aret.returncode}")
 
         # ── PASO 5c — CRUCE GT + PLANILLAS ───────────────────────────────────
         if gt_dest:
             out_gt = gt_salida(gt_dest)   # carpeta propia por rango de fechas
-            print(f"\n[5c/6] Cruce GT + generando planillas → out_gt/{out_gt.name}/ ...")
+            print(f"\n[5c/7] Cruce GT + generando planillas → out_gt/{out_gt.name}/ ...")
             cruce = MAESTRO_DIR / "cruce_gt.py"
             subprocess.run(
                 [sys.executable, str(cruce), str(gt_dest),
@@ -768,31 +772,21 @@ async def main():
         # formulario vive fuera del repo (carpeta de la QF) → no se publica.
         rch_py = MAESTRO_DIR / "recetas_cheque.py"
         if not no_rch and rch_py.exists():
-            print(f"\n[5d/6] Registro ISP de recetas cheque (Farmacia AT Abierta)...")
-            subprocess.run(
+            print(f"\n[5d/7] Registro ISP de recetas cheque (Farmacia AT Abierta)...")
+            dret = subprocess.run(
                 [sys.executable, str(rch_py), "--no-pause"],
                 cwd=str(MAESTRO_DIR), env=env_utf8,
             )
-
-        # ── PASO 5e — REPORTE CENTINELA (Campaña Invierno) ───────────────────
-        # Auto-detecta los CSV + XLSX ya descargados en este mismo flujo y
-        # genera el PDF semanal para el MINSAL. No requiere parámetros: usa
-        # los archivos más recientes de la carpeta del proyecto.
-        centinela_py = MAESTRO_DIR / "centinela_reporte.py"
-        if centinela_py.exists():
-            print(f"\n[5e/6] Reporte Centinela — Campaña Invierno 2026...")
-            subprocess.run(
-                [sys.executable, str(centinela_py), "--no-pause"],
-                cwd=str(MAESTRO_DIR), env=env_utf8,
-            )
+            if dret.returncode != 0:
+                print(f"  [aviso] recetas_cheque.py terminó con código {dret.returncode}")
 
         # ── PASO 6 — PUBLICAR EN GITHUB ───────────────────────────────────────
         git_dir  = MAESTRO_DIR / ".git"
         publicar = MAESTRO_DIR / "PUBLICAR_DATOS.bat"
         if no_publicar:
-            print("\n[6/6] --no-publicar: omito la publicación en GitHub (modo prueba).")
+            print("\n[6/7] --no-publicar: omito la publicación en GitHub (modo prueba).")
         elif git_dir.exists() and publicar.exists():
-            print("\n[6/6] Publicando datos en GitHub...")
+            print("\n[6/7] Publicando datos en GitHub...")
             pub = subprocess.run(
                 ["cmd", "/c", str(publicar)],
                 cwd=str(MAESTRO_DIR),
@@ -800,7 +794,7 @@ async def main():
             if pub.returncode != 0:
                 print("  [AVISO] Publicación falló — ejecuta PUBLICAR_DATOS.bat manualmente.")
         else:
-            print("\n[6/6] GitHub no configurado — omitiendo publicación.")
+            print("\n[6/7] GitHub no configurado — omitiendo publicación.")
             print("      Ejecuta CONFIGURAR_GITHUB.bat para activarlo.")
 
         # ── PASO 7 — COPIAR RESULTADOS AL ESCRITORIO ─────────────────────────
@@ -809,7 +803,7 @@ async def main():
         # sin entrar al repo. Copia, no mueve: el repo sigue siendo la fuente.
         pub_esc = MAESTRO_DIR / "publicar_escritorio.py"
         if pub_esc.exists():
-            print("\n[7] Copiando resultados al Escritorio (carpeta «Farmacia AA»)...")
+            print("\n[7/7] Copiando resultados al Escritorio (carpeta «Farmacia AA»)...")
             subprocess.run(
                 [sys.executable, str(pub_esc)],
                 cwd=str(MAESTRO_DIR), env=env_utf8,
@@ -817,10 +811,25 @@ async def main():
     else:
         print("  [ERROR] maestro_aa.py falló — revisa los mensajes arriba")
 
-    try:
-        input("\nPresiona Enter para cerrar...")
-    except EOFError:
-        pass
+    # ── PASO 5e — REPORTE CENTINELA (siempre, independiente del maestro) ──────
+    # Auto-detecta los CSV + XLSX ya descargados en este mismo flujo y
+    # genera el PDF semanal para el MINSAL. No requiere parámetros: usa
+    # los archivos más recientes de la carpeta del proyecto.
+    centinela_py = MAESTRO_DIR / "centinela_reporte.py"
+    if centinela_py.exists():
+        print(f"\n[5e/7] Reporte Centinela — Campaña Invierno 2026...")
+        cret = subprocess.run(
+            [sys.executable, str(centinela_py), "--no-pause"],
+            cwd=str(MAESTRO_DIR), env=env_utf8,
+        )
+        if cret.returncode != 0:
+            print(f"  [aviso] centinela_reporte.py terminó con código {cret.returncode} — revisa el reporte centinela")
+
+    if not no_pause:
+        try:
+            input("\nPresiona Enter para cerrar...")
+        except EOFError:
+            pass
 
 
 if __name__ == "__main__":

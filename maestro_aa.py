@@ -56,7 +56,7 @@ WORK_DIR   = os.path.dirname(os.path.abspath(__file__))
 # Si está abierto en Excel, genera uno con fecha como respaldo
 _OUT_BASE  = os.path.join(WORK_DIR, "Consolidado_AA_MAESTRO.xlsx")
 _OUT_DATED = os.path.join(WORK_DIR,
-    f"Consolidado_AA_MAESTRO_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx")
+    f"Consolidado_AA_MAESTRO_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
 def _output_path():
     """Devuelve el path de salida; si el archivo está bloqueado usa el dated."""
@@ -109,6 +109,16 @@ HOMOLOGACION_RAW = {
     'FIERRO COMPLEJO HIERRO III POLIMALTOSA 100 MG'
         : 'FIERRO COMPLEJO HIERRO III POLIMALTOSA  COMPRIMIDOS100 MG',
     'LORATADINA 5 MG/5 ML SOLUCION ORAL'         : 'LORATADINA 5 MG/5 ML FC 120 ML',
+    # ── Auditoria 2026-06-22: nombre invertido stock ──────────────────────────
+    'BROMURO DE ROCURONIO 50 MG AM (REP)'        : 'ROCURONIO BROMURO AM 50 MG/5 ML',
+    'BROMURO DE ROCURONIO AMP 100 MG/10 ML'      : 'ROCURONIO BROMURO AM 50 MG/5 ML',
+    'BICARBONATO DE SODIO 8,4% AM 10 ML'         : 'SODIO BICARBONATO 8,4 % AM 10 ML',
+    # ── Auditoria 2026-06-22: diferencia de formato ───────────────────────────
+    'FERROSO SULFATO 125 MG/ML SOL. ORAL EN GOTAS FC 30 ML'
+        : 'FERROSO SULFATO 125 MG/ML SOL. ORAL EN GOTAS FC 30 ML.',
+    'LIDOCAINA CLORHIDRATO 2 % AM 5 ML'          : 'LIDOCAINA CLORHIDRATO 2 % AM 5ML',
+    # ── Auditoria 2026-06-22: receta usa abreviatura CM = Comprimido ──────────
+    'ACIDO TRANEXAMICO CM 500 MG'                : 'ACIDO TRANEXAMICO 500 MG COMPRIMIDO',
 }
 HOMOLOGACION = {norm_erp(k): norm_erp(v) for k, v in HOMOLOGACION_RAW.items()}
 
@@ -1911,7 +1921,7 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
 # ═══════════════════════════════════════════════
 _RES_BASE  = os.path.join(WORK_DIR, "Resumen_Pedidos_AA.xlsx")
 _RES_DATED = os.path.join(WORK_DIR,
-    f"Resumen_Pedidos_AA_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx")
+    f"Resumen_Pedidos_AA_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
 def _resumen_path():
     if not os.path.exists(_RES_BASE):

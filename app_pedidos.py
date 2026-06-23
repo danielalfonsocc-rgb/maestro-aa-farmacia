@@ -4,7 +4,7 @@ sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os, io
+import os, io, glob
 from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
@@ -329,35 +329,50 @@ def build_pdf(titulo, subtitulo, df_data, col_config, orientacion='landscape'):
 
 
 # ─── Carga de datos ───────────────────────────────────────────────────────────
+# Resuelve el Consolidado MÁS RECIENTE: el nombre base o un respaldo con fecha.
+# maestro_aa.py escribe Consolidado_AA_MAESTRO_AAAAMMDD_HHMM.xlsx como fallback
+# cuando el archivo base está bloqueado (Excel abierto al regenerar). Tomando el
+# más nuevo, la app nunca queda con el dato viejo aunque AUTO_SSASUR y la app
+# corran a la vez: el dato fresco del respaldo no queda huérfano.
+def _maestro_actual():
+    cands = [c for c in glob.glob(os.path.join(WORK_DIR, "Consolidado_AA_MAESTRO*.xlsx"))
+             if not os.path.basename(c).startswith("~$")]   # ignora temporales de Excel
+    return max(cands, key=os.path.getmtime) if cands else XLS_MAESTRO
+
 @st.cache_data(ttl=300)
+def _leer_maestro(ruta, mtime):
+    # `mtime` solo participa en la clave de caché: si el archivo cambia, recarga
+    # solo (sin esperar el TTL ni pulsar "Recargar datos").
+    stock    = pd.read_excel(ruta, sheet_name='Stock_AA',             engine='openpyxl')
+    farm     = pd.read_excel(ruta, sheet_name='Pedido_Farm_Bodega',   engine='openpyxl')
+    bod      = pd.read_excel(ruta, sheet_name='Pedido_Repos_Bodega',  engine='openpyxl')
+    falt     = pd.read_excel(ruta, sheet_name='Faltas_Farmacia_AA',   engine='openpyxl')
+    falt_det = pd.read_excel(ruta, sheet_name='Faltantes_Detalle_AA', engine='openpyxl')
+    # Dialisis (solo recetas de nefrologos) — opcional para compatibilidad
+    try:
+        dial_farm = pd.read_excel(ruta, sheet_name='Dialisis_Pedido_Farm', engine='openpyxl')
+    except Exception:
+        dial_farm = pd.DataFrame()
+    try:
+        dial_bod = pd.read_excel(ruta, sheet_name='Dialisis_Pedido_Bod', engine='openpyxl')
+    except Exception:
+        dial_bod = pd.DataFrame()
+    # SGLI (reposicion por estres / semana pico) — opcional para compatibilidad
+    try:
+        sgli = pd.read_excel(ruta, sheet_name='SGLI_Estres', engine='openpyxl')
+    except Exception:
+        sgli = pd.DataFrame()
+    return {'stock': stock, 'farm': farm, 'bod': bod,
+            'falt': falt, 'falt_det': falt_det,
+            'dial_farm': dial_farm, 'dial_bod': dial_bod,
+            'sgli': sgli, 'mtime': datetime.fromtimestamp(mtime)}
+
 def cargar_datos():
-    if not os.path.exists(XLS_MAESTRO):
+    ruta = _maestro_actual()
+    if not os.path.exists(ruta):
         return None
     try:
-        stock    = pd.read_excel(XLS_MAESTRO, sheet_name='Stock_AA',             engine='openpyxl')
-        farm     = pd.read_excel(XLS_MAESTRO, sheet_name='Pedido_Farm_Bodega',   engine='openpyxl')
-        bod      = pd.read_excel(XLS_MAESTRO, sheet_name='Pedido_Repos_Bodega',  engine='openpyxl')
-        falt     = pd.read_excel(XLS_MAESTRO, sheet_name='Faltas_Farmacia_AA',   engine='openpyxl')
-        falt_det = pd.read_excel(XLS_MAESTRO, sheet_name='Faltantes_Detalle_AA', engine='openpyxl')
-        # Dialisis (solo recetas de nefrologos) — opcional para compatibilidad
-        try:
-            dial_farm = pd.read_excel(XLS_MAESTRO, sheet_name='Dialisis_Pedido_Farm', engine='openpyxl')
-        except Exception:
-            dial_farm = pd.DataFrame()
-        try:
-            dial_bod = pd.read_excel(XLS_MAESTRO, sheet_name='Dialisis_Pedido_Bod', engine='openpyxl')
-        except Exception:
-            dial_bod = pd.DataFrame()
-        # SGLI (reposicion por estres / semana pico) — opcional para compatibilidad
-        try:
-            sgli = pd.read_excel(XLS_MAESTRO, sheet_name='SGLI_Estres', engine='openpyxl')
-        except Exception:
-            sgli = pd.DataFrame()
-        mtime    = datetime.fromtimestamp(os.path.getmtime(XLS_MAESTRO))
-        return {'stock': stock, 'farm': farm, 'bod': bod,
-                'falt': falt, 'falt_det': falt_det,
-                'dial_farm': dial_farm, 'dial_bod': dial_bod,
-                'sgli': sgli, 'mtime': mtime}
+        return _leer_maestro(ruta, os.path.getmtime(ruta))
     except Exception as e:
         st.error(f"Error cargando datos: {e}")
         return None
@@ -1205,8 +1220,8 @@ with tab_sgli:
     st.markdown("## 🚦 SGLI · Reposición por capacidad y demanda")
     st.markdown(
         "Motor de **Gestión Logística (SGLI)**: calcula el nivel objetivo de "
-        "Farmacia AA **restringido por la capacidad física de las gavetas** y la "
-        "demanda, y decide el traspaso desde Bodega AA o la compra urgente. Todo "
+        "Farmacia AA basado en **demanda** (sin restricción de capacidad física), "
+        "y decide el traspaso desde Bodega AA o la compra urgente. Todo "
         "el cálculo es **en unidades** (la farmacia fracciona y ordena por unidad). "
         "Mueve el **factor de carga** para simular mayor demanda."
     )
@@ -1222,9 +1237,9 @@ with tab_sgli:
                 "- **Cap. Máx (ud)** = (cajas que caben en la gaveta × {3 si rotación ALTA · "
                 "1 si NORMAL}) × **unidades por caja**. Cajas/gaveta por talla: S=23, M=15, "
                 "L=9 (o `⌊2790 / Vol_Caja⌋` para EXTERNO).\n"
-                "- **IR** (días) = `máx(1, mín(5, ⌊Cap_Máx / CDL⌋, ⌊5 / Factor_Carga⌋))`.\n"
+                "- **IR** (días) = `máx(1, mín(5, ⌊5 / Factor_Carga⌋))` — sin restricción de capacidad física.\n"
                 "- **Demanda** = `IR × CDL × Factor_Carga`  ·  **Nivel Objetivo (T)** = "
-                "`mín(Cap_Máx, ⌊Demanda × 1.25⌋)` — nunca excede la capacidad física.\n"
+                "`⌊Demanda × 1.25⌋` (sin techo físico; Cap_Máx queda como referencia).\n"
                 "- **Déficit** = `máx(0, T − Stock Farmacia)`.\n"
                 "- **Decisión:** si hay déficit, se **traspasa desde Bodega AA** lo disponible "
                 "y el resto va a **compra urgente**.\n"
@@ -1259,17 +1274,14 @@ with tab_sgli:
         n_def        = int(_mask.sum())
         traspaso_tot = int(np.minimum(_def, _bod)[_mask].sum())
         compra_tot   = int(np.maximum(_def - _bod, 0)[_mask].sum())
-        cap_lim      = int(((_tt == _cap) & (_cap > 0) & _mask).sum())
-
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Medicamentos", len(df_calc))
         m2.metric("Con déficit", n_def)
         m3.metric("A traspasar (ud)", f"{traspaso_tot:,}".replace(",", "."))
         m4.metric("Compra urgente (ud)", f"{compra_tot:,}".replace(",", "."))
-        _cap_txt = f"  ·  🧱 {cap_lim} con objetivo limitado por capacidad física" if cap_lim else ""
         st.caption(
             f"IR tope por estrés = ⌊5/{factor:.2f}⌋ = **{ir_tope} días** "
-            f"(el IR por medicamento puede ser menor si la gaveta lo limita).{_cap_txt}"
+            f"(el IR depende solo del factor de carga, no de capacidad física)."
         )
 
         df_show = df_calc[_mask].reset_index(drop=True) if solo_acc else df_calc
