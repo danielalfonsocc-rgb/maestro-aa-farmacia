@@ -594,14 +594,16 @@ async def main():
                 out_gt = gt_salida(dest)   # carpeta propia por rango de fechas
                 print(f"\n[GT] Cruzando con histórico y generando planillas...")
                 print(f"     Salida: out_gt/{out_gt.name}/")
-                ret = subprocess.run(
-                    [sys.executable, str(cruce), str(dest),
-                     "--salida", str(out_gt), "--generar"],
-                    env={**dict(__import__("os").environ),
-                         "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
-                )
-                if ret.returncode != 0:
-                    print(f"  [aviso] cruce_gt.py terminó con código {ret.returncode}")
+                if cruce.exists():
+                    ret = subprocess.run(
+                        [sys.executable, str(cruce), str(dest),
+                         "--salida", str(out_gt), "--generar"],
+                        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                    )
+                    if ret.returncode != 0:
+                        print(f"  [aviso] cruce_gt.py terminó con código {ret.returncode}")
+                else:
+                    print(f"  [aviso] cruce_gt.py no encontrado — omitiendo cruce.")
             elif n == 0:
                 print("    · Sin recetas en el listado — no hay despacho para esas fechas.")
                 print(f"  Carpeta: {GT_DIR}")
@@ -743,7 +745,7 @@ async def main():
 
         await browser.close()
 
-    # ── PASO 4 — MAESTRO AA ────────────────────────────────────────────────────
+    # ── PASO 5 — MAESTRO AA ────────────────────────────────────────────────────
     print("\n[5/7] Actualizando Maestro AA...")
     env_utf8 = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     result = subprocess.run(
@@ -773,11 +775,14 @@ async def main():
             out_gt = gt_salida(gt_dest)   # carpeta propia por rango de fechas
             print(f"\n[5c/7] Cruce GT + generando planillas → out_gt/{out_gt.name}/ ...")
             cruce = MAESTRO_DIR / "cruce_gt.py"
-            subprocess.run(
-                [sys.executable, str(cruce), str(gt_dest),
-                 "--salida", str(out_gt), "--generar"],
-                cwd=str(MAESTRO_DIR), env=env_utf8,
-            )
+            if cruce.exists():
+                subprocess.run(
+                    [sys.executable, str(cruce), str(gt_dest),
+                     "--salida", str(out_gt), "--generar"],
+                    cwd=str(MAESTRO_DIR), env=env_utf8,
+                )
+            else:
+                print(f"  [aviso] cruce_gt.py no encontrado — omitiendo cruce.")
 
         # ── PASO 5d — REGISTRO ISP RECETAS CHEQUE ────────────────────────────
         # Consume la MISMA sábana ya descargada: filtra recetas cheque AT Abierta
@@ -830,7 +835,7 @@ async def main():
     # los archivos más recientes de la carpeta del proyecto.
     centinela_py = MAESTRO_DIR / "centinela_reporte.py"
     if centinela_py.exists():
-        print(f"\n[5e/7] Reporte Centinela — Campaña Invierno 2026...")
+        print(f"\n[CENTINELA] Reporte Centinela — Campaña Invierno 2026...")
         cret = subprocess.run(
             [sys.executable, str(centinela_py), "--no-pause"],
             cwd=str(MAESTRO_DIR), env=env_utf8,
