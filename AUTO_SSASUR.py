@@ -517,8 +517,10 @@ async def main():
     no_publicar  = "--no-publicar" in sys.argv
     # Modo GT exclusivo: solo gestión territorial y termina (sin sábana/stock/maestro).
     gt_mode  = ("--gt" in sys.argv) or ("--solo-gt" in sys.argv)
+    # Solo stock: salta recetas y GT, baja solo stock y corre maestro.
+    solo_stock = "--solo-stock" in sys.argv
     # En corrida completa, saltar GT con --no-gt (si ya se corrió hoy por separado).
-    no_gt    = "--no-gt" in sys.argv
+    no_gt    = "--no-gt" in sys.argv or solo_stock
     # Saltar el registro ISP de recetas cheque con --no-rch.
     no_rch   = "--no-rch" in sys.argv
     debug_gt = "--debug-gt" in sys.argv        # volcados [DESCUBRIR …] + screenshots
@@ -560,16 +562,36 @@ async def main():
         # ── PASO 1 — DETECTAR LOGIN ────────────────────────────────────────────
         print("\n[1/7] Logéate en SSASUR (tienes 5 minutos)...")
         await page.goto(DASHBOARD_URL)
+
+        async def _esperar_abastecimiento(pg):
+            try:
+                await pg.wait_for_selector(
+                    'button:has-text("ABASTECIMIENTO"), div:has-text("ABASTECIMIENTO")',
+                    timeout=TIMEOUT_LOGIN,
+                )
+            except Exception:
+                await pg.wait_for_function(
+                    "document.body.innerText.includes('ABASTECIMIENTO')",
+                    timeout=TIMEOUT_LOGIN,
+                )
+
         try:
-            await page.wait_for_selector(
-                'button:has-text("ABASTECIMIENTO"), div:has-text("ABASTECIMIENTO")',
-                timeout=TIMEOUT_LOGIN,
-            )
-        except Exception:
-            await page.wait_for_function(
-                "document.body.innerText.includes('ABASTECIMIENTO')",
-                timeout=TIMEOUT_LOGIN,
-            )
+            await _esperar_abastecimiento(page)
+        except Exception as _login_err:
+            from playwright._impl._errors import TargetClosedError as _TCE
+            if isinstance(_login_err, _TCE) and SESSION_FILE.exists():
+                # Sesión expirada: las cookies vencidas provocaron un redirect
+                # que cerró la página — reiniciar sin sesión guardada
+                print("  [aviso] Sesión guardada expirada — abre el browser y logéate.")
+                SESSION_FILE.unlink(missing_ok=True)
+                await context.close()
+                context = await browser.new_context(accept_downloads=True)
+                page = await context.new_page()
+                await page.goto(DASHBOARD_URL)
+                await _esperar_abastecimiento(page)
+            else:
+                raise
+
         await context.storage_state(path=str(SESSION_FILE))
         print("  ✓ Sesión detectada")
 
@@ -674,6 +696,11 @@ async def main():
             print("\n[solo-recetas] Modo prueba: omito stock, maestro y publicación.")
             await browser.close()
             return
+
+        if solo_stock:
+            print("\n[solo-stock] Saltando recetas — voy directo al stock...")
+            # salta el bloque de recetas que ya se acaba de ejecutar arriba,
+            # no_gt ya está activado, el script continúa en PASO 4 (stock)
 
         # ════════════════════════════════════════════════════════════════════
         #  PASO 3 — GT  (gestión territorial — mismo módulo RECETA, sesión 629)
