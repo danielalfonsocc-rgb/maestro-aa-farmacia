@@ -2057,3 +2057,11 @@ with open(log_file, 'w', encoding='utf-8') as _lf:
     _lf.write(f"Salida  : {os.path.basename(OUTPUT_XLS)}\n")
     _lf.write(f"Duracion: {_duracion.seconds}s\n")
 print(f"  Log guardado en: logs/{os.path.basename(log_file)}")
+
+# ─── Generar planilla SGLI histórica ─────────────────────────────────────────
+try:
+    import sgli_historico
+    print("\n[SGLI] Generando planilla histórica SGLI...")
+    sgli_historico.main()
+except Exception as _e_sgli:
+    print(f"  [WARN] SGLI histórico no generado: {_e_sgli}")

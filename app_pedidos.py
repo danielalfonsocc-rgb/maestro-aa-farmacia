@@ -232,7 +232,7 @@ def build_pdf(titulo, subtitulo, df_data, col_config, orientacion='landscape'):
 
     styles = getSampleStyleSheet()
     style_titulo = ParagraphStyle('tit', parent=styles['Heading1'],
-                                  fontSize=13, textColor=colors.HexColor('#1A237E'),
+                                  fontSize=13, textColor=colors.HexColor('#1F2937'),
                                   spaceAfter=2, alignment=TA_LEFT)
     style_sub    = ParagraphStyle('sub', parent=styles['Normal'],
                                   fontSize=8,  textColor=colors.HexColor('#555555'),
@@ -274,18 +274,29 @@ def build_pdf(titulo, subtitulo, df_data, col_config, orientacion='landscape'):
     table_data = [header_row] + data_rows
 
     # Estilos de tabla
+    # Paleta impresion economica: fondo solo para niveles criticos (1-3);
+    # niveles 4-5 quedan en blanco para ahorrar tinta.
+    _FILL_PRINT = {
+        '1-CRITICO' : 'F4B3B3',  # rosa pastel + texto vino (FONT_CRITICO)
+        '2-URGENTE' : 'FFCDD2',  # rosa claro
+        '3-ALTO'    : 'FFE8C8',  # naranja muy claro
+        '3-MODERADO': 'FFF8F0',  # naranja casi blanco
+        '4-MODERADO': 'FFFFFF',
+        '4-BAJO'    : 'FFFFFF',
+        '5-BAJO'    : 'FFFFFF',
+        '5-OK'      : 'FFFFFF',
+    }
     t_style = [
-        # Cabecera
-        ('BACKGROUND',  (0,0), (-1,0), colors.HexColor('#' + soften('1F4E78'))),
-        ('TEXTCOLOR',   (0,0), (-1,0), colors.HexColor('#' + darken('1F4E78'))),
+        # Cabecera — sin fondo, texto oscuro + borde inferior grueso (sin tinta de relleno)
+        ('BACKGROUND',  (0,0), (-1,0), colors.white),
+        ('TEXTCOLOR',   (0,0), (-1,0), colors.HexColor('#1F2937')),
         ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
         ('FONTSIZE',    (0,0), (-1,0), 8),
         ('ALIGN',       (0,0), (-1,0), 'CENTER'),
         ('VALIGN',      (0,0), (-1,-1), 'MIDDLE'),
-        ('ROWBACKGROUND',(0,0),(-1,0), colors.HexColor('#' + soften('1F4E78'))),
         # Bordes
-        ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#CCCCCC')),
-        ('LINEBELOW',   (0,0), (-1,0),  0.8, colors.HexColor('#AAAAAA')),
+        ('GRID',        (0,0), (-1,-1), 0.25, colors.HexColor('#DDDDDD')),
+        ('LINEBELOW',   (0,0), (-1,0),  1.2,  colors.HexColor('#555555')),
         # Columna Solicitado (última) — borde izquierdo más grueso
         ('LINEAFTER',   (-2,0), (-2,-1), 1.2, colors.HexColor('#999999')),
         # Padding
@@ -294,12 +305,11 @@ def build_pdf(titulo, subtitulo, df_data, col_config, orientacion='landscape'):
         ('LEFTPADDING', (0,0), (-1,-1), 4),
         ('RIGHTPADDING',(0,0), (-1,-1), 4),
     ]
-    # Colores por fila — misma paleta que los Excel (aa_colors.CRIT_FILL_HEX)
     for i, crit in enumerate(row_crits, 1):
-        # Etiquetas de pedidos estan en CRIT_FILL_HEX; las de faltantes
-        # ('[CRITICO]'...) caen al color por nivel (crit_hex) en vez de gris.
-        t_style.append(('BACKGROUND', (0,i), (-1,i),
-                         colors.HexColor('#' + (CRIT_FILL_HEX.get(crit) or crit_hex(crit)))))
+        fill = _FILL_PRINT.get(crit) or (
+            'FFFFFF' if crit_nivel(crit) >= 4 else CRIT_FILL_HEX.get(crit) or crit_hex(crit)
+        )
+        t_style.append(('BACKGROUND', (0,i), (-1,i), colors.HexColor('#' + fill)))
 
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
     table.setStyle(TableStyle(t_style))
@@ -316,7 +326,7 @@ def build_pdf(titulo, subtitulo, df_data, col_config, orientacion='landscape'):
     story = [
         Paragraph(titulo, style_titulo),
         Paragraph(subtitulo, style_sub),
-        HRFlowable(width='100%', thickness=1, color=colors.HexColor('#1F4E78'), spaceAfter=6),
+        HRFlowable(width='100%', thickness=0.8, color=colors.HexColor('#888888'), spaceAfter=6),
         table,
         Spacer(1, 0.4*cm),
         HRFlowable(width='100%', thickness=0.5, color=colors.HexColor('#CCCCCC'), spaceBefore=2),

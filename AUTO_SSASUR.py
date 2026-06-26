@@ -560,7 +560,7 @@ async def main():
         page = await context.new_page()
 
         # ── PASO 1 — DETECTAR LOGIN ────────────────────────────────────────────
-        print("\n[1/7] Logéate en SSASUR (tienes 5 minutos)...")
+        print("\n[1/9] Logéate en SSASUR (tienes 5 minutos)...")
         await page.goto(DASHBOARD_URL)
 
         async def _esperar_abastecimiento(pg):
@@ -649,7 +649,7 @@ async def main():
         #   · un rango sin datos no deja archivo (se borra el incompleto).
         # El maestro lee todos los informe_completo_recetas*.csv y deduplica por
         # ID Receta Detalle, así que los bloques (rangos sin solape) no doble-cuentan.
-        print("\n[2/7] Módulo RECETA — informe completo por bloques de 30 días...")
+        print("\n[2/9] Módulo RECETA — informe completo por bloques de 30 días...")
         await entrar_receta(page)
 
         await page.goto(RECETA_INFORME)
@@ -707,9 +707,9 @@ async def main():
         # ════════════════════════════════════════════════════════════════════
         gt_dest = None   # path del xlsx descargado; None si se omite o falla
         if no_gt:
-            print("\n[3/7] Modalidad de Despacho (GT) — omitido (--no-gt).")
+            print("\n[3/9] Modalidad de Despacho (GT) — omitido (--no-gt).")
         else:
-            print(f"\n[3/7] Modalidad de Despacho — Informe GT ({desde_gt} → {hasta_gt})...")
+            print(f"\n[3/9] Modalidad de Despacho — Informe GT ({desde_gt} → {hasta_gt})...")
             gt_dest, n_gt = await paso_gt(page, desde_gt, hasta_gt, debug_gt)
             if gt_dest:
                 cnt = f"{n_gt} recetas" if isinstance(n_gt, int) and n_gt >= 0 else "recetas ?"
@@ -725,7 +725,7 @@ async def main():
         # ════════════════════════════════════════════════════════════════════
         #  PASO 4 — ABASTECIMIENTO  (volver al dashboard → entrar → stock)
         # ════════════════════════════════════════════════════════════════════
-        print("\n[4/7] Módulo ABASTECIMIENTO...")
+        print("\n[4/9] Módulo ABASTECIMIENTO...")
         await page.goto(DASHBOARD_URL)
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(1_500)
@@ -774,7 +774,7 @@ async def main():
         await browser.close()
 
     # ── PASO 5 — MAESTRO AA ────────────────────────────────────────────────────
-    print("\n[5/7] Actualizando Maestro AA...")
+    print("\n[5/9] Actualizando Maestro AA...")
     env_utf8 = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     result = subprocess.run(
         [sys.executable, str(MAESTRO_DIR / "maestro_aa.py")],
@@ -830,9 +830,9 @@ async def main():
         git_dir  = MAESTRO_DIR / ".git"
         publicar = MAESTRO_DIR / "PUBLICAR_DATOS.bat"
         if no_publicar:
-            print("\n[6/7] --no-publicar: omito la publicación en GitHub (modo prueba).")
+            print("\n[6/9] --no-publicar: omito la publicación en GitHub (modo prueba).")
         elif git_dir.exists() and publicar.exists():
-            print("\n[6/7] Publicando datos en GitHub...")
+            print("\n[6/9] Publicando datos en GitHub...")
             pub = subprocess.run(
                 ["cmd", "/c", str(publicar)],
                 cwd=str(MAESTRO_DIR),
@@ -840,7 +840,7 @@ async def main():
             if pub.returncode != 0:
                 print("  [AVISO] Publicación falló — ejecuta PUBLICAR_DATOS.bat manualmente.")
         else:
-            print("\n[6/7] GitHub no configurado — omitiendo publicación.")
+            print("\n[6/9] GitHub no configurado — omitiendo publicación.")
             print("      Ejecuta CONFIGURAR_GITHUB.bat para activarlo.")
 
         # ── PASO 7 — COPIAR RESULTADOS AL ESCRITORIO ─────────────────────────
@@ -849,7 +849,7 @@ async def main():
         # sin entrar al repo. Copia, no mueve: el repo sigue siendo la fuente.
         pub_esc = MAESTRO_DIR / "publicar_escritorio.py"
         if pub_esc.exists():
-            print("\n[7/7] Copiando resultados al Escritorio (carpeta «Farmacia AA»)...")
+            print("\n[7/9] Copiando resultados al Escritorio (carpeta «Farmacia AA»)...")
             subprocess.run(
                 [sys.executable, str(pub_esc)],
                 cwd=str(MAESTRO_DIR), env=env_utf8,
@@ -861,7 +861,7 @@ async def main():
         # antes de modificar cualquier archivo.
         dedup_py = MAESTRO_DIR / "dedup_recetas.py"
         if dedup_py.exists():
-            print("\n[8] Deduplicando recetas GT por sobre-extracción...")
+            print("\n[8/9] Deduplicando recetas GT por sobre-extracción...")
             ddup = subprocess.run(
                 [sys.executable, str(dedup_py), "--limpiar"],
                 cwd=str(MAESTRO_DIR), env=env_utf8,
@@ -877,7 +877,7 @@ async def main():
         pub_drive = MAESTRO_DIR / "publicar_drive.py"
         token_drive = MAESTRO_DIR / "token_drive.json"
         if pub_drive.exists() and token_drive.exists():
-            print("\n[9] Subiendo resultados a Google Drive...")
+            print("\n[9/9] Subiendo resultados a Google Drive...")
             dret = subprocess.run(
                 [sys.executable, str(pub_drive)],
                 cwd=str(MAESTRO_DIR), env=env_utf8,
@@ -886,7 +886,7 @@ async def main():
                 print(f"  [aviso] publicar_drive.py terminó con código {dret.returncode}")
                 print("  Ejecuta manualmente:  py publicar_drive.py")
         elif pub_drive.exists():
-            print("\n[9] Google Drive: sin token — ejecuta 'py publicar_drive.py --setup' para activar.")
+            print("\n[9/9] Google Drive: sin token — ejecuta 'py publicar_drive.py --setup' para activar.")
     else:
         print("  [ERROR] maestro_aa.py falló — revisa los mensajes arriba")
 
