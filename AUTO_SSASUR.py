@@ -649,58 +649,56 @@ async def main():
         #   · un rango sin datos no deja archivo (se borra el incompleto).
         # El maestro lee todos los informe_completo_recetas*.csv y deduplica por
         # ID Receta Detalle, así que los bloques (rangos sin solape) no doble-cuentan.
-        print("\n[2/9] Módulo RECETA — informe completo por bloques de 30 días...")
-        await entrar_receta(page)
-
-        await page.goto(RECETA_INFORME)
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(1_500)
-
-        if not await page.evaluate("() => !!document.getElementById('fechaInicio')"):
-            print("  [AVISO] No cargó el formulario sabana — omito recetas.")
-            await page.screenshot(path=str(MAESTRO_DIR / "debug_receta.png"))
+        if solo_stock:
+            print("\n[2/9] Recetas — omitido (--solo-stock).")
         else:
-            bstart = ANCLA_HISTORICO
-            while bstart <= ayer:
-                bend  = bstart + timedelta(days=BLOQUE_DIAS - 1)   # bloque de 30 días (inclusive)
-                q_end = min(bend, ayer)
-                base    = f"informe_completo_recetas_b{bstart:%Y%m%d}"
-                parcial = MAESTRO_DIR / f"{base}.csv"        # rango aún sin completar 30 días
-                full    = MAESTRO_DIR / f"{base}_FULL.csv"   # bloque sellado (30 días completos)
-                # Bloque ya sellado → saltar (no se vuelve a descargar nunca).
-                if full.exists() and full.stat().st_size > 200:
+            print("\n[2/9] Módulo RECETA — informe completo por bloques de 30 días...")
+            await entrar_receta(page)
+
+            await page.goto(RECETA_INFORME)
+            await page.wait_for_load_state("networkidle")
+            await page.wait_for_timeout(1_500)
+
+            if not await page.evaluate("() => !!document.getElementById('fechaInicio')"):
+                print("  [AVISO] No cargó el formulario sabana — omito recetas.")
+                await page.screenshot(path=str(MAESTRO_DIR / "debug_receta.png"))
+            else:
+                bstart = ANCLA_HISTORICO
+                while bstart <= ayer:
+                    bend  = bstart + timedelta(days=BLOQUE_DIAS - 1)   # bloque de 30 días (inclusive)
+                    q_end = min(bend, ayer)
+                    base    = f"informe_completo_recetas_b{bstart:%Y%m%d}"
+                    parcial = MAESTRO_DIR / f"{base}.csv"        # rango aún sin completar 30 días
+                    full    = MAESTRO_DIR / f"{base}_FULL.csv"   # bloque sellado (30 días completos)
+                    # Bloque ya sellado → saltar (no se vuelve a descargar nunca).
+                    if full.exists() and full.stat().st_size > 200:
+                        bstart = bend + timedelta(days=1)
+                        continue
+                    # ¿Ya tenemos los 30 días del bloque disponibles (bend ≤ ayer)?
+                    es_completo = (q_end == bend)
+                    fi, ff = fmt(bstart), fmt(q_end)
+                    print(f"  Bloque {fi} → {ff}  [{'completo → sella' if es_completo else 'parcial'}]")
+                    try:
+                        csv = await descargar_sabana(page, fi, ff)
+                        n_filas = max(sum(1 for l in csv.splitlines() if l.strip()) - 1, 0)
+                        if n_filas > 0:
+                            dest = full if es_completo else parcial
+                            with open(dest, "w", encoding="latin-1", newline="") as fcsv:
+                                fcsv.write(csv)
+                            if es_completo:
+                                parcial.unlink(missing_ok=True)   # borrar el incompleto al sellar
+                            print(f"    ✓ {dest.name} · {dest.stat().st_size // 1024:,} KB · {n_filas:,} filas")
+                        else:
+                            parcial.unlink(missing_ok=True)       # rango sin datos: sin incompletos
+                            print("    (0 filas en el rango — nada que guardar)")
+                    except Exception as e:
+                        print(f"    [AVISO] Falló el bloque {fi}→{ff}: {e}")
                     bstart = bend + timedelta(days=1)
-                    continue
-                # ¿Ya tenemos los 30 días del bloque disponibles (bend ≤ ayer)?
-                es_completo = (q_end == bend)
-                fi, ff = fmt(bstart), fmt(q_end)
-                print(f"  Bloque {fi} → {ff}  [{'completo → sella' if es_completo else 'parcial'}]")
-                try:
-                    csv = await descargar_sabana(page, fi, ff)
-                    n_filas = max(sum(1 for l in csv.splitlines() if l.strip()) - 1, 0)
-                    if n_filas > 0:
-                        dest = full if es_completo else parcial
-                        with open(dest, "w", encoding="latin-1", newline="") as fcsv:
-                            fcsv.write(csv)
-                        if es_completo:
-                            parcial.unlink(missing_ok=True)   # borrar el incompleto al sellar
-                        print(f"    ✓ {dest.name} · {dest.stat().st_size // 1024:,} KB · {n_filas:,} filas")
-                    else:
-                        parcial.unlink(missing_ok=True)       # rango sin datos: sin incompletos
-                        print("    (0 filas en el rango — nada que guardar)")
-                except Exception as e:
-                    print(f"    [AVISO] Falló el bloque {fi}→{ff}: {e}")
-                bstart = bend + timedelta(days=1)
 
         if solo_recetas:
             print("\n[solo-recetas] Modo prueba: omito stock, maestro y publicación.")
             await browser.close()
             return
-
-        if solo_stock:
-            print("\n[solo-stock] Saltando recetas — voy directo al stock...")
-            # salta el bloque de recetas que ya se acaba de ejecutar arriba,
-            # no_gt ya está activado, el script continúa en PASO 4 (stock)
 
         # ════════════════════════════════════════════════════════════════════
         #  PASO 3 — GT  (gestión territorial — mismo módulo RECETA, sesión 629)
@@ -793,7 +791,7 @@ async def main():
         # ── PASO 5b — AUDITORÍA DE PRESCRIPCIÓN ──────────────────────────────
         audit_py = MAESTRO_DIR / "auditoria_prescripcion.py"
         if audit_py.exists():
-            print("\n[5b/7] Generando auditoría de prescripción...")
+            print("\n[5b/9] Generando auditoría de prescripción...")
             aret = subprocess.run([sys.executable, str(audit_py)], cwd=str(MAESTRO_DIR), env=env_utf8)
             if aret.returncode != 0:
                 print(f"  [aviso] auditoria_prescripcion.py terminó con código {aret.returncode}")
@@ -801,7 +799,7 @@ async def main():
         # ── PASO 5c — CRUCE GT + PLANILLAS ───────────────────────────────────
         if gt_dest:
             out_gt = gt_salida(gt_dest)   # carpeta propia por rango de fechas
-            print(f"\n[5c/7] Cruce GT + generando planillas → out_gt/{out_gt.name}/ ...")
+            print(f"\n[5c/9] Cruce GT + generando planillas → out_gt/{out_gt.name}/ ...")
             cruce = MAESTRO_DIR / "cruce_gt.py"
             if cruce.exists():
                 subprocess.run(
@@ -818,13 +816,24 @@ async def main():
         # formulario vive fuera del repo (carpeta de la QF) → no se publica.
         rch_py = MAESTRO_DIR / "recetas_cheque.py"
         if not no_rch and rch_py.exists():
-            print(f"\n[5d/7] Registro ISP de recetas cheque (Farmacia AT Abierta)...")
+            print(f"\n[5d/9] Registro ISP de recetas cheque (Farmacia AT Abierta)...")
             dret = subprocess.run(
                 [sys.executable, str(rch_py), "--no-pause"],
                 cwd=str(MAESTRO_DIR), env=env_utf8,
             )
             if dret.returncode != 0:
                 print(f"  [aviso] recetas_cheque.py terminó con código {dret.returncode}")
+
+        # ── PASO 5e — PEDIDO FUSIONADO ───────────────────────────────────────
+        pedido_py = MAESTRO_DIR / "pedido_fusion.py"
+        if pedido_py.exists():
+            print(f"\n[5e/9] Generando Pedido Fusionado (Farm_Bod + Bod_Farmacos + Dialisis)...")
+            pret = subprocess.run(
+                [sys.executable, str(pedido_py)],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
+            if pret.returncode != 0:
+                print(f"  [aviso] pedido_fusion.py terminó con código {pret.returncode}")
 
         # ── PASO 6 — PUBLICAR EN GITHUB ───────────────────────────────────────
         git_dir  = MAESTRO_DIR / ".git"
@@ -890,19 +899,22 @@ async def main():
     else:
         print("  [ERROR] maestro_aa.py falló — revisa los mensajes arriba")
 
-    # ── PASO 5e — REPORTE CENTINELA (siempre, independiente del maestro) ──────
+    # ── CENTINELA — REPORTE SEMANAL (solo lunes, independiente del maestro) ────
     # Auto-detecta los CSV + XLSX ya descargados en este mismo flujo y
-    # genera el PDF semanal para el MINSAL. No requiere parámetros: usa
-    # los archivos más recientes de la carpeta del proyecto.
+    # genera el PDF semanal para el MINSAL. Se ejecuta UNA VEZ a la semana
+    # (los lunes) para coincidir con el ciclo epidemiológico MINSAL.
     centinela_py = MAESTRO_DIR / "centinela_reporte.py"
     if centinela_py.exists():
-        print(f"\n[CENTINELA] Reporte Centinela — Campaña Invierno 2026...")
-        cret = subprocess.run(
-            [sys.executable, str(centinela_py), "--no-pause"],
-            cwd=str(MAESTRO_DIR), env=env_utf8,
-        )
-        if cret.returncode != 0:
-            print(f"  [aviso] centinela_reporte.py terminó con código {cret.returncode} — revisa el reporte centinela")
+        if today.weekday() == 0:   # 0 = lunes
+            print(f"\n[CENTINELA] Reporte Centinela — Campaña Invierno 2026...")
+            cret = subprocess.run(
+                [sys.executable, str(centinela_py), "--no-pause"],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
+            if cret.returncode != 0:
+                print(f"  [aviso] centinela_reporte.py terminó con código {cret.returncode} — revisa el reporte centinela")
+        else:
+            print(f"\n[CENTINELA] Solo se ejecuta los lunes — omitido hoy ({today.strftime('%A')}).")
 
     if not no_pause:
         try:

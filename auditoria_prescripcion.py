@@ -77,7 +77,7 @@ def main():
         # EVENTOS de prescripción (RUN+médico+fecha de atención). El ERP SSASUR emite
         # un Número Receta SEPARADO por cada cuota ("X de 12" → ~12 N° el mismo día),
         # así que contar Número Receta inflaba la duplicidad ~4-19× (ver memoria
-        # ssasur-cuotas-receta; misma lógica de evento que recetas_duplicadas.py).
+        # ssasur-cuotas-receta; misma lógica de evento que auditoria_duplicados_profunda.py).
         pac = sub.groupby("RUN").agg(medicos=("_medico", "nunique"))
         ev = sub[sub["_fpresc"].notna()].drop_duplicates(subset=["RUN", "_medico", "_fpresc"])
         ev_mes = ev.groupby(["RUN", "_mespresc"]).size()

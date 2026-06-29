@@ -125,7 +125,7 @@ def fill_hex(fill, default='FFFFFF'):
 
 # ─────────────────────────────────────────────
 # PALETA UI REPORTES — colores de interfaz compartidos (agentes, reportes Excel)
-# Fuente única de verdad para agente_duplicados.py y recetas_duplicadas.py.
+# Fuente única de verdad para agente_duplicados.py y auditoria_duplicados_profunda.py.
 # ─────────────────────────────────────────────
 TEAL     = "0F766E"   # encabezados principales
 ROJO     = "DC2626"   # prioridad ALTA / alerta / distintos médicos

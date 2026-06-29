@@ -389,6 +389,11 @@ print(f"  Stock: {len(df_stk):,} filas, {df_stk['Bodega'].nunique()} bodegas")
 # ═══════════════════════════════════════════════
 print("Cargando recetas...")
 csv_files = sorted(glob.glob(os.path.join(WORK_DIR, 'informe_completo_recetas*.csv')))
+if not csv_files:
+    raise FileNotFoundError(
+        "No se encontro ningun archivo informe_completo_recetas*.csv\n"
+        "Ejecuta AUTO_SSASUR.bat primero."
+    )
 chunks = []
 for f in csv_files:
     tmp = pd.read_csv(f, encoding='latin1', sep=';', on_bad_lines='skip', dtype=str)
@@ -531,9 +536,6 @@ def pivot_stock(bodegas_set, col_name):
 
 stk_farmacia_aa = pivot_stock(BODEGAS_AA_FARMACIA, 'Stock_Farmacia_AA')
 stk_bodega_aa   = pivot_stock(BODEGAS_AA_BODEGA,   'Stock_Bodega_AA')
-stk_hospital    = {b: pivot_stock({b}, f'Stock_{b.replace(" ","_")}')
-                   for b in BODEGAS_HOSPITAL}
-
 # Full stock per bodega (all in scope)
 stk_all = df_stk_scope.pivot_table(
     index='Descripcion_norm', columns='Bodega', values='Cantidad',
@@ -1195,13 +1197,6 @@ print(f"  Pedido Reposicion Bodega AA  : {len(df_bod_pedido):,} medicamentos")
 # de columnas _farm_cols/_bod_cols ya definidos arriba → una sola fuente de
 # verdad para criticidad y acciones.
 
-# Nombre completo del profesional, normalizado (norm_erp)
-df_op_consumo['Prof_Norm'] = (
-    df_op_consumo['Nombre Profesional'].fillna('') + ' ' +
-    df_op_consumo['Apellido Paterno Profesional'].fillna('') + ' ' +
-    df_op_consumo['Apellido Materno Profesional'].fillna('')
-).apply(norm_erp)
-
 df_dial = df_op_consumo[df_op_consumo['Prof_Norm'].isin(MEDICOS_DIALISIS)].copy()
 
 # Consumo dialisis (Cantidad_Recetada) en el periodo completo, por medicamento
@@ -1260,7 +1255,11 @@ def _pipeline_ped_dial(df_base):
     dp['Cob_Farm_Dias'] = (dp['Stock_Farmacia_AA'] / dp['CDL']).round(1)
     dp['Cob_Bod_Dias']  = (dp['Stock_Bodega_AA']   / dp['CDL']).round(1)
 
-    dp['Necesidad_Farm']   = np.maximum(dp['Consumo_5D_Trend'] - dp['Stock_Farmacia_AA'], 0).round(0)
+    _nec_farm_bruta = np.maximum(dp['Consumo_5D_Trend'] - dp['Stock_Farmacia_AA'], 0).round(1)
+    dp['Necesidad_Farm'] = [
+        redondear_empaque(n, m, FACTOR_EMPAQUE)
+        for n, m in zip(_nec_farm_bruta, dp['Medicamento'])
+    ]
     dp['Traspaso_Posible'] = np.minimum(dp['Necesidad_Farm'], dp['Stock_Bodega_AA']).round(0)
     dp['Stock_Farm_Post']  = (dp['Stock_Farmacia_AA'] + dp['Traspaso_Posible']).round(0)
     dp['Cob_Farm_Post']    = (dp['Stock_Farm_Post']   / dp['CDL']).round(1)
@@ -1273,7 +1272,11 @@ def _pipeline_ped_dial(df_base):
 
     dp['Req_2_Semanas']    = (dp['CDL'] * CICLO_PEDIDO_BODEGA_DIAS).round(0)
     dp['Target_Stock_Bod'] = dp['Consumo_10D_Trend']
-    dp['Necesidad_Bod']    = np.maximum(dp['Target_Stock_Bod'] - dp['Stock_Bod_Post'], 0).round(0)
+    _nec_bod_bruta = np.maximum(dp['Target_Stock_Bod'] - dp['Stock_Bod_Post'], 0).round(1)
+    dp['Necesidad_Bod'] = [
+        redondear_empaque(n, m, FACTOR_EMPAQUE)
+        for n, m in zip(_nec_bod_bruta, dp['Medicamento'])
+    ]
     dp['Crit_Bod']         = dp.apply(crit_bod, axis=1)
 
     dp['Stock_BodFarm_Disp'] = (dp['Stock_BODEGA_FARMACOS'].fillna(0)
@@ -1305,7 +1308,7 @@ _bod_cols_dial  = {**_bod_cols,
                    'Factor_Empaque'           : 'Factor_Empaque'}
 
 df_dial_farm_pedido = (
-    df_ped_dial[df_ped_dial.get('Necesidad_Farm', 0) > 0]
+    df_ped_dial[df_ped_dial['Necesidad_Farm'] > 0]
     .sort_values(['Crit_Farm', 'CDL'], ascending=[True, False])
     [['Medicamento'] + list(_farm_cols_dial.values())]
     .rename(columns={v: k for k, v in _farm_cols_dial.items()})
@@ -1313,7 +1316,7 @@ df_dial_farm_pedido = (
 ) if len(df_ped_dial) else pd.DataFrame(columns=['Medicamento'] + list(_farm_cols_dial.keys()))
 
 df_dial_bod_pedido = (
-    df_ped_dial[df_ped_dial.get('Necesidad_Bod', 0) > 0]
+    df_ped_dial[df_ped_dial['Necesidad_Bod'] > 0]
     .sort_values(['Crit_Bod', 'CDL'], ascending=[True, False])
     [['Medicamento'] + list(_bod_cols_dial.values())]
     .rename(columns={v: k for k, v in _bod_cols_dial.items()})
@@ -1411,24 +1414,27 @@ df_kpis = pd.DataFrame(list(kpis.items()), columns=['Indicador', 'Valor'])
 print("Generando Excel...")
 
 # ─── Style helpers ───
-HEAD_FILL        = PatternFill('solid', fgColor='1F4E78')
-HEAD_FONT        = Font(bold=True, color='7F1D1D', name='Arial', size=11)
-ROW_ALT          = PatternFill('solid', fgColor='F9FAFB')
-ROJO_FILL        = PatternFill('solid', fgColor='FFCDD2')  # rojo suave (quiebres / sin stock)
+HEAD_FILL        = PatternFill('solid', fgColor='2F5496')   # misma paleta SGLI
+HEAD_FONT        = Font(bold=True, color='FFFFFF', name='Arial', size=11)
+ROW_ALT          = PatternFill('solid', fgColor='F7F7F7')   # SGLI alt-row
+ROJO_FILL        = PatternFill('solid', fgColor='FFD7D7')   # SGLI FILL_ALERTA
 ROJO_CRITICO_FILL= crit_fill('1-CRITICO')  # rojo fuerte estandar — nivel CRITICO (aa_colors)
 NARANJA          = PatternFill('solid', fgColor='FFF3E0')
-AMARILLO   = PatternFill('solid', fgColor='FFF9C4')
-VERDE_FILL = PatternFill('solid', fgColor='E8F5E9')
+AMARILLO   = PatternFill('solid', fgColor='FFF2CC')   # SGLI FILL_B_ROW
+VERDE_FILL = PatternFill('solid', fgColor='E2EFDA')   # SGLI FILL_A_ROW
 AZUL_FILL  = PatternFill('solid', fgColor='0D47A1')
-AZUL_FONT  = Font(bold=True, color='7F1D1D', name='Arial', size=11)
+AZUL_FONT  = Font(bold=True, color='FFFFFF', name='Arial', size=11)
 
 # ─── Leyenda de colores de Criticidad (para que el operador entienda el semaforo) ───
 LEYENDA_CRIT = [
-    ('1-CRITICO', 'CRITICO  —  sin stock ni respaldo'),
-    ('2-URGENTE', 'URGENTE  —  cobertura critica'),
-    ('3-ALTO',    'ALTO / MODERADO  —  reponer pronto'),
-    ('4-BAJO',    'BAJO  —  vigilar'),
-    ('5-OK',      'SUFICIENTE  —  sin necesidad'),
+    ('1-CRITICO',  'CRITICO  —  sin stock ni respaldo'),
+    ('2-URGENTE',  'URGENTE  —  cobertura critica'),
+    ('3-ALTO',     'ALTO  —  cobertura < 1 semana (Bodega)'),
+    ('3-MODERADO', 'MODERADO  —  reponer pronto (Farmacia)'),
+    ('4-MODERADO', 'MODERADO  —  cobertura < 2 sem. (Bodega)'),
+    ('4-BAJO',     'BAJO  —  vigilar (Farmacia)'),
+    ('5-BAJO',     'BAJO  —  stock suficiente (Bodega)'),
+    ('5-OK',       'SUFICIENTE  —  sin necesidad'),
 ]
 
 def add_leyenda(ws, fila_inicio, col=1):
@@ -1445,11 +1451,11 @@ def add_leyenda(ws, fila_inicio, col=1):
 def style_sheet(ws, df, col_widths=None, freeze='A2',
                 row_color_fn=None, header_fill=None):
     """Apply standard formatting to a worksheet."""
-    hf_hex  = fill_hex(header_fill, '1F4E78')
-    hf      = PatternFill('solid', fgColor=soften(hf_hex))
-    hf_font = Font(bold=True, color=darken(hf_hex), name='Arial', size=11)
+    hf_hex  = fill_hex(header_fill, '2F5496')
+    hf      = PatternFill('solid', fgColor=hf_hex)
+    hf_font = Font(bold=True, color='FFFFFF', name='Arial', size=11)
     cols = list(df.columns)
-    # Header row (row 1) — banda pastel + texto del mismo matiz oscurecido (tinta-economico)
+    # Header row (row 1) — fondo color sólido + texto blanco (paleta SGLI)
     for ci, col in enumerate(cols, 1):
         cell = ws.cell(row=1, column=ci, value=col)
         cell.fill    = hf
@@ -1514,8 +1520,8 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
     # KPI title banner
     ws.insert_rows(1)
     ws['A1'] = 'CONSOLIDADO OPERACIONAL — FARMACIA ATENCIÓN ABIERTA'
-    ws['A1'].fill = PatternFill('solid', fgColor=soften('0D47A1'))
-    ws['A1'].font = Font(bold=True, color=darken('0D47A1'), name='Arial', size=14)
+    ws['A1'].fill = PatternFill('solid', fgColor='2F5496')
+    ws['A1'].font = Font(bold=True, color='FFFFFF', name='Arial', size=14)
     ws.row_dimensions[1].height = 30
     ws.freeze_panes = 'A3'
 
@@ -1577,8 +1583,7 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
         if 'ALTO'     in crit: return NARANJA             # sin respaldo, pocos pacientes
         if 'MODERADO' in crit: return AMARILLO            # con respaldo Bod.Farm., muchos pac.
         return VERDE_FILL                                  # con respaldo Bod.Farm., pocos pac.
-    style_sheet(ws3, df_f3, row_color_fn=color_falt,
-                header_fill=PatternFill('solid', fgColor='0D47A1'))
+    style_sheet(ws3, df_f3, row_color_fn=color_falt)
 
     # ── 4. Faltantes_Detalle_AA ───────────────────
     falt_det_cols = ['Prescripcion_norm','Cant_Demanda_Activa','Faltante_Neto',
