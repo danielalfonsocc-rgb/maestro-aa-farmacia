@@ -6,7 +6,7 @@ Pre-cálculo de AUDITORÍA DE PRESCRIPCIÓN por medicamento → auditoria_prescr
 Para cada medicamento: consumo mensual (prescrito vs dispensado), CMP, mayores
 prescriptores, diagnósticos asociados y duplicidad de prescripción.
 """
-import glob, json, os, re, sys
+import glob, json, os, re
 import pandas as pd
 
 from utils_aa import norm_erp, HOMOLOGACION, cargar_recetas_csv, setup_stdout
