@@ -403,7 +403,7 @@ HDRS3 = [
     ('Obs',                      46),
 ]
 
-def calc_h3(df_dfarm, df_dbod):
+def calc_h3(df_dfarm, df_dbod, fe_map):
     def _idx(df, stock_col):
         d = {}
         for _, r in df.iterrows():
@@ -426,7 +426,11 @@ def calc_h3(df_dfarm, df_dbod):
         c5d = f.get('c5d', 0) or b.get('c5d', 0)
         if c5d <= 0:
             continue
-        fe      = f.get('fe', 1) or b.get('fe', 1)
+        # Unidades_Caja de SGLI_Estres (cenabast_tallas.csv, curado a mano) es la
+        # fuente confiable — el Factor_Empaque propio de la hoja Dialisis viene de
+        # cenabast_intermediacion.csv con un matching de nombre mas debil y cae a 1
+        # (sin redondeo) para muchos medicamentos que si tienen empaque conocido.
+        fe = int(fe_map.get(med, 0)) or f.get('fe', 1) or b.get('fe', 1) or 1
         mensual  = _ceil_fe(c5d / 5 * 30, fe)
         # Si el medicamento no aparece en Dialisis_Pedido_Farm/Bod, maestro_aa.py ya
         # determino que ese nivel tiene stock suficiente (Necesidad_Farm/Bod<=0) —
@@ -516,7 +520,7 @@ def main():
     r1 = calc_h1(data['farm'], fe_map, def_, args.todos)
     dc, r2 = calc_h2(data['bod'], fe_map, hoy, fer)
     dial_activa = args.forzar_dialisis or sem == 3
-    r3 = calc_h3(data['dfarm'], data['dbod']) if dial_activa else []
+    r3 = calc_h3(data['dfarm'], data['dbod'], fe_map) if dial_activa else []
 
     wb = openpyxl.Workbook()
     ws1 = wb.active; ws1.title = 'Farm_Bod'
