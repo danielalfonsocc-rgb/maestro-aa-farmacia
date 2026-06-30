@@ -1160,6 +1160,7 @@ _bod_cols = {
     'Semana_Pico_Hist'        : 'Semana_Pico',
     'Factor_Carga_5D'         : 'Factor_Carga_5D',
     'Stock_Bod_Actual'        : 'Stock_Bodega_AA',
+    'Stock_Farm_Actual'       : 'Stock_Farmacia_AA',    # stock que Atención Abierta ya tiene en Farmacia
     'Cob_Bod_Actual_Dias'     : 'Cob_Bod_Dias',
     'Comprometido_Farm'       : 'Traspaso_Posible',
     'Stock_Bod_Post_Traspaso' : 'Stock_Bod_Post',
@@ -1174,11 +1175,40 @@ _bod_cols = {
     'Accion_1_Traspaso_Hospital' : 'Accion_Traspaso_Hosp',  # desde bodegas hospital
     'Accion_2_Compra_Externa'    : 'Accion_Compra_Ext',     # compra externa por deficit
 }
-df_bod_pedido = (
-    df_ped[df_ped['Necesidad_Bod'] > 0]
-    .sort_values(['Crit_Bod', 'CDL'], ascending=[True, False])
-    [['Medicamento'] + list(_bod_cols.values())]
+_bod_pedido_con_consumo = (
+    df_ped[['Medicamento'] + list(_bod_cols.values())]
     .rename(columns={v: k for k, v in _bod_cols.items()})
+)
+
+# Medicamentos del universo AA sin consumo reciente (CDL=0, fuera de df_ped):
+# igual deben aparecer en la hoja Bodega AA -> Bodega Fármacos (universo completo)
+# para poder iniciar un pedido manual, aunque el sistema no calcule necesidad.
+_df_master_sin_consumo = df_master[~df_master['Medicamento'].isin(df_ped['Medicamento'])]
+_bod_pedido_sin_consumo = pd.DataFrame({
+    'Medicamento'                : _df_master_sin_consumo['Medicamento'].values,
+    'Criticidad'                 : '5-OK',
+    'Semana_Pico_Hist'           : _df_master_sin_consumo['Medicamento'].map(_sp_map).fillna('-').values,
+    'Factor_Carga_5D'            : 1.0,
+    'Stock_Bod_Actual'           : _df_master_sin_consumo['Stock_Bodega_AA'].values,
+    'Stock_Farm_Actual'          : _df_master_sin_consumo['Stock_Farmacia_AA'].values,
+    'Cob_Bod_Actual_Dias'        : 0.0,
+    'Comprometido_Farm'          : 0,
+    'Stock_Bod_Post_Traspaso'    : _df_master_sin_consumo['Stock_Bodega_AA'].values,
+    'Cob_Bod_Post_Dias'          : 0.0,
+    'Req_2_Semanas'              : 0,
+    'Consumo_10D_Trend'          : 0.0,
+    'Reponer_Bodega'             : 0,
+    'Stock_BODEGA_FARMACOS'      : _df_master_sin_consumo['Stock_BODEGA_FARMACOS'].values,
+    'Stock_Hospital_Total'       : _df_master_sin_consumo['Stock_Hospital_Total'].values,
+    'CDL_DiasHab'                : 0.0,
+    'CMP_Mensual_22d'            : 0.0,
+    'Accion_1_Traspaso_Hospital' : '',
+    'Accion_2_Compra_Externa'    : '',
+})
+
+df_bod_pedido = (
+    pd.concat([_bod_pedido_con_consumo, _bod_pedido_sin_consumo], ignore_index=True)
+    .sort_values(['Criticidad', 'CDL_DiasHab'], ascending=[True, False])
     .reset_index(drop=True)
 )
 
