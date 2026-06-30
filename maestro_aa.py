@@ -1302,7 +1302,7 @@ def _pipeline_ped_dial(df_base):
 
     dp['Req_2_Semanas']    = (dp['CDL'] * CICLO_PEDIDO_BODEGA_DIAS).round(0)
     dp['Target_Stock_Bod'] = dp['Consumo_10D_Trend']
-    _nec_bod_bruta = np.maximum(dp['Target_Stock_Bod'] - dp['Stock_Bod_Post'], 0).round(1)
+    _nec_bod_bruta = np.maximum(dp['Target_Stock_Bod'] - dp['Stock_AA_Total'], 0).round(1)
     dp['Necesidad_Bod'] = [
         redondear_empaque(n, m, FACTOR_EMPAQUE)
         for n, m in zip(_nec_bod_bruta, dp['Medicamento'])

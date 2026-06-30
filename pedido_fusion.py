@@ -428,12 +428,15 @@ def calc_h3(df_dfarm, df_dbod):
             continue
         fe      = f.get('fe', 1) or b.get('fe', 1)
         mensual  = _ceil_fe(c5d / 5 * 30, fe)
-        sfarm    = f.get('stock', 0)
-        sbod     = b.get('stock', 0)
-        apfarm   = _ceil_fe(max(0, mensual - sfarm), fe)
-        apbod    = _ceil_fe(max(0, mensual - sbod),  fe)
-        cob_farm = round(sfarm / mensual, 1) if mensual > 0 else 0.0
-        cob_bod  = round(sbod  / mensual, 1) if mensual > 0 else 0.0
+        # Si el medicamento no aparece en Dialisis_Pedido_Farm/Bod, maestro_aa.py ya
+        # determino que ese nivel tiene stock suficiente (Necesidad_Farm/Bod<=0) —
+        # no tratar la ausencia como stock=0, o se genera un pedido falso.
+        sfarm    = f.get('stock', 0) if med in fd else None
+        sbod     = b.get('stock', 0) if med in bd else None
+        apfarm   = _ceil_fe(max(0, mensual - sfarm), fe) if sfarm is not None else 0
+        apbod    = _ceil_fe(max(0, mensual - sbod),  fe) if sbod  is not None else 0
+        cob_farm = round(sfarm / mensual, 1) if (sfarm is not None and mensual > 0) else None
+        cob_bod  = round(sbod  / mensual, 1) if (sbod  is not None and mensual > 0) else None
 
         obs = []
         if apfarm > 0: obs.append(f'Farm: solicitar {apfarm} ud a Bodega AA')
