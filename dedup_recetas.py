@@ -138,9 +138,9 @@ def analizar_gt(gt_dir, limpiar=False):
 
     n_dup = len(duplicadas)
     print(f"\n  ⚠  {n_dup} receta(s) en más de un archivo:")
-    for (a1, a2), recetas in sorted(pares.items()):
-        n1, n2 = os.path.basename(a1), os.path.basename(a2)
-        print(f"    {n1} ∩ {n2}: {len(recetas)} receta(s)")
+    for clave, recetas in sorted(pares.items()):
+        nombres = " ∩ ".join(os.path.basename(a) for a in clave)
+        print(f"    {nombres}: {len(recetas)} receta(s)")
 
     if limpiar:
         print("\n  [LIMPIAR] Eliminando duplicados — cada receta queda solo en el más reciente:")

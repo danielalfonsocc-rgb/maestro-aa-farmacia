@@ -27,7 +27,10 @@ from collections import defaultdict
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter, column_index_from_string
-from openpyxl.worksheet.pagebreak import Break
+
+for _s in (sys.stdout, sys.stderr):
+    try: _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception: pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "..", "assets")
@@ -131,51 +134,6 @@ def carta_landscape(ws, fit_height, print_area=None):
     if print_area: ws.print_area=print_area
 
 # ----------------------------- PLANILLA -----------------------------
-def hoja_maestra(wb, regs, destino, titulo, subtitulo):
-    ws=wb.active; ws.title="Maestra"
-    headers=["N° Receta","Paciente","RUN","Edad","Dirección","Comuna","Teléfono","Estab. Origen",
-             "Estab. Destino","Fecha Entrega","Período Receta","Estado Receta","Especialidad",
-             "N° Prescripciones","Refrigerados","Modalidad de Entrega","Pendiente"]
-    widths=[11,32,14,6,38,15,11,15,21,11,9,15,28,9,28,21,17]
-    CENTER={"N° Receta","RUN","Edad","Teléfono","Fecha Entrega","Período Receta","Estado Receta","N° Prescripciones"}
-    last=get_column_letter(len(headers)); COL={h:i+1 for i,h in enumerate(headers)}
-    for c,w in enumerate(widths,start=1): ws.column_dimensions[get_column_letter(c)].width=w
-    banda_encabezado(ws, len(headers), titulo, subtitulo)
-    HR=5
-    for c,h in enumerate(headers,start=1):
-        cell=ws.cell(row=HR,column=c,value=h); cell.font=Font(name="Calibri",size=10,bold=True,color="FFFFFF")
-        cell.fill=PatternFill("solid",fgColor=BLUE); cell.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True); cell.border=border
-    ws.row_dimensions[HR].height=30
-    r=HR+1
-    regs=sorted(regs, key=lambda g: unicodedata.normalize("NFKD",g["paciente"]).encode("ascii","ignore").decode().upper())
-    for g in regs:
-        est="ÚLTIMA RECETA" if es_ultima(g["periodo"]) else ""
-        is_v=bool(g.get("ventanilla"))
-        vals=[g["receta"],g["paciente"],fmt_run(g["run"]),g.get("edad"),g.get("direccion",""),g.get("comuna",""),
-              g.get("telefono",""),g.get("estab_origen","Pitrufquén Hosp."),destino,FECHA,g["periodo"],est,g["especialidad"],
-              g["n_presc"],g.get("refrigerado","") or "",V_LABEL if is_v else D_LABEL,g.get("pendiente","") or ""]
-        for c,v in enumerate(vals,start=1):
-            h=headers[c-1]; cell=ws.cell(row=r,column=c,value=v if v not in ("",None) else None)
-            run_bad=(h=="RUN" and dv_correcto(g["run"]) is False)
-            bold=(h=="Modalidad de Entrega" and is_v) or (h=="Estado Receta" and est) or run_bad
-            color=RED if ((h=="Modalidad de Entrega" and is_v) or run_bad) else (ORANGE if (h=="Estado Receta" and est) else "000000")
-            cell.font=Font(name="Calibri",size=9,bold=bold,color=color); cell.border=border
-            cell.alignment=Alignment(horizontal=("center" if h in CENTER else "left"),vertical="center",wrap_text=True)
-        fill=VENT if is_v else (GREY if r%2==0 else "FFFFFF")
-        for c in range(1,len(headers)+1): ws.cell(row=r,column=c).fill=PatternFill("solid",fgColor=fill)
-        if est: ws.cell(row=r,column=COL["Estado Receta"]).fill=PatternFill("solid",fgColor=AMBER)
-        r+=1
-    DE=r-1; npc=COL["N° Prescripciones"]
-    ws.cell(row=r,column=1,value="TOTAL").font=Font(size=10,bold=True)
-    ws.cell(row=r,column=2,value=f"{len(regs)} pacientes / recetas").font=Font(size=10,bold=True)
-    ws.cell(row=r,column=npc-1,value="Total prescr.:").font=Font(size=10,bold=True)
-    ws.cell(row=r,column=npc-1).alignment=Alignment(horizontal="right")
-    ws.cell(row=r,column=npc,value=sum(int(g["n_presc"]) for g in regs)).font=Font(size=10,bold=True)
-    ws.cell(row=r,column=npc).alignment=Alignment(horizontal="center")
-    for c in range(1,len(headers)+1): ws.cell(row=r,column=c).fill=PatternFill("solid",fgColor=LIGHT); ws.cell(row=r,column=c).border=border
-    bloque_qf(ws, r+3, sz=10)
-    ws.freeze_panes=f"A{HR+1}"; ws.auto_filter.ref=f"A{HR}:{last}{DE}"; ws.print_title_rows=f"1:{HR}"
-    carta_landscape(ws, fit_height=True, print_area=f"A1:{last}{r+10}")
 
 def hoja_funcionarios(wb, regs, destino, titulo, subtitulo, modo="normal"):
     ws=wb.active; ws.title="Funcionarios"  # única hoja — sin Maestra
@@ -585,15 +543,35 @@ def _forzar_carta(pdf_path):
         print(f"  (ajuste carta omitido: {e})")
 
 def to_pdf(path, outdir):
+    pdf_path = os.path.join(outdir, os.path.splitext(os.path.basename(path))[0] + ".pdf")
+    abs_path = os.path.abspath(path)
+    # 1. Intentar LibreOffice (soffice)
     try:
-        subprocess.run(["soffice","--headless","--convert-to","pdf","--outdir",outdir,path],
-                       check=False, capture_output=True, timeout=120)
-        # Forzar tamaño carta estricto en el PDF generado
-        pdf_path = os.path.join(outdir, os.path.splitext(os.path.basename(path))[0] + ".pdf")
+        r = subprocess.run(["soffice","--headless","--convert-to","pdf","--outdir",outdir,path],
+                           check=False, capture_output=True, timeout=120)
         if os.path.exists(pdf_path):
             _forzar_carta(pdf_path)
+            return
+    except FileNotFoundError:
+        pass
     except Exception as e:
-        print("  (PDF omitido:", e, ")")
+        print(f"  (soffice falló: {e})")
+    # 2. Fallback: Excel via win32com (Windows + Excel instalado)
+    try:
+        import win32com.client
+        xl = win32com.client.Dispatch("Excel.Application")
+        xl.Visible = False
+        xl.DisplayAlerts = False
+        wb = xl.Workbooks.Open(abs_path)
+        wb.ExportAsFixedFormat(0, os.path.abspath(pdf_path))  # 0 = xlTypePDF
+        wb.Close(False)
+        xl.Quit()
+        if os.path.exists(pdf_path):
+            _forzar_carta(pdf_path)
+            return
+    except Exception as e:
+        print(f"  (Excel win32com falló: {e})")
+    print(f"  (PDF omitido — sin LibreOffice ni Excel disponible)")
 
 FECHA="(sin fecha)"
 
@@ -635,17 +613,23 @@ def main():
             wb=Workbook()
             hoja_funcionarios(wb, regs_norm, destino, titulo, subtitulo, modo="normal")
             pl=os.path.join(a.salida, f"{slug(destino)}_Planilla.xlsx"); wb.save(pl); archivos_dest.append(os.path.basename(pl))
-            if not a.no_pdf: to_pdf(pl, a.salida)
+            # Planilla: solo xlsx (editable para tick manual), sin PDF
         if regs_ctrl:
             titulo_ctrl=f"GESTIÓN TERRITORIAL (CONTROLADOS) - {destino.upper()}"
             wb=Workbook()
             hoja_funcionarios(wb, regs_ctrl, destino, titulo_ctrl, subtitulo, modo="controlados")
             pl_ctrl=os.path.join(a.salida, f"{slug(destino)}_Controlados_Planilla.xlsx"); wb.save(pl_ctrl); archivos_dest.append(os.path.basename(pl_ctrl))
-            if not a.no_pdf: to_pdf(pl_ctrl, a.salida)
-        lleva=any(((g.get("refrigerado","") or "").strip() or (g["receta"] in refri_map)) for g in regs_norm)
+            # Controlados: solo xlsx, sin PDF
+        lleva=any(((g.get("refrigerado","") or "").strip() or (g["receta"] in refri_map)) for g in regs)
         le=os.path.join(a.salida, f"{slug(destino)}_Letrero.xlsx"); letrero(destino, lleva, le)
-        if not a.no_pdf: to_pdf(le, a.salida)
-        archivos_dest.append(os.path.basename(le))
+        # Letrero: solo PDF (xlsx temporal se elimina)
+        if not a.no_pdf:
+            to_pdf(le, a.salida)
+            try: os.remove(le)
+            except OSError: pass
+            archivos_dest.append(f"{slug(destino)}_Letrero.pdf")
+        else:
+            archivos_dest.append(os.path.basename(le))
         resumen=f"{len(regs_norm)} normales" + (f" + {len(regs_ctrl)} controlados" if regs_ctrl else "")
         print(f"OK {destino}: {len(regs)} recetas ({resumen}) | refrigerado={lleva} -> {', '.join(archivos_dest)}")
         # Dígito verificador (módulo 11) - siempre
@@ -658,7 +642,8 @@ def main():
             print(f"  • RUN no validable (formato/incompleto): {len(nulos)}")
         if not malos and not nulos:
             print("  ✓ Todos los RUN con dígito verificador válido.")
-        # Cruce con histórico         if hist_on:
+        # Cruce con histórico
+        if hist_on:
             resultados = verificar_historico(regs, idx_ref)
             vpath = os.path.join(a.salida, f"{slug(destino)}_Verificacion.xlsx")
             reporte_verificacion(resultados, destino, vpath)

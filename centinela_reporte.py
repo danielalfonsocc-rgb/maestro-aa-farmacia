@@ -67,13 +67,36 @@ def detect_csv(nombre):
     return None
 
 
+def _domingo_semana1(year):
+    """Domingo de inicio de la semana epidemiológica 1 (MINSAL/SaludResponde):
+    la semana domingo-sábado que contiene el 4 de enero."""
+    d = datetime.date(year, 1, 4)
+    return d - datetime.timedelta(days=(d.weekday() + 1) % 7)
+
+
 def iso_week(fecha):
+    """Semana epidemiológica oficial (NO es semana ISO 8601 pese al nombre,
+    se conserva por compatibilidad). MINSAL define la semana epidemiológica
+    como domingo 00:00 a sábado 24:00 — un día antes que la semana ISO
+    (lunes-domingo), lo que desplaza en -1 el número de semana de Python
+    durante casi todo el año. Ver Calendario Epidemiológico SaludResponde."""
     try:
-        d = pd.to_datetime(fecha, dayfirst=True, errors="coerce")
-        if pd.isna(d):
+        ts = pd.to_datetime(fecha, dayfirst=True, errors="coerce")
+        if pd.isna(ts):
             return None
-        cal = d.isocalendar()
-        return (cal.year, cal.week)
+        d = ts.date()
+        dom1 = _domingo_semana1(d.year)
+        if d < dom1:
+            anio = d.year - 1
+            dom1 = _domingo_semana1(anio)
+        else:
+            dom1_sig = _domingo_semana1(d.year + 1)
+            if d >= dom1_sig:
+                anio, dom1 = d.year + 1, dom1_sig
+            else:
+                anio = d.year
+        semana = (d - dom1).days // 7 + 1
+        return (anio, semana)
     except Exception:
         return None
 
@@ -113,14 +136,24 @@ def leer_recetas(csv_paths):
     df = pd.concat(frames, ignore_index=True)
     total_bruto = len(df)
     df = df[df["Estado Prescripción"].str.upper().str.strip() == "ENTREGADO"].copy()
-    df = df.drop_duplicates(subset=["ID Receta Detalle"])
+    # SSASUR repite el mismo "ID Receta Detalle" en varias filas-snapshot del
+    # mismo trámite (p.ej. una con Cantidad Entregada=0 cuando aún estaba
+    # pendiente de dispensar, y otra posterior ya con la cantidad real). Si
+    # drop_duplicates se queda con la primera por orden de archivo, descarta
+    # en silencio el egreso real cuando el snapshot vacío aparece antes.
+    # Ordenamos por cantidad entregada descendente para quedarnos con la fila
+    # que sí refleja la entrega (y su fecha real), no la del trámite vacío.
+    df["Cantidad Entregada"] = pd.to_numeric(df["Cantidad Entregada"], errors="coerce").fillna(0)
+    df = df.sort_values("Cantidad Entregada", ascending=False)
+    df = df.drop_duplicates(subset=["ID Receta Detalle"], keep="first")
     df["semana"] = df["Fecha Entrega Receta"].apply(iso_week)
     df = df.dropna(subset=["semana"])
+    if df.empty:
+        raise RuntimeError("No hay entregas con datos de fecha/semana válidos tras los filtros aplicados.")
     # Filtrar al año epidemiológico más reciente para evitar colisión S.52/2025 vs S.25/2026
     max_epi_year = max(t[0] for t in df["semana"])
     df = df[df["semana"].apply(lambda t: t[0] == max_epi_year)].copy()
     df["semana"] = df["semana"].apply(lambda t: t[1]).astype(int)
-    df["Cantidad Entregada"] = pd.to_numeric(df["Cantidad Entregada"], errors="coerce").fillna(0)
     num_recetas = df["Número Receta"].nunique() if "Número Receta" in df.columns else 0
     return df, total_bruto, num_recetas
 
@@ -220,8 +253,11 @@ def calcular(df, stock, semana_override=None):
         egresos[f["minsal"]][s] = egresos[f["minsal"]].get(s, 0) + row["Cantidad Entregada"]
 
     sem_min = int(df["semana"].min()) if len(df) else 0
-    sem_max = int(df["semana"].max()) if len(df) else 0
-    srep = semana_override if semana_override else sem_max
+    sem_max_datos = int(df["semana"].max()) if len(df) else 0
+    srep = semana_override if semana_override else sem_max_datos
+    # No usar semanas posteriores a la reportada (p.ej. la semana en curso, con
+    # datos parciales) para las proyecciones: distorsionaría el promedio/tendencia.
+    sem_max = min(sem_max_datos, srep) if sem_max_datos else srep
 
     resultados = []
     for f in FM:
@@ -405,7 +441,9 @@ def main():
     parser = argparse.ArgumentParser(description="Reporte Centinela Campaña Invierno 2026")
     parser.add_argument("--csv",   nargs="+", help="Ruta(s) al CSV de recetas (opcional, auto-detecta si no se indica)")
     parser.add_argument("--xlsx",  help="Ruta al XLSX de stock (opcional, auto-detecta si no se indica)")
-    parser.add_argument("--semana", type=int, help="Forzar semana epidemiológica")
+    parser.add_argument("--semana", type=int,
+                         help="Forzar semana epidemiológica (por defecto: la última semana "
+                              "COMPLETA, es decir la anterior a la actual)")
     parser.add_argument("--no-pause", action="store_true")
     args = parser.parse_args()
 
@@ -436,12 +474,23 @@ def main():
     stock, xlsx_fecha = leer_stock(xlsx_path)
     print(f"    Stock al {xlsx_fecha}")
 
+    # El lunes que se genera el reporte, la semana en curso recién empieza
+    # (datos parciales). Por defecto reportamos la última semana COMPLETA:
+    # la que contiene la fecha de hace 7 días, sea cual sea el día de hoy.
+    if args.semana:
+        semana_objetivo = args.semana
+    else:
+        _anio_ant, semana_objetivo = iso_week(datetime.date.today() - datetime.timedelta(days=7))
+        print(f"  Semana no indicada (--semana): se usa la última semana completa → S.{semana_objetivo}")
+
     print("  Calculando proyecciones...")
-    resultados, srep, sem_min, sem_max = calcular(df, stock, args.semana)
+    resultados, srep, sem_min, sem_max = calcular(df, stock, semana_objetivo)
     print(f"    Semana epidemiológica reportada: S.{srep} (rango S.{sem_min}–S.{sem_max})")
 
     # ── Guardar JSON ──────────────────────────────────────────────────
-    out_json = MAESTRO_DIR / f"centinela_S{srep}.json"
+    out_dir = MAESTRO_DIR / "Centinela_Reportes" / f"S{srep}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_json = out_dir / f"centinela_S{srep}.json"
     data = {
         "srep": srep, "sem_min": sem_min, "sem_max": sem_max,
         "xlsx_fecha": xlsx_fecha, "total_bruto": total_bruto,
@@ -452,7 +501,7 @@ def main():
 
     # ── Generar PDF ───────────────────────────────────────────────────
     try:
-        pdf_path = MAESTRO_DIR / f"centinela_S{srep}.pdf"
+        pdf_path = out_dir / f"centinela_S{srep}.pdf"
         print(f"  Generando PDF: {pdf_path.name}...")
         generar_pdf(data, pdf_path)
         print(f"    ✓ {pdf_path.name}  ({pdf_path.stat().st_size // 1024:,} KB)")

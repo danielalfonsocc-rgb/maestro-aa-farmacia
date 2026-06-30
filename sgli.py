@@ -35,7 +35,6 @@ promedio por forma; si la fila de override lo trae, ese manda.
 """
 import math
 import os
-import re
 import glob
 
 import numpy as np
@@ -97,7 +96,7 @@ COLUMNAS_SGLI = [
     'Medicamento', 'Criticidad', 'Freq_Revision', 'Stock_Minimo',
     'Dias_Reposicion_IR', 'Cap_Max',
     'Nivel_Objetivo_T', 'Deficit', 'Accion_1_Traspaso', 'Accion_2_Externa',
-    'Talla', 'Rotacion', 'Unidades_Caja', 'Stock_Farm', 'Stock_Bod', 'CDL',
+    'Talla', 'Rotacion', 'Unidades_Caja', 'Vol_Caja_cm3', 'Stock_Farm', 'Stock_Bod', 'CDL',
 ]
 
 _ETIQUETA_NIVEL = {1: '1-CRITICO', 2: '2-ALTO', 3: '3-MODERADO', 4: '4-BAJO', 5: '5-OK'}
@@ -392,6 +391,7 @@ def calcular_sgli(df, factor_carga=FACTOR_CARGA_DEFAULT, *, overrides=None,
             'Talla': talla,
             'Rotacion': rotacion,
             'Unidades_Caja': int(upb),
+            'Vol_Caja_cm3': vol,
             'Stock_Farm': stock_farm,
             'Stock_Bod': stock_bod,
             'CDL': round(cdl, 2),

@@ -7,7 +7,7 @@ sin entrar a la carpeta del repositorio.
 
   Escritorio\Farmacia AA\
     ├── Abrir App de Pedidos.lnk          (acceso directo → ABRIR_APP.bat)
-    ├── Actualizar Datos y Publicar.lnk   (acceso directo → AUTO_SSASUR.bat)
+    ├── AUTO_SSASUR.lnk                   (acceso directo → AUTO_SSASUR.bat)
     ├── Gestion Territorial.lnk           (acceso directo → GT.bat)
     ├── Recetas Cheque ISP.lnk            (acceso directo → RECETAS_CHEQUE.bat)
     ├── LEEME.txt
@@ -16,7 +16,10 @@ sin entrar a la carpeta del repositorio.
     ├── 2 - Gestion Territorial\  ÚLTIMO rango al frente + Historial\<rango>\
     ├── 3 - Recetas Cheque\     SOLO un acceso directo a la carpeta local (datos de
     │                           pacientes NO se copian a la nube de OneDrive)
-    └── 4 - Auditoria Prescripcion\  Auditoria_Prescripcion_Resumen.xlsx (legible)
+    ├── 4 - Auditoria Prescripcion\  Auditoria_Prescripcion_Resumen.xlsx (legible)
+    ├── 5 - Reposicion\         Reposicion_DiasHabiles_AA.xlsx (plan días hábiles)
+    ├── 6 - Pedido Fusionado\   Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
+    └── 7 - Centinela\          Centinela_Reportes\<Sxx>\ (json + pdf) por semana
 
 IMPORTANTE: este script COPIA, no mueve. El repositorio sigue siendo la fuente de
 verdad — la app Streamlit lee el Consolidado del repo y PUBLICAR_DATOS.bat publica
@@ -29,6 +32,7 @@ Uso:
     py publicar_escritorio.py --rch          # solo el acceso directo de recetas cheque
     py publicar_escritorio.py --auditoria
     py publicar_escritorio.py --reposicion   # solo Reposicion_DiasHabiles_AA.xlsx
+    py publicar_escritorio.py --centinela    # solo Centinela_Reportes\
     py publicar_escritorio.py --enlaces      # solo (re)crea carpetas, LEEME y accesos
 """
 import os
@@ -42,6 +46,16 @@ from datetime import datetime
 
 # Nombre de carpeta de un rango GT: DD-MM-AAAA_DD-MM-AAAA
 _RANGO_RE = re.compile(r"^\d{2}-\d{2}-\d{4}_\d{2}-\d{2}-\d{4}$")
+
+# Detecta el establecimiento de destino en nombres de archivo GT
+_TIPO_GT_RE = re.compile(
+    r"^(.+?)_(Planilla|Letrero|Controlados_Planilla|Verificacion)\.(xlsx|pdf)$",
+    re.IGNORECASE,
+)
+
+def _destino_de_archivo(nombre):
+    m = _TIPO_GT_RE.match(nombre)
+    return m.group(1).replace("_", " ") if m else None
 
 # ── Rutas base ───────────────────────────────────────────────────────────────
 WORK_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -57,9 +71,11 @@ except Exception:
 NOMBRE_CARPETA = "Farmacia AA"
 SUB_APP   = "1 - App Pedidos"
 SUB_GT    = "2 - Gestion Territorial"
-SUB_RCH   = "3 - Recetas Cheque"
-SUB_AUDIT = "4 - Auditoria Prescripcion"
-SUB_REP   = "5 - Reposicion"
+SUB_RCH    = "3 - Recetas Cheque"
+SUB_AUDIT  = "4 - Auditoria Prescripcion"
+SUB_REP    = "5 - Reposicion"
+SUB_PEDIDO = "6 - Pedido Fusionado"
+SUB_CENTINELA = "7 - Centinela"
 
 # Iconos para distinguir los accesos directos (shell32.dll, índices clásicos).
 _SHELL32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "shell32.dll")
@@ -194,28 +210,47 @@ def sync_app():
     REP.say(f"[App Pedidos] Consolidado y Resumen → «{SUB_APP}»")
 
 
+def _copiar_rango_por_estab(rango_dir, dst_base):
+    """Copia archivos de un rango GT en dst_base/<ESTABLECIMIENTO>/.
+    Archivos sin establecimiento conocido van directamente a dst_base."""
+    archivos = sorted(
+        glob.glob(os.path.join(rango_dir, "*.xlsx")) +
+        glob.glob(os.path.join(rango_dir, "*.pdf"))
+    )
+    estabs = set()
+    for f in archivos:
+        nb = os.path.basename(f)
+        if _es_temporal(nb):
+            continue
+        destino = _destino_de_archivo(nb)
+        if destino:
+            estabs.add(destino)
+            _copiar(f, os.path.join(dst_base, destino))
+        else:
+            _copiar(f, dst_base)
+    return sorted(estabs)
+
+
 def sync_gt():
     src = os.path.join(WORK_DIR, "out_gt")
     base_gt = os.path.join(BASE, SUB_GT)
     if not os.path.isdir(src):
         REP.say("[Gestion Territorial] (sin out_gt todavía)")
         return
-    rangos = [d for d in glob.glob(os.path.join(src, "*")) if os.path.isdir(d)]
+    rangos = sorted(
+        [d for d in glob.glob(os.path.join(src, "*")) if os.path.isdir(d)],
+        key=os.path.basename,
+    )
     if not rangos:
         REP.say("[Gestion Territorial] (sin rangos en out_gt)")
         return
-    # 1) Historial completo: cada rango en su subcarpeta.
+
+    # 1) Historial: cada rango en su carpeta, organizado por establecimiento
     hist = os.path.join(base_gt, "Historial")
     for d in rangos:
-        _espejo(d, os.path.join(hist, os.path.basename(d)))
-    # Limpieza de migración: quita subcarpetas de rango que hubieran quedado
-    # sueltas en la raíz (una versión anterior espejaba out_gt completo aquí).
-    # Ya están a salvo en Historial\.
-    for nombre in os.listdir(base_gt):
-        p = os.path.join(base_gt, nombre)
-        if os.path.isdir(p) and nombre != "Historial" and _RANGO_RE.match(nombre):
-            shutil.rmtree(p, ignore_errors=True)
-    # 2) Último rango (por fecha de modificación) → plano en la raíz, a la vista.
+        _copiar_rango_por_estab(d, os.path.join(hist, os.path.basename(d)))
+
+    # 2) Último rango → carpetas por establecimiento en la raíz GT (al frente)
     ultimo = max(rangos, key=os.path.getmtime)
     rango_actual = os.path.basename(ultimo)
     marca = os.path.join(base_gt, "_rango_actual.txt")
@@ -226,15 +261,21 @@ def sync_gt():
         except OSError:
             pass
     if previo != rango_actual:
-        _limpiar_archivos_sueltos(base_gt)  # quita las planillas del rango anterior
-    _espejo(ultimo, base_gt)
+        # Nuevo rango: limpia archivos sueltos y carpetas de establecimientos viejos
+        _limpiar_archivos_sueltos(base_gt)
+        for nombre in os.listdir(base_gt):
+            p = os.path.join(base_gt, nombre)
+            if os.path.isdir(p) and nombre not in ("Historial",) and not _RANGO_RE.match(nombre):
+                shutil.rmtree(p, ignore_errors=True)
+    estabs = _copiar_rango_por_estab(ultimo, base_gt)
     try:
         with open(marca, "w", encoding="utf-8") as fh:
             fh.write(rango_actual)
     except OSError:
         pass
-    REP.say(f"[Gestion Territorial] último «{rango_actual}» al frente · "
-            f"{len(rangos)} rango(s) en Historial")
+    estabs_str = ", ".join(estabs) if estabs else "(ninguno)"
+    REP.say(f"[Gestion Territorial] último «{rango_actual}» · "
+            f"establecimientos: {estabs_str} · {len(rangos)} rango(s) en Historial")
 
 
 def sync_rch():
@@ -285,6 +326,27 @@ def sync_reposicion():
         return
     _copiar(src, dst, nuevo_nombre="Reposicion_DiasHabiles_AA.xlsx")
     REP.say(f"[Reposición] {os.path.basename(src)} → «{SUB_REP}»")
+
+
+def sync_pedido():
+    dst = os.path.join(BASE, SUB_PEDIDO)
+    src = _mas_reciente(os.path.join(WORK_DIR, "Pedido_Fusion_AA*.xlsx"))
+    if not src:
+        REP.say("[Pedido Fusionado] (aún no generado — corre pedido_fusion.py)")
+        return
+    _copiar(src, dst, nuevo_nombre="Pedido_Fusion_AA.xlsx")
+    REP.say(f"[Pedido Fusionado] {os.path.basename(src)} → «{SUB_PEDIDO}»")
+
+
+def sync_centinela():
+    dst = os.path.join(BASE, SUB_CENTINELA)
+    src = os.path.join(WORK_DIR, "Centinela_Reportes")
+    if not os.path.isdir(src):
+        REP.say("[Centinela] (aún no se ha generado ningún reporte)")
+        return
+    n = _espejo(src, dst)
+    semanas = sorted(d for d in os.listdir(src) if os.path.isdir(os.path.join(src, d)))
+    REP.say(f"[Centinela] {n} archivo(s) · semanas: {', '.join(semanas) if semanas else '(ninguna)'} → «{SUB_CENTINELA}»")
 
 
 def sync_auditoria():
@@ -386,7 +448,7 @@ para revisarlas sin abrir la carpeta del programa. Se actualizan solas
 cada vez que corres cada proceso.
 
   Abrir App de Pedidos        ← abre el tablero en el navegador
-  Actualizar Datos y Publicar ← descarga de SSASUR + recalcula + publica (todo)
+  AUTO_SSASUR                 ← descarga de SSASUR + recalcula + publica (todo)
   Gestion Territorial         ← solo descarga y genera planillas GT
   Recetas Cheque ISP          ← solo actualiza el registro ISP del mes
 
@@ -395,6 +457,8 @@ cada vez que corres cada proceso.
   3 - Recetas Cheque       Acceso directo a la carpeta LOCAL (no sube datos de pacientes a la nube)
   4 - Auditoria Prescripcion  Auditoria_Prescripcion_Resumen.xlsx (ordena/filtra en Excel)
   5 - Reposicion           Reposicion_DiasHabiles_AA.xlsx (plan días hábiles con feriados)
+  6 - Pedido Fusionado     Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
+  7 - Centinela             Reportes semanales (json + pdf) por semana epidemiológica
 
 ------------------------------------------------------------------------
 Nota: estas son COPIAS para consulta. El programa original sigue en
@@ -442,7 +506,7 @@ def _crear_lnk(ruta_lnk, target, descripcion, icono=None):
 
 _ACCESOS = [
     ("Abrir App de Pedidos.lnk",        "ABRIR_APP.bat",      "Abre el tablero de Pedidos AA en el navegador", _ICON_APP),
-    ("Actualizar Datos y Publicar.lnk", "AUTO_SSASUR.bat",    "Descarga de SSASUR, recalcula todo y publica",  _ICON_REFRESH),
+    ("AUTO_SSASUR.lnk",                 "AUTO_SSASUR.bat",    "Descarga de SSASUR, recalcula todo y publica",  _ICON_REFRESH),
     ("Gestion Territorial.lnk",         "GT.bat",             "Descarga y genera las planillas de GT",         _ICON_DOC),
     ("Recetas Cheque ISP.lnk",          "RECETAS_CHEQUE.bat", "Actualiza el registro ISP del mes",             _ICON_RUN),
 ]
@@ -450,7 +514,7 @@ _ACCESOS = [
 
 def crear_estructura(forzar_lnk=False):
     """Crea carpetas, LEEME y (si faltan o forzar_lnk) los accesos directos."""
-    for sub in (SUB_APP, SUB_GT, SUB_RCH, SUB_AUDIT, SUB_REP):
+    for sub in (SUB_APP, SUB_GT, SUB_RCH, SUB_AUDIT, SUB_REP, SUB_PEDIDO, SUB_CENTINELA):
         os.makedirs(os.path.join(BASE, sub), exist_ok=True)
     try:
         with open(os.path.join(BASE, "LEEME.txt"), "w", encoding="utf-8") as fh:
@@ -498,7 +562,7 @@ def main():
         print("\nListo: carpetas y accesos directos actualizados.")
         return
 
-    selectivo = args & {"--app", "--gt", "--rch", "--auditoria", "--reposicion"}
+    selectivo = args & {"--app", "--gt", "--rch", "--auditoria", "--reposicion", "--pedido", "--centinela"}
     todo = not selectivo
 
     if todo or "--app" in args:
@@ -511,6 +575,10 @@ def main():
         sync_auditoria()
     if todo or "--reposicion" in args:
         sync_reposicion()
+    if todo or "--pedido" in args:
+        sync_pedido()
+    if todo or "--centinela" in args:
+        sync_centinela()
 
     escribir_log()
     print(f"\nListo ({REP.ok} copiados, {REP.skip} sin cambios). "

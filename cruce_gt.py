@@ -17,7 +17,7 @@ prescripción por "ID Receta Detalle". Produce:
 Uso:
   py cruce_gt.py <reporteGT.xlsx> --salida ./out_gt [--hist-glob "informe_completo_recetas*.csv"]
 """
-import argparse, csv, glob, json, os, re, sys, unicodedata
+import argparse, csv, glob, json, os, re, sys, tempfile, unicodedata
 from collections import OrderedDict, defaultdict
 
 for _s in (sys.stdout, sys.stderr):
@@ -90,7 +90,9 @@ def leer_reporte_gt(path):
     rows = [r for r in ws.iter_rows(values_only=True)]
     wb.close()
     # fila de encabezado = primera con >=5 celdas no vacías
-    hi = next(i for i, r in enumerate(rows) if sum(1 for c in r if c not in (None, "")) >= 5)
+    hi = next((i for i, r in enumerate(rows) if sum(1 for c in r if c not in (None, "")) >= 5), None)
+    if hi is None:
+        raise ValueError(f"No se encontró fila de encabezado válida en {path} (se esperaban >=5 columnas con datos)")
     hdr = [str(c).strip() if c is not None else "" for c in rows[hi]]
     K = {_key(h): i for i, h in enumerate(hdr)}
 
@@ -269,6 +271,43 @@ def _buscar_generar_py():
     return None
 
 
+GT_DIR_DEFAULT = os.path.join(os.path.dirname(MAESTRO_DIR), "04_Farmacia_Gestion_Territorial")
+
+
+def _recetas_en_gt_previos(reporte_actual, gt_dir):
+    """Carga los Nº Receta de todos los GT anteriores (excluye el actual).
+    Retorna un set de números ya procesados."""
+    from openpyxl import load_workbook
+    ya = set()
+    patron = os.path.join(gt_dir, "reporteGestionTerritorial_*.xlsx")
+    for fp in glob.glob(patron):
+        if os.path.abspath(fp) == os.path.abspath(reporte_actual):
+            continue
+        try:
+            wb = load_workbook(fp, read_only=True, data_only=True)
+            ws = wb[wb.sheetnames[0]]
+            rows = list(ws.iter_rows(values_only=True))
+            wb.close()
+        except Exception:
+            continue
+        hi = next((i for i, r in enumerate(rows)
+                   if sum(1 for c in r if c not in (None, "")) >= 5), None)
+        if hi is None:
+            continue
+        hdr_r = [str(c).strip() if c is not None else "" for c in rows[hi]]
+        K = {_key(h): i for i, h in enumerate(hdr_r)}
+        c_rec = next((K[k] for k in ("nreceta", "noreceta", "numeroreceta") if k in K), None)
+        if c_rec is None:
+            continue
+        for r in rows[hi + 1:]:
+            if not r:
+                continue
+            v = str(r[c_rec]).strip() if c_rec < len(r) and r[c_rec] is not None else ""
+            if v and v.upper() not in ("TOTAL", "NONE", ""):
+                ya.add(v)
+    return ya
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("reporte", help="reporteGestionTerritorial*.xlsx")
@@ -276,11 +315,24 @@ def main():
     ap.add_argument("--hist-glob", default=os.path.join(MAESTRO_DIR, "informe_completo_recetas*.csv"))
     ap.add_argument("--generar", action="store_true", help="Invocar generar.py del skill al terminar el cruce")
     ap.add_argument("--no-pdf", action="store_true", help="No generar PDFs (pasa --no-pdf a generar.py)")
+    ap.add_argument("--no-dedup", action="store_true", help="No filtrar recetas ya procesadas en GT anteriores")
+    ap.add_argument("--gt-dir", default=GT_DIR_DEFAULT,
+                    help="Carpeta con reporteGestionTerritorial_*.xlsx para detectar previos")
     a = ap.parse_args()
 
     os.makedirs(a.salida, exist_ok=True)
     regs, hdr = leer_reporte_gt(a.reporte)
     print(f"Reporte GT: {len(regs)} recetas únicas | columnas detectadas OK")
+
+    # Dedup: excluir recetas ya listadas en reportes GT anteriores
+    if not a.no_dedup and os.path.isdir(a.gt_dir):
+        ya_procesadas = _recetas_en_gt_previos(a.reporte, a.gt_dir)
+        if ya_procesadas:
+            antes = len(regs)
+            regs = {k: v for k, v in regs.items() if k not in ya_procesadas}
+            omitidas = antes - len(regs)
+            if omitidas:
+                print(f"  [dedup GT] {omitidas} receta(s) omitidas por ya estar en reportes anteriores")
     recetas_set = set(regs.keys())
 
     archivos = sorted(glob.glob(a.hist_glob))
@@ -312,16 +364,14 @@ def main():
         print(f"    {dest:<28} {t:>3} recetas | ❄{rf}  ⚠{co}  ⏳{pe}")
 
     # JSON enriquecido (formato registros del skill)
+    CAMPOS_PUBLICOS = ("receta","paciente","edad","direccion","comuna","telefono",
+                        "estab_origen","estab_destino","periodo","especialidad","n_presc",
+                        "ventanilla","refrigerado","pendiente","controlado")
     out_json = os.path.join(a.salida, "gt_enriquecido.json")
     data = {
         "fecha_entrega": next((g["fecha_entrega_rep"] for g in regs.values() if g.get("fecha_entrega_rep")), ""),
         "origen": "Farmacia Hospital de Pitrufquén",
-        "registros": [
-            {k: g[k] for k in ("receta","paciente","run","edad","direccion","comuna","telefono",
-                               "estab_origen","estab_destino","periodo","especialidad","n_presc",
-                               "ventanilla","refrigerado","pendiente","controlado")}
-            for g in regs.values()
-        ],
+        "registros": [{k: g[k] for k in CAMPOS_PUBLICOS} for g in regs.values()],
     }
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -339,13 +389,27 @@ def main():
         else:
             print(f"\n[GT] Generando planillas → {a.salida} ...")
             import subprocess as _sp
-            cmd = [sys.executable, generar, os.path.abspath(out_json),
-                   "--salida", os.path.abspath(a.salida)]
-            if a.no_pdf:
-                cmd.append("--no-pdf")
-            env = os.environ.copy()
-            env["PYTHONUTF8"] = "1"; env["PYTHONIOENCODING"] = "utf-8"
-            _sp.run(cmd, env=env)
+            # generar.py necesita "run" para la columna RUN de la planilla impresa,
+            # pero el JSON persistido (gt_enriquecido.json) no debe llevar RUT (Ley 19.628).
+            # Se pasa un JSON temporal con "run" que se borra apenas termina el subproceso.
+            data_con_run = {**data, "registros": [
+                {**{k: g[k] for k in CAMPOS_PUBLICOS}, "run": g.get("run", "")}
+                for g in regs.values()
+            ]}
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="gt_tmp_")
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    json.dump(data_con_run, f, ensure_ascii=False, indent=2)
+                cmd = [sys.executable, generar, os.path.abspath(tmp_path),
+                       "--salida", os.path.abspath(a.salida)]
+                if a.no_pdf:
+                    cmd.append("--no-pdf")
+                env = os.environ.copy()
+                env["PYTHONUTF8"] = "1"; env["PYTHONIOENCODING"] = "utf-8"
+                _sp.run(cmd, env=env)
+            finally:
+                try: os.remove(tmp_path)
+                except OSError: pass
 
 
 if __name__ == "__main__":

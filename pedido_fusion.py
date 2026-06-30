@@ -19,7 +19,7 @@ Uso:
     py pedido_fusion.py --forzar-dialisis
     py pedido_fusion.py --todos
 """
-import sys, os, math, datetime as dt, argparse, glob
+import os, math, datetime as dt, argparse, glob
 import pandas as pd
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side

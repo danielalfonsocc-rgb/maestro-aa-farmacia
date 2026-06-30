@@ -9,7 +9,7 @@ from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
-from aa_colors import CRIT_FILL_HEX, crit_fill, crit_nivel, crit_hex, soften, darken, text_on
+from aa_colors import CRIT_FILL_HEX, crit_fill, crit_nivel, crit_hex, soften, darken
 from sgli import calcular_sgli, to_markdown, FACTOR_CARGA_DEFAULT
 from reposicion_dias_habiles import calcular_reposicion, cargar_feriados
 
@@ -169,13 +169,10 @@ div[data-testid="stExpander"] {
 def semana_mes(d):
     return min((d.day - 1) // 7 + 1, 4)
 
-# Las 4 funciones derivan del nivel unico (aa_colors.crit_nivel), de modo que
+# Las 3 funciones derivan del nivel unico (aa_colors.crit_nivel), de modo que
 # reconocen tanto la escala de pedidos ('1-CRITICO'...) como la de faltantes
 # ('[CRITICO]...'). Antes solo entendian el prefijo 'N-', y por eso la pestana
 # Faltantes mostraba todo en verde/OK sin importar la criticidad real.
-def crit_class(c):
-    return {1: 'crit-1', 2: 'crit-2', 3: 'crit-3', 4: 'crit-3'}.get(crit_nivel(c), 'crit-ok')
-
 def crit_emoji(c):
     return {1: '🔴', 2: '🟠', 3: '🟡', 4: '🟡'}.get(crit_nivel(c), '🟢')
 
@@ -437,7 +434,6 @@ df_bod      = datos['bod']
 df_falt     = datos['falt']
 df_falt_det = datos['falt_det']
 df_dial_farm = datos.get('dial_farm', pd.DataFrame())
-df_dial_bod  = datos.get('dial_bod',  pd.DataFrame())
 df_sgli_base = datos.get('sgli',      pd.DataFrame())
 todos_meds = sorted(df_stock['Medicamento'].dropna().unique().tolist())
 
@@ -1277,8 +1273,6 @@ with tab_sgli:
 
         _def = pd.to_numeric(df_calc['Deficit'],   errors='coerce').fillna(0)
         _bod = pd.to_numeric(df_calc['Stock_Bod'], errors='coerce').fillna(0)
-        _cap = pd.to_numeric(df_calc['Cap_Max'],   errors='coerce').fillna(0)
-        _tt  = pd.to_numeric(df_calc['Nivel_Objetivo_T'], errors='coerce').fillna(0)
         _mask = _def > 0
         ir_tope      = max(1, int(5 / factor + 1e-9))
         n_def        = int(_mask.sum())

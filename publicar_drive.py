@@ -7,19 +7,26 @@ pacientes (Recetas Cheque, que contienen RUT y están sujetos a la Ley 19.628).
 
 Estructura en Drive:
   Farmacia AA/
-    1 - App Pedidos/        Consolidado_AA_MAESTRO.xlsx + Resumen_Pedidos_AA.xlsx
-    2 - Gestion Territorial/  último rango al frente + Historial/<rango>/
+    1 - App Pedidos/          Consolidado_AA_MAESTRO.xlsx + Resumen_Pedidos_AA.xlsx
+    2 - Gestion Territorial/
+        <ESTAB DESTINO>/      últimas planillas + letrero por establecimiento
+        Historial/
+            <fecha>/
+                <ESTAB DESTINO>/  planillas + letrero históricos
+                Cruce_GT_Clasificacion.xlsx
+    3 - Pedido Fusionado/     Pedido_Fusion_AA.xlsx
     4 - Auditoria Prescripcion/  Auditoria_Prescripcion_Resumen.xlsx
-    5 - Reposicion/         Reposicion_DiasHabiles_AA.xlsx
+    5 - Reposicion/           Reposicion_DiasHabiles_AA.xlsx
+    6 - Centinela/<Sxx>/      centinela_Sxx.json + centinela_Sxx.pdf por semana
 
 Primera vez (requiere Google Cloud credentials.json):
   py publicar_drive.py --setup
 
 Uso normal (token ya generado):
   py publicar_drive.py           # sube todo
-  py publicar_drive.py --solo-app  --solo-gt  --solo-auditoria  --solo-rep
+  py publicar_drive.py --solo-app  --solo-gt  --solo-pedido  --solo-auditoria  --solo-rep  --solo-centinela
 """
-import argparse, base64, glob, hashlib, io, json, os, re, sys
+import argparse, glob, hashlib, json, os, re, sys
 from datetime import datetime
 
 for _s in (sys.stdout, sys.stderr):
@@ -35,13 +42,28 @@ TOKEN_FILE = os.path.join(WORK_DIR, "token_drive.json")
 NOMBRE_RAIZ = "Farmacia AA"
 SUB_APP     = "1 - App Pedidos"
 SUB_GT      = "2 - Gestion Territorial"
+SUB_PEDIDO  = "3 - Pedido Fusionado"
 SUB_AUDIT   = "4 - Auditoria Prescripcion"
 SUB_REP     = "5 - Reposicion"
+SUB_CENTINELA = "6 - Centinela"
 
 # IDs de carpetas ya creadas en Drive (evita duplicados en búsquedas)
 _FOLDER_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_drive_folders.json")
 
 _RANGO_RE = re.compile(r"^\d{2}-\d{2}-\d{4}_\d{2}-\d{2}-\d{4}$")
+
+# Detecta el establecimiento de destino en un nombre de archivo GT
+# Patrones: <DESTINO>_Planilla.xlsx, <DESTINO>_Letrero.pdf,
+#           <DESTINO>_Controlados_Planilla.xlsx, <DESTINO>_Verificacion.xlsx
+_TIPO_GT_RE = re.compile(
+    r"^(.+?)_(Planilla|Letrero|Controlados_Planilla|Verificacion)\.(xlsx|pdf)$",
+    re.IGNORECASE,
+)
+
+def _destino_de_archivo(nombre):
+    """Devuelve el nombre del establecimiento (con espacios) o None si es archivo general."""
+    m = _TIPO_GT_RE.match(nombre)
+    return m.group(1).replace("_", " ") if m else None
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
@@ -86,7 +108,8 @@ def _get_service():
 
 # ── API Drive helpers ─────────────────────────────────────────────────────────
 def _buscar_carpeta(service, nombre, parent_id=None):
-    q = f"name='{nombre}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    nombre_q = nombre.replace("'", "\\'")
+    q = f"name='{nombre_q}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
     if parent_id:
         q += f" and '{parent_id}' in parents"
     r = service.files().list(q=q, fields="files(id,name)", pageSize=1).execute()
@@ -127,38 +150,47 @@ def _md5(path):
 
 
 def _buscar_archivo(service, nombre, parent_id):
-    q = f"name='{nombre}' and '{parent_id}' in parents and trashed=false"
+    nombre_q = nombre.replace("'", "\\'")
+    q = f"name='{nombre_q}' and '{parent_id}' in parents and trashed=false"
     r = service.files().list(q=q, fields="files(id,md5Checksum)", pageSize=1).execute()
     files = r.get("files", [])
     return (files[0]["id"], files[0].get("md5Checksum")) if files else (None, None)
 
 
 def _subir(service, local_path, folder_id, nuevo_nombre=None, stats=None):
-    """Sube local_path a folder_id en Drive. Salta si MD5 coincide."""
+    """Sube local_path a folder_id en Drive. Salta si MD5 coincide.
+    Captura cualquier error de subida (red, cuota, archivo bloqueado, etc.) para
+    que una falla puntual no aborte el resto de la sincronización."""
     from googleapiclient.http import MediaFileUpload
 
     nombre = nuevo_nombre or os.path.basename(local_path)
-    md5_local = _md5(local_path)
-    fid, md5_drive = _buscar_archivo(service, nombre, folder_id)
+    try:
+        md5_local = _md5(local_path)
+        fid, md5_drive = _buscar_archivo(service, nombre, folder_id)
 
-    if fid and md5_drive == md5_local:
-        if stats:
-            stats["skip"] += 1
-        return "skip"
+        if fid and md5_drive == md5_local:
+            if stats:
+                stats["skip"] += 1
+            return "skip"
 
-    mime, _ = _guess_mime(local_path)
-    media = MediaFileUpload(local_path, mimetype=mime, resumable=True)
-    if fid:
-        service.files().update(fileId=fid, body={"name": nombre}, media_body=media).execute()
+        mime, _ = _guess_mime(local_path)
+        media = MediaFileUpload(local_path, mimetype=mime, resumable=True)
+        if fid:
+            service.files().update(fileId=fid, body={"name": nombre}, media_body=media).execute()
+            if stats:
+                stats["ok"] += 1
+            return "updated"
+        else:
+            meta = {"name": nombre, "parents": [folder_id]}
+            service.files().create(body=meta, media_body=media, fields="id").execute()
+            if stats:
+                stats["ok"] += 1
+            return "created"
+    except Exception as e:
+        print(f"  [error] {nombre}: {e}")
         if stats:
-            stats["ok"] += 1
-        return "updated"
-    else:
-        meta = {"name": nombre, "parents": [folder_id]}
-        service.files().create(body=meta, media_body=media, fields="id").execute()
-        if stats:
-            stats["ok"] += 1
-        return "created"
+            stats["fail"] += 1
+        return "fail"
 
 
 def _guess_mime(path):
@@ -181,11 +213,12 @@ def _mas_reciente(patron):
 
 
 # ── Sincronizadores ───────────────────────────────────────────────────────────
-def sync_app(service, raiz_id, stats):
-    fid = _obtener_o_crear_carpeta(service, SUB_APP, raiz_id)
+def sync_app(service, raiz_id, stats, cache=None):
+    fid = _obtener_o_crear_carpeta(service, SUB_APP, raiz_id, cache)
     for patron, canon in [
         ("Consolidado_AA_MAESTRO*.xlsx", "Consolidado_AA_MAESTRO.xlsx"),
         ("Resumen_Pedidos_AA*.xlsx",      "Resumen_Pedidos_AA.xlsx"),
+        ("SGLI_Historico_*.xlsx",         "SGLI_Historico.xlsx"),
     ]:
         src = _mas_reciente(os.path.join(WORK_DIR, patron))
         if src:
@@ -195,14 +228,50 @@ def sync_app(service, raiz_id, stats):
             print(f"  {canon}: no encontrado, omitido")
 
 
+def _fecha_fin_rango(nombre_carpeta):
+    """Extrae la fecha de fin del nombre de carpeta 'DD-MM-YYYY_DD-MM-YYYY' como 'DD-MM-YYYY'.
+    Si el formato no coincide, cae a mtime de la carpeta."""
+    m = re.match(r"(\d{2}-\d{2}-\d{4})_(\d{2}-\d{2}-\d{4})$", nombre_carpeta)
+    return m.group(2) if m else None
+
+
+def _subir_gt_rango(service, rango_dir, parent_fid, stats, cache, prefijo_log):
+    """Sube todos los archivos de un rango GT a parent_fid, organizados por establecimiento.
+    Archivos con destino conocido van a <parent>/<ESTAB>/. Archivos generales van directo."""
+    archivos = sorted(
+        glob.glob(os.path.join(rango_dir, "*.xlsx")) +
+        glob.glob(os.path.join(rango_dir, "*.pdf"))
+    )
+    estabs_vistos = set()
+    for f in archivos:
+        nb = os.path.basename(f)
+        if nb.startswith("~$"):
+            continue
+        destino = _destino_de_archivo(nb)
+        if destino:
+            estabs_vistos.add(destino)
+            fid_estab = _obtener_o_crear_carpeta(service, destino, parent_fid, cache)
+            r = _subir(service, f, fid_estab, stats=stats)
+            if r != "skip":
+                print(f"  {prefijo_log}/{destino}/{nb}: {r}")
+        else:
+            # Archivo general (Cruce_GT_Clasificacion, etc.) — al nivel del rango
+            r = _subir(service, f, parent_fid, stats=stats)
+            if r != "skip":
+                print(f"  {prefijo_log}/{nb}: {r}")
+    return sorted(estabs_vistos)
+
+
 def sync_gt(service, raiz_id, stats, cache):
     src_base = os.path.join(WORK_DIR, "out_gt")
     if not os.path.isdir(src_base):
         print("  [GT] sin out_gt todavía")
         return
-    rangos = sorted([d for d in glob.glob(os.path.join(src_base, "*"))
-                     if os.path.isdir(d) and _RANGO_RE.match(os.path.basename(d))],
-                    key=os.path.getmtime)
+    rangos = sorted(
+        [d for d in glob.glob(os.path.join(src_base, "*"))
+         if os.path.isdir(d) and _RANGO_RE.match(os.path.basename(d))],
+        key=lambda d: os.path.basename(d),
+    )
     if not rangos:
         print("  [GT] sin rangos en out_gt")
         return
@@ -210,26 +279,27 @@ def sync_gt(service, raiz_id, stats, cache):
     fid_gt   = _obtener_o_crear_carpeta(service, SUB_GT,      raiz_id, cache)
     fid_hist = _obtener_o_crear_carpeta(service, "Historial", fid_gt,  cache)
 
+    # ── Historial: un subfolder por rango, y dentro uno por establecimiento ──
     for d in rangos:
-        nombre_rango = os.path.basename(d)
-        fid_r = _obtener_o_crear_carpeta(service, nombre_rango, fid_hist, cache)
-        for f in glob.glob(os.path.join(d, "*.xlsx")) + glob.glob(os.path.join(d, "*.json")):
-            r = _subir(service, f, fid_r, stats=stats)
-            if r != "skip":
-                print(f"  GT/{nombre_rango}/{os.path.basename(f)}: {r}")
+        fecha_rango = _fecha_fin_rango(os.path.basename(d)) or \
+                      datetime.fromtimestamp(os.path.getmtime(d)).strftime("%d-%m-%Y")
+        fid_r = _obtener_o_crear_carpeta(service, fecha_rango, fid_hist, cache)
+        _subir_gt_rango(service, d, fid_r, stats, cache,
+                        prefijo_log=f"Historial/{fecha_rango}")
 
-    # Último rango al frente (directamente bajo 2 - Gestion Territorial)
+    # ── Frente: último rango organizado por establecimiento bajo GT raíz ──
     ultimo = rangos[-1]
-    for f in glob.glob(os.path.join(ultimo, "*.xlsx")):
-        r = _subir(service, f, fid_gt, stats=stats)
-        if r != "skip":
-            print(f"  GT (frente)/{os.path.basename(f)}: {r}")
+    fecha_ultimo = _fecha_fin_rango(os.path.basename(ultimo)) or \
+                   datetime.fromtimestamp(os.path.getmtime(ultimo)).strftime("%d-%m-%Y")
+    estabs = _subir_gt_rango(service, ultimo, fid_gt, stats, cache,
+                             prefijo_log="frente")
+    estabs_str = ", ".join(estabs) if estabs else "(ninguno)"
+    print(f"  [GT] {len(rangos)} rango(s) · último «{fecha_ultimo}» · "
+          f"establecimientos: {estabs_str}")
 
-    print(f"  [GT] {len(rangos)} rango(s) · último «{os.path.basename(ultimo)}» al frente")
 
-
-def sync_auditoria(service, raiz_id, stats):
-    fid = _obtener_o_crear_carpeta(service, SUB_AUDIT, raiz_id)
+def sync_auditoria(service, raiz_id, stats, cache=None):
+    fid = _obtener_o_crear_carpeta(service, SUB_AUDIT, raiz_id, cache)
     src = _mas_reciente(os.path.join(WORK_DIR, "Auditoria_Prescripcion_Resumen*.xlsx"))
     if src:
         r = _subir(service, src, fid, nuevo_nombre="Auditoria_Prescripcion_Resumen.xlsx", stats=stats)
@@ -238,14 +308,49 @@ def sync_auditoria(service, raiz_id, stats):
         print("  Auditoria_Prescripcion_Resumen.xlsx: no encontrado, omitido")
 
 
-def sync_reposicion(service, raiz_id, stats):
-    fid = _obtener_o_crear_carpeta(service, SUB_REP, raiz_id)
+def sync_reposicion(service, raiz_id, stats, cache=None):
+    fid = _obtener_o_crear_carpeta(service, SUB_REP, raiz_id, cache)
     src = _mas_reciente(os.path.join(WORK_DIR, "Reposicion_DiasHabiles_AA*.xlsx"))
     if src:
         r = _subir(service, src, fid, nuevo_nombre="Reposicion_DiasHabiles_AA.xlsx", stats=stats)
         print(f"  Reposicion_DiasHabiles_AA.xlsx: {r}")
     else:
         print("  Reposicion_DiasHabiles_AA.xlsx: no encontrado, omitido")
+
+
+def sync_pedido(service, raiz_id, stats, cache=None):
+    fid = _obtener_o_crear_carpeta(service, SUB_PEDIDO, raiz_id, cache)
+    src = _mas_reciente(os.path.join(WORK_DIR, "Pedido_Fusion_AA*.xlsx"))
+    if src:
+        r = _subir(service, src, fid, nuevo_nombre="Pedido_Fusion_AA.xlsx", stats=stats)
+        print(f"  Pedido_Fusion_AA.xlsx: {r}")
+    else:
+        print("  Pedido_Fusion_AA.xlsx: no encontrado, omitido")
+
+
+def sync_centinela(service, raiz_id, stats, cache=None):
+    fid = _obtener_o_crear_carpeta(service, SUB_CENTINELA, raiz_id, cache)
+    src_base = os.path.join(WORK_DIR, "Centinela_Reportes")
+    if not os.path.isdir(src_base):
+        print("  [Centinela] sin Centinela_Reportes todavía")
+        return
+    semanas = sorted(
+        d for d in glob.glob(os.path.join(src_base, "*")) if os.path.isdir(d)
+    )
+    if not semanas:
+        print("  [Centinela] sin semanas en Centinela_Reportes")
+        return
+    for d in semanas:
+        nombre_semana = os.path.basename(d)
+        fid_semana = _obtener_o_crear_carpeta(service, nombre_semana, fid, cache)
+        archivos = sorted(
+            glob.glob(os.path.join(d, "*.json")) + glob.glob(os.path.join(d, "*.pdf"))
+        )
+        for f in archivos:
+            r = _subir(service, f, fid_semana, stats=stats)
+            if r != "skip":
+                print(f"  {nombre_semana}/{os.path.basename(f)}: {r}")
+    print(f"  [Centinela] {len(semanas)} semana(s): {', '.join(os.path.basename(d) for d in semanas)}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -255,8 +360,10 @@ def main():
                     help="Fuerza el flujo OAuth (primera vez o token expirado)")
     ap.add_argument("--solo-app",      action="store_true")
     ap.add_argument("--solo-gt",       action="store_true")
+    ap.add_argument("--solo-pedido",   action="store_true")
     ap.add_argument("--solo-auditoria",action="store_true")
     ap.add_argument("--solo-rep",      action="store_true")
+    ap.add_argument("--solo-centinela",action="store_true")
     a = ap.parse_args()
 
     if a.setup and os.path.exists(TOKEN_FILE):
@@ -278,16 +385,26 @@ def main():
 
     if NOMBRE_RAIZ in known:
         raiz_id = known[NOMBRE_RAIZ]
-        # Pre-carga sub-carpetas fijas en cache para evitar búsquedas API
-        for sub in (SUB_APP, SUB_GT, SUB_AUDIT, SUB_REP):
+        # Pre-carga sub-carpetas fijas para evitar búsquedas API
+        for sub in (SUB_APP, SUB_GT, SUB_PEDIDO, SUB_AUDIT, SUB_REP, SUB_CENTINELA):
             if sub in known:
                 cache[(sub, raiz_id)] = known[sub]
+        # Pre-carga carpetas de Historial + rangos si están en el JSON
+        gt_id = known.get(SUB_GT)
+        hist_key = f"{SUB_GT}/Historial"
+        hist_id = known.get(hist_key)
+        if gt_id and hist_id:
+            cache[("Historial", gt_id)] = hist_id
+            for full_key, fid in known.items():
+                if full_key.startswith(f"{hist_key}/"):
+                    rango = full_key[len(hist_key) + 1:]
+                    cache[(rango, hist_id)] = fid
     else:
         raiz_id = _obtener_o_crear_carpeta(svc, NOMBRE_RAIZ, cache=cache)
 
     stats = {"ok": 0, "skip": 0, "fail": 0}
 
-    todos = not any([a.solo_app, a.solo_gt, a.solo_auditoria, a.solo_rep])
+    todos = not any([a.solo_app, a.solo_gt, a.solo_pedido, a.solo_auditoria, a.solo_rep, a.solo_centinela])
 
     print(f"\n[Drive] Subiendo a «{NOMBRE_RAIZ}» (id={raiz_id[:8]}…)")
     ts = datetime.now().strftime("%H:%M:%S")
@@ -295,23 +412,59 @@ def main():
 
     if todos or a.solo_app:
         print(f"  ── {SUB_APP} ──")
-        sync_app(svc, raiz_id, stats)
+        sync_app(svc, raiz_id, stats, cache)
 
     if todos or a.solo_gt:
         print(f"\n  ── {SUB_GT} ──")
         sync_gt(svc, raiz_id, stats, cache)
 
+    if todos or a.solo_pedido:
+        print(f"\n  ── {SUB_PEDIDO} ──")
+        sync_pedido(svc, raiz_id, stats, cache)
+
     if todos or a.solo_auditoria:
         print(f"\n  ── {SUB_AUDIT} ──")
-        sync_auditoria(svc, raiz_id, stats)
+        sync_auditoria(svc, raiz_id, stats, cache)
 
     if todos or a.solo_rep:
         print(f"\n  ── {SUB_REP} ──")
-        sync_reposicion(svc, raiz_id, stats)
+        sync_reposicion(svc, raiz_id, stats, cache)
+
+    if todos or a.solo_centinela:
+        print(f"\n  ── {SUB_CENTINELA} ──")
+        sync_centinela(svc, raiz_id, stats, cache)
 
     total = stats["ok"] + stats["skip"] + stats["fail"]
     print(f"\n[Drive] Listo: {stats['ok']} subidos · {stats['skip']} sin cambios · "
           f"{stats['fail']} errores  ({total} total)")
+
+    # Persiste IDs de carpetas nuevas descubiertas en esta corrida
+    nuevos = {nombre: fid for (nombre, pid), fid in cache.items() if pid == raiz_id}
+    nuevos[NOMBRE_RAIZ] = raiz_id
+    # También persiste la jerarquía SUB_GT/Historial/<rango> (no son hijos directos
+    # de la raíz, así que el filtro por pid==raiz_id de arriba no las captura — sin
+    # esto, esas carpetas se re-buscan vía API en cada ejecución para siempre).
+    gt_folder_id = nuevos.get(SUB_GT)
+    hist_folder_id = cache.get(("Historial", gt_folder_id)) if gt_folder_id else None
+    if hist_folder_id:
+        nuevos[f"{SUB_GT}/Historial"] = hist_folder_id
+        for (nombre, pid), fid in cache.items():
+            if pid == hist_folder_id:
+                nuevos[f"{SUB_GT}/Historial/{nombre}"] = fid
+    if os.path.exists(_FOLDER_CACHE_FILE):
+        try:
+            with open(_FOLDER_CACHE_FILE, encoding="utf-8") as _f:
+                existing = json.load(_f)
+        except Exception:
+            existing = {}
+    else:
+        existing = {}
+    merged = {**existing, **{k: v for k, v in nuevos.items() if k not in existing}}
+    if merged != existing:
+        with open(_FOLDER_CACHE_FILE, "w", encoding="utf-8") as _f:
+            json.dump(merged, _f, ensure_ascii=False, indent=2)
+        print(f"  [cache] {_FOLDER_CACHE_FILE.split(os.sep)[-1]} actualizado con {len(merged)-len(existing)} entradas nuevas")
+
     if stats["fail"]:
         sys.exit(1)
 

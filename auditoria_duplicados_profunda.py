@@ -5,7 +5,7 @@ auditoria_duplicados_profunda.py
 Auditoría PROFUNDA de prescripciones duplicadas — Farmacia AT Abierta
 Hospital de Pitrufquén (SSASur)
 
-Qué agrega sobre recetas_duplicadas.py:
+Características principales:
   1. VIGENCIA ACTUAL — detecta si el doble retiro está ACTIVO HOY
      (≥2 prescripciones del cluster con cobertura que llega a hoy).
   2. INICIO DEL DOBLE RETIRO — fecha exacta en que comenzó el solapamiento.
@@ -42,7 +42,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from aa_colors import TEAL, ROJO, NARANJA, AMBAR, VERDE, GRIS
+from aa_colors import TEAL, ROJO, GRIS
 from utils_aa import norm_erp, HOMOLOGACION, cargar_recetas_csv, setup_stdout
 
 setup_stdout()
@@ -142,8 +142,6 @@ def nivel_evento(rec: pd.DataFrame) -> pd.DataFrame:
         esp        = ("_esp",       _primero),
         cant_r     = ("_cant_r",    "sum"),
         cant_e     = ("_cant_e",    "sum"),
-        n_cuotas   = ("Número Receta", "nunique"),
-        estado     = ("_est",       _primero),
     ).reset_index().rename(columns={"_run_prof": "run_prof", "_fecha": "start"})
     g["cob_dias"] = g["cuotas"].clip(lower=1) * DIAS_POR_CUOTA
     return g
@@ -182,20 +180,31 @@ def _vigente_hoy(cl) -> bool:
     return sum(1 for r in cl if _fin_cob(r) >= hoy) >= 2
 
 
+def _par_relevante(cl):
+    """Par de eventos (más antiguo, siguiente) que sustenta el solape relevante.
+    Si el cluster está vigente hoy, usa el solape realmente activo (entre los
+    eventos vigentes), no siempre los dos primeros cronológicos — un cluster de
+    3+ eventos puede seguir vigente por un solape posterior aunque el primero
+    ya haya cerrado. Si no está vigente, usa el primer solape histórico."""
+    hoy = pd.Timestamp(HOY)
+    vig = sorted((r for r in cl if _fin_cob(r) >= hoy), key=lambda r: r["start"])
+    if len(vig) >= 2:
+        return vig[0], vig[1]
+    sorted_cl = sorted(cl, key=lambda r: r["start"])
+    return sorted_cl[0], sorted_cl[1]
+
+
 def _inicio_doble_retiro(cl) -> pd.Timestamp:
-    """Fecha en que comenzó el solapamiento = inicio de la 2ª prescripción."""
-    return sorted(cl, key=lambda r: r["start"])[1]["start"]
+    """Fecha en que comenzó el solapamiento relevante = inicio del 2º evento del par."""
+    return _par_relevante(cl)[1]["start"]
 
 
 def _dias_en_doble_retiro(cl) -> int:
     """Días acumulados en doble retiro (desde inicio hasta hoy o hasta cierre)."""
-    inicio = _inicio_doble_retiro(cl)
+    r0, r1 = _par_relevante(cl)
+    inicio = r1["start"]
     hoy    = pd.Timestamp(HOY)
-    sorted_cl = sorted(cl, key=lambda r: r["start"])
-    # Fin aproximado = cuando el primero de los dos primeros deja de cubrir
-    fin0 = _fin_cob(sorted_cl[0])
-    fin1 = _fin_cob(sorted_cl[1])
-    fin_solape = min(fin0, fin1)
+    fin_solape = min(_fin_cob(r0), _fin_cob(r1))
     fin = min(fin_solape, hoy)
     return max(0, (fin - inicio).days)
 
@@ -321,11 +330,10 @@ concisa, orientada a la acción del QF, y en español.
 """
 
 
-def _anon_run(run: str, run_map: dict, anon_map: dict) -> str:
+def _anon_run(run: str, run_map: dict) -> str:
     if run not in run_map:
         h = hashlib.sha256(str(run).encode()).hexdigest()[:8]
         run_map[run] = h
-        anon_map[h]  = run
     return run_map[run]
 
 
@@ -342,13 +350,12 @@ def generar_propuestas_haiku(df_res: pd.DataFrame) -> dict:
         return {}
 
     run_map  = {}
-    anon_map = {}
 
     casos_anon = []
     for _, row in subset.iterrows():
         casos_anon.append({
             "cid"             : int(row["CID"]),
-            "pac_id"          : _anon_run(str(row["RUN"]), run_map, anon_map),
+            "pac_id"          : _anon_run(str(row["RUN"]), run_map),
             "medicamento"     : str(row["Medicamento"])[:70],
             "tipo"            : str(row["Tipo duplicación"]),
             "vigente_hoy"     : row["Vigente hoy"] == "Sí",

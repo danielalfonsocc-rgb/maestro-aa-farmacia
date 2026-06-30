@@ -95,12 +95,15 @@ def calcular_reposicion(df_sgli, df_stock, feriados=None, hoy=None,
     if hasattr(hoy, "date"):
         hoy = hoy.date()
 
+    def num(v, d=0.0):
+        v = pd.to_numeric(v, errors="coerce")
+        return d if pd.isna(v) else float(v)
+
     # CDL plano por dia habil (steady-state) desde Stock_AA
     cdl_plano = {}
     if df_stock is not None and len(df_stock):
         for _, r in df_stock.iterrows():
-            cdl_plano[str(r.get("Medicamento", "")).strip()] = \
-                float(pd.to_numeric(r.get("CDL_DiasHab", 0), errors="coerce") or 0)
+            cdl_plano[str(r.get("Medicamento", "")).strip()] = num(r.get("CDL_DiasHab", 0))
 
     # Freq_Revision per-medicamento desde SGLI (si disponible; si no, usa IR global)
     freq_rev_map = {}
@@ -110,10 +113,6 @@ def calcular_reposicion(df_sgli, df_stock, feriados=None, hoy=None,
             v = pd.to_numeric(r.get("Freq_Revision"), errors="coerce")
             if not pd.isna(v):
                 freq_rev_map[med] = int(v)
-
-    def num(v, d=0.0):
-        v = pd.to_numeric(v, errors="coerce")
-        return d if pd.isna(v) else float(v)
 
     filas = []
     for _, r in df_sgli.iterrows():

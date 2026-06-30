@@ -681,7 +681,9 @@ async def main():
                     try:
                         csv = await descargar_sabana(page, fi, ff)
                         n_filas = max(sum(1 for l in csv.splitlines() if l.strip()) - 1, 0)
-                        if n_filas > 0:
+                        if n_filas > 0 or es_completo:
+                            # Si el bloque está completo (30 días ya pasaron) se sella aunque
+                            # tenga 0 filas, o se re-descargaría indefinidamente en cada corrida.
                             dest = full if es_completo else parcial
                             with open(dest, "w", encoding="latin-1", newline="") as fcsv:
                                 fcsv.write(csv)
@@ -751,9 +753,14 @@ async def main():
         try:
             await page.select_option("#bodega", BODEGA_TODAS)
             await page.wait_for_timeout(1_000)
+            valor_actual = await page.eval_on_selector("#bodega", "el => el.value")
+            if valor_actual != BODEGA_TODAS:
+                raise RuntimeError(f"selector #bodega quedó en '{valor_actual}', no en TODAS ('{BODEGA_TODAS}')")
             print("  Bodega: TODAS")
         except Exception as e:
-            print(f"  [AVISO] No se pudo seleccionar bodega TODAS: {e}")
+            print(f"  [ERROR] No se pudo seleccionar bodega TODAS — abortando para no generar stock parcial: {e}")
+            await page.screenshot(path=str(MAESTRO_DIR / "debug_stock.png"))
+            raise
 
         print("  Generando XLS de stock... (puede tardar varios minutos)")
         try:
