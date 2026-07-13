@@ -917,6 +917,16 @@ with tab_dialisis:
         def _cn(df, c):
             return pd.to_numeric(df[c], errors='coerce').fillna(0) if c in df.columns \
                    else pd.Series(0, index=df.index, dtype=float)
+        # Unidades_Caja de SGLI_Estres (ICP CENABAST) es la fuente confiable de
+        # factor de empaque; Factor_Empaque propio de las hojas de diálisis viene
+        # de un matching de nombre más débil y cae a 1 (sin redondeo) más seguido
+        # — mismo criterio que pedido_fusion.py calc_h3.
+        _fe_map_dial = {}
+        if len(df_sgli_base):
+            for _, r in df_sgli_base.iterrows():
+                _m = str(r.get('Medicamento', '')).strip()
+                _fe_map_dial[_m] = int(pd.to_numeric(r.get('Unidades_Caja', 1), errors='coerce') or 1) or 1
+
         dfa = df_dial_farm.copy()
         dfa['_dial5d'] = _cn(dfa, 'Consumo_5D_Solo_Dialisis')
         dfa['_stock']  = _cn(dfa, 'Stock_Farm_Actual')
@@ -934,7 +944,8 @@ with tab_dialisis:
             filas = []
             for _, row in dfa.iterrows():
                 base     = int(row['_mensual'])
-                factor   = int(row['_factor']) if int(row['_factor']) > 0 else 1
+                med_dial = str(_get(row, 'Medicamento', ''))
+                factor   = _fe_map_dial.get(med_dial, 0) or (int(row['_factor']) if int(row['_factor']) > 0 else 1)
                 # Aproximar al factor de empaque (hacia arriba)
                 cantidad = ((base + factor - 1) // factor) * factor if factor > 1 else base
                 stock    = int(row['_stock'])
