@@ -29,7 +29,11 @@ WORK_DIR     = os.path.dirname(os.path.abspath(__file__))
 FERIADOS_CSV = os.path.join(WORK_DIR, 'feriados_chile.csv')
 BUFFER_SS    = 1    # días de safety stock (blindaje reapertura lunes)
 EXTRA_CRIT   = 1    # días extra SS para criticidad ≤ 2
-CICLO_INICIO = dt.date(2026, 6, 29)   # inicio fijo ciclo Bod→BodFarm; repite cada 10d hábiles
+CICLO_INICIO = dt.date(2026, 7, 13)   # inicio ciclo Bod→BodFarm; repite cada 10d hábiles
+# Recalibrado 2026-07-13: el ancla anterior (2026-06-29) cayó en feriado
+# (San Pedro y San Pablo), lo que restó 1 día hábil al 1er ciclo y corrió
+# el límite del 2° ciclo de lunes 13-jul a martes 14-jul. Confirmado con
+# el usuario que el nuevo período de pedido Bod→BodFarm arranca esta semana.
 
 # ─────────────── helpers ────────────────────────────────────────────────────
 
