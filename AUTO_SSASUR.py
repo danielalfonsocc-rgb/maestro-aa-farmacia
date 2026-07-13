@@ -49,6 +49,16 @@ Modos (CLI):
 El registro ISP de recetas cheque (recetas_cheque.py) corre como PASO 5d: usa
 la MISMA sábana ya descargada para agregar los folios cheque nuevos de Farmacia
 AT Abierta al formulario ISP del mes vigente (carpeta de la QF, fuera del repo).
+
+Tras el Consolidado, corren también (sin argumentos, sin llamadas a IA):
+  5f) reposicion_dias_habiles.py → Reposicion_DiasHabiles_AA_<fecha>.xlsx
+  5g) sgli_historico.py          → SGLI_Historico_<fecha>.xlsx
+Ambos archivos ya eran esperados por publicar_escritorio.py / publicar_drive.py;
+sin estos pasos quedaban publicando una copia vieja (o ninguna).
+
+NOTA: agente_duplicados.py y auditoria_duplicados_profunda.py (llaman a la API
+de Claude) NO corren aquí — se mantienen en sus .bat propios para ejecutarse
+a demanda y no gastar tokens en cada corrida de AUTO_SSASUR.
 ═══════════════════════════════════════════════════════════════
 """
 import asyncio
@@ -841,6 +851,33 @@ async def main():
             )
             if pret.returncode != 0:
                 print(f"  [aviso] pedido_fusion.py terminó con código {pret.returncode}")
+
+        # ── PASO 5f — REPOSICIÓN DÍAS HÁBILES ────────────────────────────────
+        # Plan Bodega→Farmacia ajustado por feriados (reposicion_dias_habiles.py).
+        # publicar_escritorio.py y publicar_drive.py ya esperan este archivo —
+        # sin este paso quedaban copiando una versión vieja del plan.
+        repo_py = MAESTRO_DIR / "reposicion_dias_habiles.py"
+        if repo_py.exists():
+            print(f"\n[5f/9] Generando Reposición Días Hábiles (Bodega→Farmacia)...")
+            rret = subprocess.run(
+                [sys.executable, str(repo_py)],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
+            if rret.returncode != 0:
+                print(f"  [aviso] reposicion_dias_habiles.py terminó con código {rret.returncode}")
+
+        # ── PASO 5g — SGLI HISTÓRICO (ABC-XYZ) ───────────────────────────────
+        # Planilla de reposición basada en 9 meses de historial de recetas
+        # (sgli_historico.py). publicar_drive.py ya espera SGLI_Historico_*.xlsx.
+        sgli_py = MAESTRO_DIR / "sgli_historico.py"
+        if sgli_py.exists():
+            print(f"\n[5g/9] Generando SGLI Histórico (clasificación ABC-XYZ)...")
+            sret = subprocess.run(
+                [sys.executable, str(sgli_py)],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
+            if sret.returncode != 0:
+                print(f"  [aviso] sgli_historico.py terminó con código {sret.returncode}")
 
         # ── PASO 6 — PUBLICAR EN GITHUB ───────────────────────────────────────
         git_dir  = MAESTRO_DIR / ".git"
