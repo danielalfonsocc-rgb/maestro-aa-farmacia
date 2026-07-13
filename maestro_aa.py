@@ -1155,6 +1155,42 @@ df_farm_pedido = (
     .reset_index(drop=True)
 )
 
+# Universo completo para la hoja Pedido_Farm_Bodega (consumida por pedido_fusion.py
+# --todos): df_farm_pedido de arriba queda filtrado a Necesidad_Farm>0 a propósito
+# para el Resumen_Pedidos_AA (solo lo accionable). Acá se arma el equivalente de
+# _bod_pedido_sin_consumo pero para Farmacia, para que --todos pueda listar los
+# 378 medicamentos igual que ya hace Pedido_Repos_Bodega.
+_farm_pedido_con_datos = (
+    df_ped[['Medicamento'] + list(_farm_cols.values())]
+    .rename(columns={v: k for k, v in _farm_cols.items()})
+)
+_df_master_sin_datos_farm = df_master[~df_master['Medicamento'].isin(df_ped['Medicamento'])]
+_farm_pedido_sin_datos = pd.DataFrame({
+    'Medicamento'               : _df_master_sin_datos_farm['Medicamento'].values,
+    'Criticidad'                : '5-OK',
+    'Semana_Pico_Hist'          : _df_master_sin_datos_farm['Medicamento'].map(_sp_map).fillna('-').values,
+    'Factor_Carga_5D'           : 1.0,
+    'Stock_Farm_Actual'         : _df_master_sin_datos_farm['Stock_Farmacia_AA'].values,
+    'Cob_Farm_Actual_Dias'      : 0.0,
+    'Consumo_5D_Trend'          : 0.0,
+    'Consumo_5D_Plano'          : 0.0,
+    'Necesidad_5D_Farm'         : 0,
+    'Stock_Bodega_Disponible'   : _df_master_sin_datos_farm['Stock_Bodega_AA'].values,
+    'A_Traspasar'               : 0,
+    'Deficit_Post_Traspaso'     : 0,
+    'Stock_Farm_Post_Traspaso'  : _df_master_sin_datos_farm['Stock_Farmacia_AA'].values,
+    'Cob_Farm_Post_Dias'        : 0.0,
+    'CDL_DiasHab'               : 0.0,
+    'CMP_Mensual_22d'           : 0.0,
+    'Accion_1_Traspaso_Bodega'  : '',
+    'Accion_2_Gestion_Externa'  : '',
+})
+df_farm_pedido_completo = (
+    pd.concat([_farm_pedido_con_datos, _farm_pedido_sin_datos], ignore_index=True)
+    .sort_values(['Criticidad', 'CDL_DiasHab'], ascending=[True, False])
+    .reset_index(drop=True)
+)
+
 _bod_cols = {
     'Criticidad'              : 'Crit_Bod',
     'Semana_Pico_Hist'        : 'Semana_Pico',
@@ -1800,19 +1836,19 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
         crit = str(getattr(row_t, 'Criticidad', '5-OK'))
         return CRIT_COLOR.get(crit, ROW_ALT if ri % 2 == 0 else None)
 
-    df_farm_pedido.to_excel(writer, sheet_name='Pedido_Farm_Bodega', index=False)
+    df_farm_pedido_completo.to_excel(writer, sheet_name='Pedido_Farm_Bodega', index=False)
     ws13 = writer.sheets['Pedido_Farm_Bodega']
-    style_sheet(ws13, df_farm_pedido, row_color_fn=color_pedido_farm,
+    style_sheet(ws13, df_farm_pedido_completo, row_color_fn=color_pedido_farm,
                 header_fill=PatternFill('solid', fgColor='880E4F'))
     # Negrita en filas CRITICO
-    for ri, row_t in enumerate(df_farm_pedido.itertuples(index=False), 2):
+    for ri, row_t in enumerate(df_farm_pedido_completo.itertuples(index=False), 2):
         crit = str(getattr(row_t, 'Criticidad', ''))
         if crit == '1-CRITICO':
-            for ci in range(1, len(df_farm_pedido.columns)+1):
+            for ci in range(1, len(df_farm_pedido_completo.columns)+1):
                 ws13.cell(row=ri, column=ci).font = Font(bold=True, color='7F1D1D',
                                                           name='Arial', size=11)
     # Anchos
-    farm_ped_cols = list(df_farm_pedido.columns)
+    farm_ped_cols = list(df_farm_pedido_completo.columns)
     for ci, col in enumerate(farm_ped_cols, 1):
         ltr = get_column_letter(ci)
         if col == 'Medicamento':                ws13.column_dimensions[ltr].width = 52
