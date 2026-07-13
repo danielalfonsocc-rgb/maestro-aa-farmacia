@@ -331,10 +331,13 @@ def calc_h2(df_bod, fe_map, hoy, fer):
         sbod   = int(_n(r.get('Stock_Bod_Actual', 0)))
         sfarm  = int(_n(r.get('Stock_Farm_Actual', 0)))
         sbfarm = int(_n(r.get('Stock_BODEGA_FARMACOS', 0)))
+        cons10 = _n(r.get('Consumo_10D_Trend', 0))
         req2   = _n(r.get('Req_2_Semanas', 0))
 
-        # CDL derivado del req de 2 semanas (10d hábiles)
-        cdl = req2 / 10 if req2 > 0 else 0.0
+        # CDL de tendencia (Consumo_10D_Trend ya trae el ajuste por semana del mes,
+        # igual que Consumo_5D_Trend en Farm_Bod); cae al req plano de 2 semanas
+        # (10d hábiles) solo si no hay dato de tendencia.
+        cdl = (cons10 / 10) if cons10 > 0 else (req2 / 10 if req2 > 0 else 0.0)
 
         # Stock requerido para el ciclo actual (días restantes). Se descuenta TODO
         # el stock de Atención Abierta (Bodega AA + Farmacia AA) — el de Bodega
