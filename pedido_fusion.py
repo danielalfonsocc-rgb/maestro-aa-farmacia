@@ -220,7 +220,8 @@ HDRS1 = [
     ('Bod AA ← Bod.Fármacos',   34),   # reposición que Bodega AA necesita de BodFarm
 ]
 
-def calc_h1(df_farm, fe_map, dias_ef, todos=False):
+def calc_h1(df_farm, fe_map, dias_ef, todos=False, rep_h2_map=None):
+    rep_h2_map = rep_h2_map or {}
     rows = []
     for _, r in df_farm.iterrows():
         med   = str(r.get('Medicamento', '')).strip()
@@ -239,24 +240,37 @@ def calc_h1(df_farm, fe_map, dias_ef, todos=False):
         ss      = math.ceil(cdl * ss_dias) if cdl > 0 else 0
         raw     = max(0, math.ceil(cdl * dias_ef) + ss - sfarm) if cdl > 0 else 0
 
-        # Redondear al múltiplo del factor de empaque ICP CENABAST (invisible)
+        # Redondear al múltiplo del factor de empaque ICP CENABAST — Bodega AA
+        # es bodega activa, toda cantidad que se pida (no la que ya está físicamente
+        # en el estante) se ajusta siempre a caja completa.
         fe  = int(fe_map.get(med, 1)) or 1
         ud  = _ceil_fe(raw, fe)
 
         if not todos and ud <= 0:
             continue
 
+        # Lo que Bodega AA le falta a Farmacia se netea contra lo que el ciclo
+        # Bod_Farmacos ya trae en camino para este medicamento (rep_h2_map), igual
+        # que se hace en la hoja Diálisis — evita pedir dos veces a Bod.Fármacos
+        # contra el mismo déficit. El remanente se re-redondea al Fe.
+        rep_bod       = int(rep_h2_map.get(med, 0))
+        deficit_bruto = max(0, ud - sbod)
+        deficit_neto  = _ceil_fe(max(0, deficit_bruto - rep_bod), fe) if deficit_bruto > 0 else 0
+
         if ud <= 0:
             accion1, accion2 = '', ''
         elif sbod >= ud:
             accion1 = f'Traspasar {ud} ud → Farmacia'
             accion2 = ''
-        elif sbod > 0:
-            accion1 = f'Traspasar {sbod} ud → Farmacia'
-            accion2 = f'Reponer Bod.AA: {ud - sbod} ud de Bod.Fármacos'
         else:
-            accion1 = 'SIN STOCK en Bodega AA'
-            accion2 = f'COMPRA URGENTE {ud} ud de Bod.Fármacos'
+            accion1 = f'Traspasar {sbod} ud → Farmacia' if sbod > 0 else 'SIN STOCK en Bodega AA'
+            if deficit_neto > 0:
+                etiqueta = 'COMPRA URGENTE' if sbod <= 0 else 'Reponer Bod.AA:'
+                accion2  = f'{etiqueta} {deficit_neto} ud de Bod.Fármacos'
+                if rep_bod > 0:
+                    accion2 += f' (neteado con {rep_bod} ud que ya trae el ciclo Bod_Farmacos)'
+            else:
+                accion2 = f'Cubierto por ciclo Bod_Farmacos en camino ({rep_bod} ud)'
 
         rows.append({
             'v': (med, crit, sfarm, cob_actual, round(cdl, 1), ud, accion1, accion2),
@@ -276,8 +290,9 @@ def write_h1(ws, rows, dias_ef, hoy, semana):
     _subtit(ws,
         f'Stock Farm.AA = stock actual en Farmacia | Cob.actual = Stock/CDL (días antes del pedido) | '
         f'A Pedir = CDL×{dias_ef}d+SS−Stock, redondeado al empaque CENABAST | '
-        f'Col 7: traspaso Farm←Bod.AA | Col 8: reposición Bod.AA←Bod.Fármacos '
-        f'(rosa = sin stock, ámbar = compra urgente)',
+        f'Col 7: traspaso Farm←Bod.AA | Col 8: reposición Bod.AA←Bod.Fármacos, neteada con lo que '
+        f'ya trae el ciclo Bod_Farmacos y re-redondeada al empaque '
+        f'(rosa = sin stock, ámbar = compra urgente, verde = cubierto por el ciclo en camino)',
         len(HDRS1))
     hdrs = list(HDRS1)
     hdrs[5] = (f'A Pedir ({dias_ef}d hab., ud)', 13)
@@ -298,6 +313,10 @@ def write_h1(ws, rows, dias_ef, hoy, semana):
             c = ws.cell(i, 8)
             c.fill = _pfill('FFF9C4')
             c.font = Font(name='Arial', size=10, color='78350F')
+        elif 'Cubierto' in a2:
+            c = ws.cell(i, 8)
+            c.fill = _pfill('F0FDF4')
+            c.font = Font(name='Arial', size=10, color='166534')
     ws.freeze_panes = 'A4'
     if rows:
         last = 3 + len(rows)
@@ -315,6 +334,7 @@ HDRS2 = [
     ('Medicamento',              44),
     ('Criticidad',               12),
     ('Stock Bod. AA',            12),
+    ('Cob. Bod.AA (días)',       15),   # Stock_Bod_Actual / CDL (antes del pedido)
     ('Stock Farm. AA',           12),
     ('Stock Bod. Fármacos',      14),
     ('Req. ciclo (ud)',          13),   # CDL × dias_ciclo; header dinámico en write_h2
@@ -339,6 +359,9 @@ def calc_h2(df_bod, fe_map, hoy, fer):
         # (10d hábiles) solo si no hay dato de tendencia.
         cdl = (cons10 / 10) if cons10 > 0 else (req2 / 10 if req2 > 0 else 0.0)
 
+        # Cobertura actual de Bodega AA (antes del pedido)
+        cob_bod = round(sbod / cdl, 1) if cdl > 0 else 0.0
+
         # Stock requerido para el ciclo actual (días restantes). Se descuenta TODO
         # el stock de Atención Abierta (Bodega AA + Farmacia AA) — el de Bodega
         # Fármacos vive en otra ubicación física y solo decide la acción (traspaso
@@ -356,7 +379,7 @@ def calc_h2(df_bod, fe_map, hoy, fer):
             accion = f'Bod.Fármacos: {sbfarm} ud disponibles | COMPRA EXTERNA: {falt} ud'
 
         rows.append({
-            'v': (med, crit, sbod, sfarm, sbfarm, req_ciclo, rep, accion),
+            'v': (med, crit, sbod, cob_bod, sfarm, sbfarm, req_ciclo, rep, accion),
             '_nv': _nivel(crit), '_rep': rep,
         })
 
@@ -371,26 +394,27 @@ def write_h2(ws, rows, hoy, semana, dias_ciclo):
         len(HDRS2))
     _subtit(ws,
         f'Ciclo 10d hábiles (inicio 29-jun, repite c/2 semanas) | Quedan {dias_ciclo}d | '
+        f'Cob. Bod.AA = Stock Bod.AA ÷ CDL (días de cobertura actual, antes del pedido) | '
         f'A Reponer = max(0, CDL×{dias_ciclo}d − (Stock Bod.AA + Stock Farm.AA)), '
         f'redondeado al empaque CENABAST | '
         f'Stock Bod.Fármacos solo decide la acción: pedir traspaso o compra externa | '
         f'Ámbar = compra externa a Bod.Fármacos',
         len(HDRS2))
     hdrs = list(HDRS2)
-    hdrs[5] = (f'Req. ciclo ({dias_ciclo}d, ud)', 13)
+    hdrs[6] = (f'Req. ciclo ({dias_ciclo}d, ud)', 13)
     _hdr(ws, 3, hdrs)
     for i, vals in enumerate(rows, 4):
-        _fila_crit(ws, i, vals, vals[1], {2, 3, 4, 5, 6, 7})
-        ac = str(vals[7])
+        _fila_crit(ws, i, vals, vals[1], {2, 3, 4, 5, 6, 7, 8}, cols_fmt1d={4})
+        ac = str(vals[8])
         if 'COMPRA EXTERNA' in ac:
-            c = ws.cell(i, 8)
+            c = ws.cell(i, 9)
             c.fill = _pfill('FEF08A')
             c.font = Font(name='Arial', size=10, color='854D0E', bold=True)
     ws.freeze_panes = 'A4'
     if rows:
         last = 3 + len(rows)
         ws.auto_filter.ref = f'A3:{get_column_letter(len(HDRS2))}{last}'
-        _totals(ws, 4, last, len(HDRS2), {7})
+        _totals(ws, 4, last, len(HDRS2), {8})
         ws.print_area = f'A1:{get_column_letter(len(HDRS2))}{last + 1}'
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
@@ -538,13 +562,13 @@ def main():
             m = str(r.get('Medicamento', '')).strip()
             fe_map[m] = int(_n(r.get('Unidades_Caja', 1))) or 1
 
-    r1 = calc_h1(data['farm'], fe_map, def_, args.todos)
     dc, r2 = calc_h2(data['bod'], fe_map, hoy, fer)
-    dial_activa = args.forzar_dialisis or sem == 3
     # rep_h2_map: lo que la hoja Bod_Farmacos ya trae para cada med (CDL combinado,
-    # incluye diálisis) — se usa para netear el pedido de diálisis a Bod.Fármacos
-    # y no pedir dos veces contra el mismo stock cuando ambas hojas salen la misma semana.
-    rep_h2_map = {v[0]: v[6] for v in r2}
+    # incluye diálisis) — se usa para netear el pedido urgente de Farm_Bod y el de
+    # Diálisis a Bod.Fármacos, y no pedir dos veces contra el mismo déficit.
+    rep_h2_map = {v[0]: v[7] for v in r2}
+    r1 = calc_h1(data['farm'], fe_map, def_, args.todos, rep_h2_map)
+    dial_activa = args.forzar_dialisis or sem == 3
     r3 = calc_h3(data['dfarm'], data['dbod'], fe_map, rep_h2_map) if dial_activa else []
 
     wb = openpyxl.Workbook()
@@ -557,11 +581,11 @@ def main():
         f'Pedido_Fusion_AA_{hoy.strftime("%Y%m%d_%H%M")}.xlsx')
     wb.save(sal)
 
-    # índices: h1=(med,crit,sfarm,cob_actual,cdl,ud,accion1,accion2)            → ud@5
-    #          h2=(med,crit,sbod,sfarm,sbfarm,req_ciclo,rep,accion)            → rep@6
-    #          h3=(med,mensual,cob_farm,apfarm,cob_bod,apbod,obs)              → apfarm@3, apbod@5
+    # índices: h1=(med,crit,sfarm,cob_actual,cdl,ud,accion1,accion2)                  → ud@5
+    #          h2=(med,crit,sbod,cob_bod,sfarm,sbfarm,req_ciclo,rep,accion)          → rep@7
+    #          h3=(med,mensual,cob_farm,apfarm,cob_bod,apbod,obs)                    → apfarm@3, apbod@5
     n1 = sum(1 for v in r1 if v[5] > 0)
-    n2 = sum(1 for v in r2 if v[6] > 0)
+    n2 = sum(1 for v in r2 if v[7] > 0)
     n3 = sum(1 for v in r3 if (v[3] + v[5]) > 0)
     print(f'Farm->Bod       : {len(r1)} meds ({n1} con pedido)')
     print(f'Bod->Farmacos   : {len(r2)} meds ({n2} con reposicion)')
