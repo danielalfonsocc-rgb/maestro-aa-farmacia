@@ -392,9 +392,36 @@ async def _click_primero(page, selectores, etiqueta, force=False):
 
 
 async def _set_fechas(page, desde, hasta):
-    """Rellena fechaInicio/fechaTermino por su id real (gestionTerritorial),
-    disparando input/change/blur/keyup para que el datepicker tome el valor. Cae a
-    una heurística por nombre si los ids no existen. Fechas en dd/mm/yyyy."""
+    """Rellena fechaInicio/fechaTermino simulando tipeo real (click + seleccionar
+    todo + escribir carácter por carácter + Tab). Necesario porque asignar
+    .value vía JS y disparar eventos sintéticos (el método anterior) dejaba
+    fechaInicio VACÍO de forma intermitente — visto en vivo 14-07-2026: el
+    campo mostraba value='' pese al assignment, mientras fechaTermino sí
+    tomaba el valor. El campo tiene máscara/validación propia que solo
+    reacciona a eventos de teclado reales, no a Event() sintéticos en bloque.
+    Cae a la heurística JS anterior si el campo por id no existe. Fechas en
+    dd/mm/yyyy."""
+    async def _escribir(field_id, valor):
+        try:
+            loc = page.locator(f"#{field_id}")
+            if await loc.count() == 0:
+                return False
+            await loc.click()
+            await loc.press("Control+A")
+            await loc.press("Delete")
+            await loc.type(valor, delay=30)
+            await page.keyboard.press("Tab")
+            await page.wait_for_timeout(250)
+            real = await loc.input_value()
+            return real == valor
+        except Exception:
+            return False
+
+    ok_ini = await _escribir(SEL_FECHA_INI, desde) if desde else True
+    ok_fin = await _escribir(SEL_FECHA_FIN, hasta) if hasta else True
+    if ok_ini and ok_fin:
+        return
+
     try:
         await page.evaluate(r"""({ini, fin, desde, hasta}) => {
           const fire = el => ['input','change','blur','keyup']
