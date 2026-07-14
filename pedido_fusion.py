@@ -410,7 +410,9 @@ HDRS3 = [
     ('Obs',                      46),
 ]
 
-def calc_h3(df_dfarm, df_dbod, fe_map):
+def calc_h3(df_dfarm, df_dbod, fe_map, rep_h2_map=None):
+    rep_h2_map = rep_h2_map or {}
+
     def _idx(df, stock_col):
         d = {}
         for _, r in df.iterrows():
@@ -445,13 +447,23 @@ def calc_h3(df_dfarm, df_dbod, fe_map):
         sfarm    = f.get('stock', 0) if med in fd else None
         sbod     = b.get('stock', 0) if med in bd else None
         apfarm   = _ceil_fe(max(0, mensual - sfarm), fe) if sfarm is not None else 0
-        apbod    = _ceil_fe(max(0, mensual - sbod),  fe) if sbod  is not None else 0
+
+        # El CDL de Bod_Farmacos ya es COMBINADO (incluye diálisis, ver calc_h2),
+        # así que el "A Reponer" de esa hoja ya trae en camino parte (o todo) de lo
+        # que diálisis necesita de Bodega AA. Si ambas hojas se piden la misma
+        # semana (coincide con S3), sin netear se pediría dos veces a Bod.Fármacos
+        # contra el mismo stock base. Se descuenta el rep del ciclo antes de pedir.
+        rep_bod  = int(rep_h2_map.get(med, 0))
+        sbod_proy = (sbod + rep_bod) if sbod is not None else None
+        apbod    = _ceil_fe(max(0, mensual - sbod_proy), fe) if sbod_proy is not None else 0
         cob_farm = round(sfarm / mensual, 1) if (sfarm is not None and mensual > 0) else None
         cob_bod  = round(sbod  / mensual, 1) if (sbod  is not None and mensual > 0) else None
 
         obs = []
         if apfarm > 0: obs.append(f'Farm: solicitar {apfarm} ud a Bodega AA')
         if apbod  > 0: obs.append(f'Bod:  solicitar {apbod} ud a Bod.Fármacos')
+        if rep_bod > 0 and (apbod > 0 or max(0, mensual - (sbod or 0)) > 0):
+            obs.append(f'(neteado con {rep_bod} ud que ya trae el ciclo Bod_Farmacos)')
         if not obs:    obs = ['Stock suficiente en ambos niveles']
 
         # (med, mensual, cob_farm, apfarm, cob_bod, apbod, obs) — Fe invisible, aplicado en mensual
@@ -476,7 +488,9 @@ def write_h3(ws, rows, hoy, semana, activa):
         return
     _subtit(ws,
         'Cons.Mensual = C5D_Diál÷5×30, redondeado al empaque CENABAST (días naturales) | '
-        'Cob.Farm/Bod = Stock÷Cons.Mensual (en meses) | A Pedir = max(0, Mensual−Stock)',
+        'Cob.Farm/Bod = Stock÷Cons.Mensual (en meses, sobre stock actual) | '
+        'A Pedir Bod. = max(0, Mensual − (Stock Bod.AA + lo que ya trae el ciclo Bod_Farmacos)) '
+        '— evita pedir dos veces a Bod.Fármacos contra el mismo stock',
         len(HDRS3))
     _hdr(ws, 3, HDRS3)
     for i, vals in enumerate(rows, 4):
@@ -527,7 +541,11 @@ def main():
     r1 = calc_h1(data['farm'], fe_map, def_, args.todos)
     dc, r2 = calc_h2(data['bod'], fe_map, hoy, fer)
     dial_activa = args.forzar_dialisis or sem == 3
-    r3 = calc_h3(data['dfarm'], data['dbod'], fe_map) if dial_activa else []
+    # rep_h2_map: lo que la hoja Bod_Farmacos ya trae para cada med (CDL combinado,
+    # incluye diálisis) — se usa para netear el pedido de diálisis a Bod.Fármacos
+    # y no pedir dos veces contra el mismo stock cuando ambas hojas salen la misma semana.
+    rep_h2_map = {v[0]: v[6] for v in r2}
+    r3 = calc_h3(data['dfarm'], data['dbod'], fe_map, rep_h2_map) if dial_activa else []
 
     wb = openpyxl.Workbook()
     ws1 = wb.active; ws1.title = 'Farm_Bod'
