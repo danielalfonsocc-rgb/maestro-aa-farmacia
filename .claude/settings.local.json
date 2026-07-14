@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+      "Bash(py actualizar_sheets_gt.py *)",
       "Bash(pip install *)",
       "Bash(python3 -m pip install pandas openpyxl)",
       "Bash(python3 -c ' *)",
@@ -73,7 +74,12 @@
       "Bash(py -m py_compile app_pedidos.py AUTO_SSASUR.py)",
       "Bash(rm -f .claude/launch.json)",
       "Bash(rmdir .claude)",
-      "Bash(ls -la .claude)"
+      "Bash(ls -la .claude)",
+      "Bash(git push *)",
+      "PowerShell(Get-Process | Where-Object { $_.Name -match \"python|cmd|chrome|chromium|playwright\" } | Select-Object Name, Id, StartTime | Format-Table -AutoSize)",
+      "PowerShell(py actualizar_sheets_gt.py reporteGestionTerritorial202662291537.xlsx 2>&1)",
+      "PowerShell(cd \"C:\\\\Users\\\\danie\\\\Downloads\\\\maestro\"; $env:PYTHONUTF8=\"1\"; $env:PYTHONIOENCODING=\"utf-8\"; py centinela_reporte.py --no-pause 2>&1 | Select-Object -First 80)",
+"Bash(py subir_recetas_cheque_drive.py)"
     ]
   }
 }

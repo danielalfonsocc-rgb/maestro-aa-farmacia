@@ -19,7 +19,10 @@ sin entrar a la carpeta del repositorio.
     ├── 4 - Auditoria Prescripcion\  Auditoria_Prescripcion_Resumen.xlsx (legible)
     ├── 5 - Reposicion\         Reposicion_DiasHabiles_AA.xlsx (plan días hábiles)
     ├── 6 - Pedido Fusionado\   Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
-    └── 7 - Centinela\          Centinela_Reportes\<Sxx>\ (json + pdf) por semana
+    ├── 7 - Centinela\          Centinela_Reportes\<Sxx>\ (json + pdf) por semana
+    └── 8 - Auditoria Duplicados\  Accesos a Agente Duplicados IA + Auditoria Profunda
+                                    (corren a demanda; el Excel con nombres de pacientes
+                                    NO se copia aquí — queda solo en la carpeta local)
 
 IMPORTANTE: este script COPIA, no mueve. El repositorio sigue siendo la fuente de
 verdad — la app Streamlit lee el Consolidado del repo y PUBLICAR_DATOS.bat publica
@@ -33,6 +36,7 @@ Uso:
     py publicar_escritorio.py --auditoria
     py publicar_escritorio.py --reposicion   # solo Reposicion_DiasHabiles_AA.xlsx
     py publicar_escritorio.py --centinela    # solo Centinela_Reportes\
+    py publicar_escritorio.py --duplicados   # solo accesos de Agente/Auditoria Duplicados
     py publicar_escritorio.py --enlaces      # solo (re)crea carpetas, LEEME y accesos
 """
 import os
@@ -76,6 +80,7 @@ SUB_AUDIT  = "4 - Auditoria Prescripcion"
 SUB_REP    = "5 - Reposicion"
 SUB_PEDIDO = "6 - Pedido Fusionado"
 SUB_CENTINELA = "7 - Centinela"
+SUB_DUP    = "8 - Auditoria Duplicados"
 
 # Iconos para distinguir los accesos directos (shell32.dll, índices clásicos).
 _SHELL32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "shell32.dll")
@@ -86,6 +91,7 @@ _ICON_REFRESH = _icon(238)  # flechas sync  → actualizar/publicar
 _ICON_DOC     = _icon(1)    # documento     → planillas GT
 _ICON_RUN     = _icon(2)    # aplicación    → proceso recetas cheque
 _ICON_FOLDER  = _icon(4)    # carpeta       → abrir carpeta local
+_ICON_LUPA    = _icon(23)   # lupa/buscar   → agentes de duplicados
 
 
 def detectar_escritorio():
@@ -338,6 +344,71 @@ def sync_pedido():
     REP.say(f"[Pedido Fusionado] {os.path.basename(src)} → «{SUB_PEDIDO}»")
 
 
+_LEEME_DUPLICADOS = """\
+AUDITORIA DE DUPLICADOS — Farmacia AT Abierta
+==============================================
+
+Estos DOS accesos NO se ejecutan solos con AUTO_SSASUR (llaman a la API de
+Claude y cuestan tokens) — corren a demanda, cuando tú los abres.
+
+  Agente Duplicados IA.lnk
+  -------------------------
+  Para que sirve: revisa las recetas de HOY (ventana de 90 dias hacia atras)
+  y detecta pacientes con el mismo medicamento prescrito por duplicado. Una
+  IA (Claude) razona caso a caso y prioriza cuales investigar primero.
+  Que ayuda al ejecutarlo: pillar a tiempo un doble retiro reciente (mismo
+  paciente retirando el mismo medicamento dos veces) ANTES de que se
+  acumule, especialmente util con medicamentos controlados o de alto costo.
+  Genera un Excel con el razonamiento de cada caso. Los RUT de pacientes
+  NUNCA se envian a la IA (se anonimizan con SHA-256 antes de la llamada).
+
+  Auditoria Duplicados Profunda.lnk
+  ----------------------------------
+  Para que sirve: audita TODO el historico de recetas (no solo hoy), marca
+  si el doble retiro sigue ACTIVO en este momento, desde que fecha empezo
+  y cuantos dias lleva acumulado. La IA sugiere una accion por caso:
+  URGENTE / REVISAR / INFORMAR / MONITOREAR.
+  Que ayuda al ejecutarlo: da la foto completa y priorizada de TODOS los
+  casos de duplicidad (activos e historicos), util para una revision
+  periodica de fondo o cuando se sospecha de un paciente en particular.
+  Al abrirla pide elegir 1-4 (completa con IA / rapida sin IA / rapida con
+  IA / salir) — la opcion 1 (completa) es la recomendada.
+
+  Ambas abren una ventana de consola: se demoran unos minutos y quedan
+  esperando que presiones una tecla al terminar (revisa el resultado ahi
+  antes de cerrar).
+
+  IMPORTANTE — privacidad: el Excel generado (trae nombre completo del
+  paciente junto al medicamento) NO se copia a esta carpeta ni a ningun
+  otro lugar del Escritorio, porque el Escritorio esta sincronizado a
+  OneDrive (nube). Queda SOLO en la carpeta local del programa:
+  {work}
+  Abrelo desde ahi cuando lo necesites.
+"""
+
+
+def sync_duplicados():
+    dst = os.path.join(BASE, SUB_DUP)
+    os.makedirs(dst, exist_ok=True)
+    n = 0
+    if _crear_lnk(os.path.join(dst, "Agente Duplicados IA.lnk"),
+                  os.path.join(WORK_DIR, "AGENTE_DUPLICADOS.bat"),
+                  "Revisa las recetas de hoy y detecta duplicados con IA (Claude)",
+                  icono=_ICON_LUPA):
+        n += 1
+    if _crear_lnk(os.path.join(dst, "Auditoria Duplicados Profunda.lnk"),
+                  os.path.join(WORK_DIR, "AUDITAR_DUPLICADOS_PROFUNDO.bat"),
+                  "Audita todo el historico de duplicados, vigencia y accion sugerida",
+                  icono=_ICON_LUPA):
+        n += 1
+    try:
+        with open(os.path.join(dst, "LEEME.txt"), "w", encoding="utf-8") as fh:
+            fh.write(_LEEME_DUPLICADOS.format(work=WORK_DIR))
+    except OSError:
+        pass
+    REP.say(f"[Auditoria Duplicados] {n} acceso(s) directo(s) → «{SUB_DUP}»")
+
+
 def sync_centinela():
     dst = os.path.join(BASE, SUB_CENTINELA)
     src = os.path.join(WORK_DIR, "Centinela_Reportes")
@@ -459,6 +530,9 @@ cada vez que corres cada proceso.
   5 - Reposicion           Reposicion_DiasHabiles_AA.xlsx (plan días hábiles con feriados)
   6 - Pedido Fusionado     Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
   7 - Centinela             Reportes semanales (json + pdf) por semana epidemiológica
+  8 - Auditoria Duplicados Accesos a Agente Duplicados IA y Auditoria Profunda (a demanda,
+                            con su propio LEEME.txt explicando cada uno). El Excel con
+                            nombres de pacientes NO se copia aquí (Escritorio = OneDrive).
 
 ------------------------------------------------------------------------
 Nota: estas son COPIAS para consulta. El programa original sigue en
@@ -514,7 +588,7 @@ _ACCESOS = [
 
 def crear_estructura(forzar_lnk=False):
     """Crea carpetas, LEEME y (si faltan o forzar_lnk) los accesos directos."""
-    for sub in (SUB_APP, SUB_GT, SUB_RCH, SUB_AUDIT, SUB_REP, SUB_PEDIDO, SUB_CENTINELA):
+    for sub in (SUB_APP, SUB_GT, SUB_RCH, SUB_AUDIT, SUB_REP, SUB_PEDIDO, SUB_CENTINELA, SUB_DUP):
         os.makedirs(os.path.join(BASE, sub), exist_ok=True)
     try:
         with open(os.path.join(BASE, "LEEME.txt"), "w", encoding="utf-8") as fh:
@@ -562,7 +636,8 @@ def main():
         print("\nListo: carpetas y accesos directos actualizados.")
         return
 
-    selectivo = args & {"--app", "--gt", "--rch", "--auditoria", "--reposicion", "--pedido", "--centinela"}
+    selectivo = args & {"--app", "--gt", "--rch", "--auditoria", "--reposicion",
+                         "--pedido", "--centinela", "--duplicados"}
     todo = not selectivo
 
     if todo or "--app" in args:
@@ -579,6 +654,8 @@ def main():
         sync_pedido()
     if todo or "--centinela" in args:
         sync_centinela()
+    if todo or "--duplicados" in args:
+        sync_duplicados()
 
     escribir_log()
     print(f"\nListo ({REP.ok} copiados, {REP.skip} sin cambios). "

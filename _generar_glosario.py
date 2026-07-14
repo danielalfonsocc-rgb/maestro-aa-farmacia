@@ -262,7 +262,7 @@ GLOSARIO = [
         ("Duplicidad de Recetas",
          "Situación en que un mismo medicamento es dispensado más de una vez al mismo paciente "
          "en el mismo período sin justificación clínica. "
-         "Detectada por recetas_duplicadas.py (histórico) y por agente_duplicados.py (operacional).",
+         "Detectada por auditoria_duplicados_profunda.py (histórico) y por agente_duplicados.py (operacional).",
          None, None),
         ("ISP (Recetas Cheque)",
          "Control de recetas que verifica el cumplimiento de la normativa del Instituto de Salud "
@@ -273,11 +273,11 @@ GLOSARIO = [
          "duplicadas y genera un reporte Excel con razonamiento clínico. Los RUTs nunca salen "
          "del proceso local: se envían IDs anónimos (hash SHA-256) a la API.",
          "py agente_duplicados.py --fecha YYYY-MM-DD --ventana 60",
-         "A diferencia de recetas_duplicadas.py (histórico completo), este agente es operacional: "
+         "A diferencia de auditoria_duplicados_profunda.py (histórico completo), este agente es operacional: "
          "foco en las recetas de hoy y sus antecedentes recientes."),
         ("Auditoría de Medicamento (auditoria_medicamento.py)",
          "Script genérico que audita CMP dispensado, prescriptores, diagnósticos y duplicidad "
-         "de prescripción para cualquier medicamento del AA. Generaliza auditoria_empagliflozina.py.",
+         "de prescripción para cualquier medicamento del AA.",
          "py auditoria_medicamento.py --contiene METFORMINA\n"
          "py auditoria_medicamento.py --contiene EMPAGLIFLOZINA --dosis 10",
          None),
@@ -306,8 +306,7 @@ GLOSARIO = [
          "nombres), HOMOLOGACION (tabla canónica de 20 entradas), cargar_recetas_csv y "
          "setup_stdout. Regla: nuevas homologaciones se agregan SOLO aquí, nunca en scripts individuales.",
          "from utils_aa import norm_erp, HOMOLOGACION, cargar_recetas_csv",
-         "Centraliza lo que antes estaba duplicado en auditoria_prescripcion.py, "
-         "agente_duplicados.py y recetas_duplicadas.py."),
+         "Centraliza lo que antes estaba duplicado en auditoria_prescripcion.py y agente_duplicados.py."),
         ("norm_erp(s)",
          "Función de utils_aa.py que normaliza nombres de medicamentos: NFD + elimina diacríticos "
          "+ colapsa espacios múltiples + convierte a mayúsculas. Garantiza comparaciones robustas "

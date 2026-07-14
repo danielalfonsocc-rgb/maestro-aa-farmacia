@@ -1,0 +1,16 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "maestro",
+      "runtimeExecutable": "py",
+      "runtimeArgs": [
+        "-m", "streamlit", "run", "app_maestro.py",
+        "--server.headless", "true",
+        "--browser.gatherUsageStats", "false",
+        "--server.port", "8502"
+      ],
+      "port": 8502
+    }
+  ]
+}

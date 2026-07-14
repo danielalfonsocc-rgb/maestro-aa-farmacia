@@ -6,7 +6,7 @@ Agente IA (Claude · tool use) que lee las recetas del día, detecta
 prescripciones duplicadas (mismo paciente + mismo medicamento dentro de una
 ventana de N días) y genera un reporte Excel con razonamiento clínico.
 
-Diferencia con recetas_duplicadas.py (auditoría histórica completa):
+Diferencia con auditoria_duplicados_profunda.py (auditoría histórica completa):
   - Este agente es operacional: foco en LAS RECETAS DE HOY y sus antecedentes.
   - Claude decide qué casos investigar más y cómo priorizarlos.
   - Los RUTs nunca salen del proceso local; a la API se envían IDs anónimos.
@@ -32,7 +32,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from aa_colors import TEAL, ROJO, NARANJA, AMBAR, VERDE, GRIS_CLR
+from aa_colors import TEAL, ROJO, NARANJA, AMBAR, GRIS_CLR
 from utils_aa import norm_erp, HOMOLOGACION, setup_stdout
 
 setup_stdout()

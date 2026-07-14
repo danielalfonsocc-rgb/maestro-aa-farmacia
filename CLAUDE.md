@@ -13,20 +13,30 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 | `reposicion_dias_habiles.py` | Reposición ajustada por feriados y Freq_Revision |
 | `utils_aa.py` | **Módulo compartido**: norm_erp, HOMOLOGACION (20 entradas), cargar_recetas_csv |
 | `cruce_gt.py` | Cruce con Guías de Tratamiento |
-| `recetas_cheque.py` / `recetas_duplicadas.py` | Auditorías de recetas (ISP / histórico) |
+| `recetas_cheque.py` | Formulario ISP recetas cheque (estupefacientes/psicotrópicos) — obligación legal |
 | `agente_duplicados.py` | Agente IA (Haiku) — duplicados operacionales del día |
-| `auditoria_medicamento.py` | Auditoría clínica genérica para cualquier medicamento |
-| `auditoria_prescripcion.py` / `auditoria_empagliflozina.py` | Auditorías clínicas especializadas |
+| `agente_gt_pendientes.py` | Agente IA (Haiku) — clasifica PENDIENTES de GT (URGENTE/RUTINARIO/DIFERIBLE) |
+| `auditoria_medicamento.py` | Auditoría clínica genérica: `--contiene NOMBRE --dosis X` |
+| `auditoria_duplicados_profunda.py` | Auditoría duplicados histórica con vigencia actual y propuestas IA |
+| `auditoria_prescripcion.py` | Pre-calcula `auditoria_prescripcion.json` (consumido por app_pedidos) |
+| `pedido_fusion.py` | Genera Pedido_Fusion_AA_<fecha>.xlsx (Farm_Bod + Bod_Farmacos + Dialisis) |
+| `sgli_historico.py` | Planilla SGLI histórica — clasificación ABC-XYZ |
 | `centinela_reporte.py` | Reporte semanal centinela campaña invierno (PDF MINSAL) |
-| `AUTO_SSASUR.py` | Descarga automatizada SSASur (recetas + stock) |
+| `AUTO_SSASUR.py` | Descarga automatizada SSASur (recetas + stock + GT) → dedup → Drive |
+| `dedup_recetas.py` | Detecta/limpia recetas duplicadas por sobre-extracción de GT (crea .bak) |
+| `publicar_drive.py` | Sube salidas a Google Drive (requiere `credentials.json` + `SETUP_DRIVE.bat`) |
+| `publicar_escritorio.py` | Copia salidas al Escritorio\Farmacia AA\ (acceso rápido local) |
 | `aa_colors.py` | Paleta de colores compartida (impresión económica) |
 | `_generar_glosario.py` | Genera Glosario_Maestro_AA.pdf |
+| `skill_gt/scripts/generar.py` | Generador de planillas + letreros GT por establecimiento destino |
 
 ## Reglas de arquitectura
 
 - **Nuevas homologaciones de nombres**: SOLO en `utils_aa.py → HOMOLOGACION_RAW`. Nunca duplicar en scripts individuales.
 - **El modelo SGLI no tiene techo de capacidad**: el Nivel Objetivo T se calcula desde la demanda; Cap_Max es informativo y solo activa [ALERTA_ESTRES].
 - **RUTs**: nunca a la API. `agente_duplicados.py` anonimiza con SHA-256 antes de llamar a Claude.
+- **GT raw downloads**: van a `../04_Farmacia_Gestion_Territorial/` (carpeta hermana del repo). Nombrado: `reporteGestionTerritorial_<desde>_<hasta>.xlsx`. `dedup_recetas.py` busca ahí.
+- **Drive**: NO subir CSV sábanas ni stock xlsx (RUTs / Ley 19.628). Carpeta raíz `Farmacia AA` en Drive — IDs fijos en `_drive_folders.json`. Para activar: `SETUP_DRIVE.bat`.
 
 ## Economía de modelos (OBLIGATORIO respetar)
 
@@ -70,6 +80,17 @@ Solución esperada: [qué cambio quiero].
 
 ### 3. Reutilizar contexto de sesión
 Dentro de una sesión larga, no re-explicar el proyecto. El contexto está cacheado.
+
+### 4. Limitar verbosidad en sesiones de diagnóstico
+Para tareas del tipo "detecte problemas" o "corríjelo":
+```
+Diagnóstico en máx. 4 bullet points.
+Corrección: solo el bloque de código cambiado, sin re-imprimir el archivo completo.
+Sin explicaciones de lo que no cambió.
+```
+El ratio output/input fue 65× en la última jornada — tokens de salida cuestan
+3–5× más que los de entrada. Un diagnóstico verboso de 10 K tokens sale igual
+que 10 preguntas de Haiku.
 
 ## Privacidad y datos sensibles
 

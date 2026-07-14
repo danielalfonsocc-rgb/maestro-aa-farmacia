@@ -27,6 +27,11 @@ for _s in (sys.stdout, sys.stderr):
 
 MAESTRO_DIR = Path(__file__).parent
 
+# verificar_frescura(): blindaje compartido contra datos auto-detectados
+# desactualizados (incidente S.52, ver utils_aa.py para el detalle).
+sys.path.insert(0, str(MAESTRO_DIR))
+from utils_aa import verificar_frescura
+
 # ── HOMOLOGACIÓN (ZGEN como clave primaria) ──────────────────────────────────
 FM = [
     {"minsal": "SALBUTAMOL 5MG/ML SOL.NEBU FRA 20ML",
@@ -470,9 +475,18 @@ def main():
     df, total_bruto, num_recetas = leer_recetas(csv_paths)
     print(f"    {total_bruto:,} registros brutos → {len(df):,} entregas únicas · {num_recetas:,} recetas")
 
+    if not args.csv:
+        fecha_max_recetas = pd.to_datetime(df["Fecha Entrega Receta"], dayfirst=True, errors="coerce").max()
+        fecha_max_recetas = fecha_max_recetas.date() if pd.notna(fecha_max_recetas) else None
+        verificar_frescura(fecha_max_recetas, "sábana de recetas (auto-detectada)")
+
     print("  Leyendo stock...")
     stock, xlsx_fecha = leer_stock(xlsx_path)
     print(f"    Stock al {xlsx_fecha}")
+
+    if not args.xlsx:
+        fecha_stock = datetime.datetime.strptime(xlsx_fecha, "%d/%m/%Y").date() if xlsx_fecha else None
+        verificar_frescura(fecha_stock, "reporte de stock (auto-detectado)")
 
     # El lunes que se genera el reporte, la semana en curso recién empieza
     # (datos parciales). Por defecto reportamos la última semana COMPLETA:

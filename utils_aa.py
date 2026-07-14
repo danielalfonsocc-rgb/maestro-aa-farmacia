@@ -5,6 +5,7 @@ utils_aa.py — Utilidades compartidas del proyecto Maestro AA.
 Importar desde aquí en lugar de duplicar en cada script:
     from utils_aa import norm_erp, HOMOLOGACION, cargar_recetas_csv, setup_stdout
 """
+import datetime
 import glob
 import os
 import re
@@ -18,6 +19,36 @@ def setup_stdout() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
+# Blindaje contra datos auto-detectados desactualizados (incidente 2026-07-13:
+# AUTO_SSASUR puede fallar/omitir la descarga de recetas en silencio —solo
+# imprime [AVISO] y sigue— y un script que auto-detecta "el CSV más reciente
+# en disco" puede terminar usando uno viejo sin darse cuenta. Usado por
+# centinela_reporte.py y recetas_cheque.py.
+UMBRAL_DIAS_STALE = 10
+
+
+def verificar_frescura(fecha_dato: "datetime.date | None", etiqueta: str,
+                        hoy: "datetime.date | None" = None) -> None:
+    """Aborta con exit(1) si `fecha_dato` (la más reciente encontrada en una
+    fuente auto-detectada) está a más de UMBRAL_DIAS_STALE días de hoy.
+
+    Solo debe llamarse cuando la fuente fue auto-detectada (no cuando el
+    usuario pasó explícitamente --csv/--xlsx/--form para reprocesar algo
+    histórico a propósito).
+    """
+    hoy = hoy or datetime.date.today()
+    if fecha_dato is None:
+        print(f"  [ERROR] No se pudo determinar la fecha más reciente de «{etiqueta}» — abortando.")
+        sys.exit(1)
+    brecha = (hoy - fecha_dato).days
+    if brecha > UMBRAL_DIAS_STALE:
+        print(f"\n  [ERROR] «{etiqueta}» está desactualizada: el dato más reciente es del "
+              f"{fecha_dato.strftime('%d/%m/%Y')} ({brecha} días atrás; hoy {hoy.strftime('%d/%m/%Y')}).")
+        print(f"  Se aborta para no procesar/publicar con datos viejos (ver incidente S.52).")
+        print(f"  Verifica que AUTO_SSASUR haya descargado los datos de esta semana y vuelve a intentar.")
+        sys.exit(1)
+
+
 def norm_erp(s: str) -> str:
     """Normaliza nombres de medicamentos: NFD + sin diacríticos + espacios únicos."""
     s = unicodedata.normalize("NFD", str(s).upper())
@@ -26,10 +57,9 @@ def norm_erp(s: str) -> str:
 
 
 # Tabla canónica de homologación (fuente: maestro_aa.py, versión más completa).
-# Los subsets que tenían auditoria_prescripcion.py, agente_duplicados.py y
-# recetas_duplicadas.py son estrictamente un subconjunto de esta tabla.
+# Los subsets que tenían auditoria_prescripcion.py y agente_duplicados.py
+# son estrictamente un subconjunto de esta tabla.
 HOMOLOGACION_RAW: dict[str, str] = {
-    "TRAZODONA CM 100 MG":                                     "TRAZODONA CM  100 MG",
     "VITAMINA D3 800 UI CAPS":                                 "VITAMINA D3 800 UI CM",
     "BUPROPION 150 MG COMPRIMIDO LIBERACION MODIFICADA":       "BUPROPION (ANFEBUTAMONA) 150 MG CM LIBERACION MODIFICADA",
     "ACIDO ALENDRONICO 70 MG CM.":                             "ACIDO ALENDRONICO  CM 70 MG",
@@ -49,6 +79,7 @@ HOMOLOGACION_RAW: dict[str, str] = {
     "FERROSO SULFATO 125 MG/ML SOL. ORAL EN GOTAS FC 30 ML":   "FERROSO SULFATO 125 MG/ML SOL. ORAL EN GOTAS FC 30 ML.",
     "LIDOCAINA CLORHIDRATO 2 % AM 5 ML":                       "LIDOCAINA CLORHIDRATO 2 % AM 5ML",
     "ACIDO TRANEXAMICO CM 500 MG":                             "ACIDO TRANEXAMICO 500 MG COMPRIMIDO",
+    "ACENOCUMAROL  CM 4 MG":                                   "ACENOCUMAROL 4 MG CM",
 }
 HOMOLOGACION: dict[str, str] = {norm_erp(k): norm_erp(v) for k, v in HOMOLOGACION_RAW.items()}
 

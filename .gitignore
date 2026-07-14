@@ -25,3 +25,28 @@ logs/
 # Factor de empaque CENABAST (datos de intermediación)
 cenabast_intermediacion.csv
 ICP-Intermediacion*.csv
+
+# ── Credenciales OAuth (Google Drive/Sheets) — NUNCA subir ────────────────────
+credentials.json
+token_drive.json
+token_sheets.json
+
+# ── Salidas generadas — se regeneran localmente, no van al repo. Varias
+# contienen datos de pacientes (nombre/RUN/dirección/teléfono, Ley 19.628):
+# out_gt (planillas GT), Auditoria_Duplicados_Profunda (detalle prescripciones).
+# El resto son reportes operativos del día a día, no código. ────────────────
+out_gt/
+Documentos_Generados/
+Centinela_Reportes/
+_archivo/
+Auditoria_Duplicados_Profunda*.xlsx
+Pedido_Fusion_AA_*.xlsx
+Reposicion_DiasHabiles_AA_*.xlsx
+SGLI_Historico_*.xlsx
+*.log
+
+# ── Workspace de evals de skill-creator (artefactos de prueba, no código) ────
+.claude/skills/*-workspace/
+
+# ── Lock runtime de sesión Claude Code (específico de cada máquina) ──────────
+.claude/scheduled_tasks.lock

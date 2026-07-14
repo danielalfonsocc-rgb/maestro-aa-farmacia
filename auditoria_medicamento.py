@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 auditoria_medicamento.py — Auditoría clínica para CUALQUIER medicamento del AA.
-Generaliza auditoria_empagliflozina.py: CMP dispensado, prescriptores,
-diagnósticos y duplicidad de prescripción.
+CMP dispensado, prescriptores, diagnósticos y duplicidad de prescripción.
 
 Uso:
     py auditoria_medicamento.py --contiene METFORMINA

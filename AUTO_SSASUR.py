@@ -50,11 +50,12 @@ El registro ISP de recetas cheque (recetas_cheque.py) corre como PASO 5d: usa
 la MISMA sábana ya descargada para agregar los folios cheque nuevos de Farmacia
 AT Abierta al formulario ISP del mes vigente (carpeta de la QF, fuera del repo).
 
-Tras el Consolidado, corren también (sin argumentos, sin llamadas a IA):
+Tras el Consolidado corre también (sin argumentos, sin llamadas a IA):
   5f) reposicion_dias_habiles.py → Reposicion_DiasHabiles_AA_<fecha>.xlsx
-  5g) sgli_historico.py          → SGLI_Historico_<fecha>.xlsx
-Ambos archivos ya eran esperados por publicar_escritorio.py / publicar_drive.py;
-sin estos pasos quedaban publicando una copia vieja (o ninguna).
+Ese archivo ya era esperado por publicar_escritorio.py / publicar_drive.py; sin
+este paso quedaba publicando una copia vieja del plan.
+(sgli_historico.py → SGLI_Historico_<fecha>.xlsx NO se agrega aquí: maestro_aa.py
+YA lo corre solo, al final de su propio main() — agregarlo lo duplicaba.)
 
 NOTA: agente_duplicados.py y auditoria_duplicados_profunda.py (llaman a la API
 de Claude) NO corren aquí — se mantienen en sus .bat propios para ejecutarse
@@ -866,18 +867,11 @@ async def main():
             if rret.returncode != 0:
                 print(f"  [aviso] reposicion_dias_habiles.py terminó con código {rret.returncode}")
 
-        # ── PASO 5g — SGLI HISTÓRICO (ABC-XYZ) ───────────────────────────────
-        # Planilla de reposición basada en 9 meses de historial de recetas
-        # (sgli_historico.py). publicar_drive.py ya espera SGLI_Historico_*.xlsx.
-        sgli_py = MAESTRO_DIR / "sgli_historico.py"
-        if sgli_py.exists():
-            print(f"\n[5g/9] Generando SGLI Histórico (clasificación ABC-XYZ)...")
-            sret = subprocess.run(
-                [sys.executable, str(sgli_py)],
-                cwd=str(MAESTRO_DIR), env=env_utf8,
-            )
-            if sret.returncode != 0:
-                print(f"  [aviso] sgli_historico.py terminó con código {sret.returncode}")
+        # NOTA: sgli_historico.py NO se corre aquí — maestro_aa.py YA lo llama
+        # internamente al final de su propio main() (import sgli_historico;
+        # sgli_historico.main()). Correrlo de nuevo en este paso lo duplicaba
+        # (2 Excel SGLI_Historico_*.xlsx por corrida, ~15s desperdiciados) —
+        # visto en vivo el 2026-07-13: SGLI_Historico_..._1801 y _1802.
 
         # ── PASO 6 — PUBLICAR EN GITHUB ───────────────────────────────────────
         git_dir  = MAESTRO_DIR / ".git"
