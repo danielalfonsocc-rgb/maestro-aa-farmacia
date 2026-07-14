@@ -64,13 +64,12 @@ def _destino_de_archivo(nombre):
 # ── Rutas base ───────────────────────────────────────────────────────────────
 WORK_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Carpeta del formulario ISP: fuente única = recetas_cheque.py (con respaldo local
-# por si el import falla, para no acoplar la ruta en dos sitios).
-try:
-    from recetas_cheque import RCH_DIR, PREFIJO_FORM
-except Exception:
-    RCH_DIR      = r"C:\Users\danie\Downloads\Farmacia_AT_Abierta_RCh\Farmacia_AT_Abierta_RCh"
-    PREFIJO_FORM = "Formulario-Notificacion-Recetas-Cheque"
+# Carpeta del formulario ISP: fuente única = utils_aa.py (configurable por
+# variable de entorno MAESTRO_RCH_DIR — ver utils_aa.py).
+sys.path.insert(0, WORK_DIR)
+from utils_aa import RCH_DIR, setup_stdout
+setup_stdout()  # evita UnicodeEncodeError en consolas cp1252 (mensajes usan →, tildes)
+PREFIJO_FORM = "Formulario-Notificacion-Recetas-Cheque"
 
 NOMBRE_CARPETA = "Farmacia AA"
 SUB_APP   = "1 - App Pedidos"
