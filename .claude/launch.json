@@ -11,6 +11,17 @@
         "--server.port", "8502"
       ],
       "port": 8502
+    },
+    {
+      "name": "app_pedidos",
+      "runtimeExecutable": "py",
+      "runtimeArgs": [
+        "-m", "streamlit", "run", "app_pedidos.py",
+        "--server.headless", "true",
+        "--browser.gatherUsageStats", "false",
+        "--server.port", "8501"
+      ],
+      "port": 8501
     }
   ]
 }

@@ -4,7 +4,7 @@ sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os, io, glob
+import os, io, glob, math
 from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
@@ -12,6 +12,10 @@ from openpyxl.utils import get_column_letter
 from aa_colors import CRIT_FILL_HEX, crit_fill, crit_nivel, crit_hex, soften, darken
 from sgli import calcular_sgli, to_markdown, FACTOR_CARGA_DEFAULT
 from reposicion_dias_habiles import calcular_reposicion, cargar_feriados
+# Reutiliza el mismo motor de "dias restantes" de pedido_fusion.py para que
+# las pestanas de pedido de la app coincidan con el Excel (en vez de mostrar
+# siempre la ventana fija de 5d/10d sin importar el dia de la semana/ciclo).
+from pedido_fusion import _feriados as _feriados_pf, _dias_ef, _dias_ciclo, _ceil_fe, BUFFER_SS, EXTRA_CRIT
 
 # PDF
 from reportlab.lib.pagesizes import letter, landscape
@@ -437,6 +441,22 @@ df_dial_farm = datos.get('dial_farm', pd.DataFrame())
 df_sgli_base = datos.get('sgli',      pd.DataFrame())
 todos_meds = sorted(df_stock['Medicamento'].dropna().unique().tolist())
 
+# ── Días restantes (mismo motor que pedido_fusion.py) ───────────────────────
+# dias_ef_hoy    = días hábiles restantes hasta el viernes (pedido Farm<-Bod)
+# dias_ciclo_hoy = días hábiles restantes del ciclo quincenal (pedido Bod<-BodFarm)
+_fer_pf        = _feriados_pf()
+dias_ef_hoy    = _dias_ef(hoy.date(), _fer_pf)
+dias_ciclo_hoy = _dias_ciclo(hoy.date(), _fer_pf)
+
+# fe_map: Medicamento -> Unidades_Caja (ICP CENABAST desde SGLI_Estres), para
+# redondear las cantidades sugeridas al empaque real (mismo criterio que
+# pedido_fusion.py y que la pestaña Diálisis de esta app).
+fe_map = {}
+if len(df_sgli_base):
+    for _, _r in df_sgli_base.iterrows():
+        _m = str(_r.get('Medicamento', '')).strip()
+        fe_map[_m] = int(pd.to_numeric(_r.get('Unidades_Caja', 1), errors='coerce') or 1) or 1
+
 if 'pedido' not in st.session_state:
     st.session_state.pedido = {}
 
@@ -485,6 +505,10 @@ with tab_pedido_bod:
         "Lista completa de medicamentos que **Farmacia AA debe solicitar a Bodega AA**, "
         "ordenados por criticidad. Ajusta las cantidades si es necesario y descarga el pedido formal."
     )
+    st.caption(
+        f"📅 Cantidad ajustada a **{dias_ef_hoy} día(s) hábil(es)** restante(s) hasta el viernes "
+        f"(mismo criterio que Pedido_Fusion) + stock de seguridad."
+    )
     st.markdown("---")
 
     # Preparar datos del pedido a bodega
@@ -495,10 +519,35 @@ with tab_pedido_bod:
         return pd.Series(0, index=df.index, dtype=float)
 
     df_pb = df_farm.copy()
-    df_pb['_nec']  = _col(df_pb, 'Necesidad_5D_Farm')
-    df_pb['_tras'] = _col(df_pb, 'Traspaso_Posible')
-    df_pb['_ord']  = df_pb['Criticidad'].apply(orden_crit) if 'Criticidad' in df_pb.columns \
-                     else pd.Series(5, index=df_pb.index)
+    df_pb['_ord'] = df_pb['Criticidad'].apply(orden_crit) if 'Criticidad' in df_pb.columns \
+                    else pd.Series(5, index=df_pb.index)
+
+    # Necesidad = CDL de tendencia × días restantes hasta el viernes + stock de
+    # seguridad − stock actual, redondeado al empaque (mismo criterio que
+    # calc_h1 en pedido_fusion.py) — en vez de la ventana fija de 5 días.
+    _nec_pb, _tras_pb, _def_pb = [], [], []
+    for _, r in df_pb.iterrows():
+        med   = str(r.get('Medicamento', '')).strip()
+        trend5d = pd.to_numeric(r.get('Consumo_5D_Trend', 0), errors='coerce')
+        trend5d = 0.0 if pd.isna(trend5d) else float(trend5d)
+        cdl_fb  = pd.to_numeric(r.get('CDL_DiasHab', 0), errors='coerce')
+        cdl_fb  = 0.0 if pd.isna(cdl_fb) else float(cdl_fb)
+        cdl     = (trend5d / 5) if trend5d > 0 else cdl_fb
+        sfarm   = int(_get(r, 'Stock_Farm_Actual', 0) or 0)
+        sbod    = int(_get(r, 'Stock_Bodega_Disponible', 0) or 0)
+        nv      = orden_crit(r.get('Criticidad', '5-OK'))
+        ss_dias = BUFFER_SS + (EXTRA_CRIT if nv <= 2 else 0)
+        ss      = math.ceil(cdl * ss_dias) if cdl > 0 else 0
+        raw     = max(0, math.ceil(cdl * dias_ef_hoy) + ss - sfarm) if cdl > 0 else 0
+        fe      = int(fe_map.get(med, 1)) or 1
+        nec     = _ceil_fe(raw, fe)
+        _nec_pb.append(nec)
+        _tras_pb.append(min(nec, int(sbod)))
+        _def_pb.append(max(nec - int(sbod), 0))
+
+    df_pb['_nec']  = _nec_pb
+    df_pb['_tras'] = _tras_pb
+    df_pb['_def']  = _def_pb
 
     # Solo los que tienen necesidad > 0
     df_pb = df_pb[df_pb['_nec'] > 0].sort_values(
@@ -529,9 +578,18 @@ with tab_pedido_bod:
         # Construir dataframe para mostrar/editar
         filas_pb = []
         for _, row in df_pb.iterrows():
-            nec   = int(float(_get(row, 'Necesidad_5D_Farm', 0)))
-            tras  = int(float(_get(row, 'Traspaso_Posible', 0)))
-            def_  = int(float(_get(row, 'Deficit_Farm', 0)))
+            nec   = int(row['_nec'])
+            tras  = int(row['_tras'])
+            def_  = int(row['_def'])
+            sbod_pb = int(float(_get(row, 'Stock_Bodega_Disponible', 0)))
+            if nec <= 0:
+                accion_pb = ''
+            elif sbod_pb >= nec:
+                accion_pb = f'Traspasar {nec} ud desde Bodega AA'
+            elif sbod_pb > 0:
+                accion_pb = f'Traspasar {sbod_pb} ud desde Bodega AA + gestionar {nec - sbod_pb} ud externo'
+            else:
+                accion_pb = f'SIN STOCK en Bodega AA — gestionar {nec} ud externo'
             filas_pb.append({
                 'Medicamento'      : str(_get(row, 'Medicamento', '')),
                 'Criticidad'       : str(_get(row, 'Criticidad', '5-OK')),
@@ -540,7 +598,7 @@ with tab_pedido_bod:
                 'Disponible Bodega': tras,
                 'Solicitar (ud)'   : nec,
                 'Deficit externo'  : def_,
-                'Accion'           : str(_get(row, 'Accion_1_Traspaso_Bodega', '') or ''),
+                'Accion'           : accion_pb,
             })
 
         df_tabla = pd.DataFrame(filas_pb)
@@ -705,10 +763,14 @@ with tab_pedido_farm:
         "(única bodega de respaldo), ordenados por criticidad. "
         "Incluye la cantidad disponible en Bodega Fármacos y lo que requiere compra externa."
     )
+    st.caption(
+        f"📅 Cantidad ajustada a **{dias_ciclo_hoy} día(s) hábil(es)** restante(s) del ciclo "
+        f"quincenal actual (mismo criterio que Pedido_Fusion). El CDL usado ya incluye el "
+        f"consumo de diálisis que se saca de Bodega AA."
+    )
     st.markdown("---")
 
     df_pf = df_bod.copy()
-    df_pf['_nec']   = _num(df_pf, 'Reponer_Bodega')
     # Stock REAL en Bodega Fármacos (único respaldo válido). Fallback a la
     # columna antigua (suma de todas las bodegas) si el Excel no se regeneró.
     _col_bf = 'Stock_BODEGA_FARMACOS' if 'Stock_BODEGA_FARMACOS' in df_pf.columns else 'Stock_Hospital_Total'
@@ -716,6 +778,29 @@ with tab_pedido_farm:
     df_pf['_ord']   = (df_pf['Criticidad'].apply(orden_crit)
                        if 'Criticidad' in df_pf.columns
                        else pd.Series(5, index=df_pf.index))
+
+    # Necesidad = CDL de tendencia (combinado, incluye diálisis) × días
+    # restantes del ciclo quincenal − stock actual (Bodega AA + Farmacia AA),
+    # redondeado al empaque (mismo criterio que calc_h2 en pedido_fusion.py)
+    # — en vez de la ventana fija de 10 días.
+    _nec_pf, _reqciclo_pf = [], []
+    for _, r in df_pf.iterrows():
+        med    = str(r.get('Medicamento', '')).strip()
+        cons10 = pd.to_numeric(r.get('Consumo_10D_Trend', 0), errors='coerce')
+        cons10 = 0.0 if pd.isna(cons10) else float(cons10)
+        req2   = pd.to_numeric(r.get('Req_2_Semanas', 0), errors='coerce')
+        req2   = 0.0 if pd.isna(req2) else float(req2)
+        cdl    = (cons10 / 10) if cons10 > 0 else (req2 / 10 if req2 > 0 else 0.0)
+        sbod   = int(_get(r, 'Stock_Bod_Actual', 0) or 0)
+        sfarm  = int(_get(r, 'Stock_Farm_Actual', 0) or 0)
+        req_ciclo = math.ceil(cdl * dias_ciclo_hoy) if cdl > 0 else 0
+        fe     = int(fe_map.get(med, 1)) or 1
+        nec    = _ceil_fe(max(0, req_ciclo - (sbod + sfarm)), fe)
+        _nec_pf.append(nec)
+        _reqciclo_pf.append(req_ciclo)
+
+    df_pf['_nec']       = _nec_pf
+    df_pf['_req_ciclo'] = _reqciclo_pf
 
     df_pf = df_pf[df_pf['_nec'] > 0].sort_values(
         ['_ord', '_nec'], ascending=[True, False]
@@ -740,23 +825,30 @@ with tab_pedido_farm:
         # Tabla principal
         filas_pf = []
         for _, row in df_pf.iterrows():
-            nec    = int(_get(row, 'Reponer_Bodega', 0))
+            nec    = int(row['_nec'])
             hosp   = int(_get(row, _col_bf, 0))
             a_pedir = min(nec, hosp)
             compra  = max(nec - hosp, 0)
+            if nec <= 0:
+                acc1_pf, acc2_pf = '', ''
+            elif hosp >= nec:
+                acc1_pf, acc2_pf = f'Pedir {nec} ud a Bod.Fármacos', ''
+            else:
+                acc1_pf = f'Bod.Fármacos: {hosp} ud disponibles'
+                acc2_pf = f'COMPRA EXTERNA: {compra} ud'
             filas_pf.append({
                 'Medicamento'            : str(_get(row, 'Medicamento', '')),
                 'Criticidad'             : str(_get(row, 'Criticidad', '')),
                 'Stock Bodega AA actual' : int(float(_get(row, 'Stock_Bod_Actual', 0))),
                 'Cob. actual (dias)'     : round(float(_get(row, 'Cob_Bod_Actual_Dias', 0)), 1),
-                'Req. 2 semanas (10d)'   : int(float(_get(row, 'Req_2_Semanas', 0))),
+                'Req. ciclo (ud)'        : int(row['_req_ciclo']),
                 'Consumo 10D proyectado' : int(float(_get(row, 'Consumo_10D_Trend', 0))),
                 'Total a reponer'        : nec,
                 'Disponible Bod. Farm.'  : hosp,
                 'Solicitar a Bod. Farm.' : a_pedir,
                 'Compra externa'         : compra,
-                'Accion 1'               : str(_get(row, 'Accion_1_Traspaso_Hospital', '') or ''),
-                'Accion 2'               : str(_get(row, 'Accion_2_Compra_Externa', '') or ''),
+                'Accion 1'               : acc1_pf,
+                'Accion 2'               : acc2_pf,
             })
 
         df_tabla_pf = pd.DataFrame(filas_pf)
@@ -769,7 +861,7 @@ with tab_pedido_farm:
                 'Criticidad'            : st.column_config.TextColumn("Criticidad",              width="small"),
                 'Stock Bodega AA actual': st.column_config.NumberColumn("Stock Bod. AA",         format="%d"),
                 'Cob. actual (dias)'    : st.column_config.NumberColumn("Cob. actual",           format="%.1f d"),
-                'Req. 2 semanas (10d)'  : st.column_config.NumberColumn("Req. 2 sem. (10d)",     format="%d"),
+                'Req. ciclo (ud)'       : st.column_config.NumberColumn(f"Req. ciclo ({dias_ciclo_hoy}d)", format="%d"),
                 'Consumo 10D proyectado': st.column_config.NumberColumn("Consumo 10D tend.",     format="%d"),
                 'Total a reponer'       : st.column_config.NumberColumn("Total a reponer",       format="%d ud"),
                 'Disponible Bod. Farm.' : st.column_config.NumberColumn("Disp. Bod. Farm.",      format="%d"),
@@ -802,12 +894,12 @@ with tab_pedido_farm:
             ws.merge_cells('A1:J1')
             ws.row_dimensions[1].height = 28
 
-            ws['A2'] = f'Ciclo pedido: cada 2 semanas (10 días háb.)  |  Total: {len(df_tabla_pf)} meds  |  Con stock Bod.Farm.: {n_con_stk}  |  Requieren compra: {n_sin_stk}'
+            ws['A2'] = f'Ciclo pedido: cada 2 semanas (10 días háb.) · Quedan {dias_ciclo_hoy}d  |  Total: {len(df_tabla_pf)} meds  |  Con stock Bod.Farm.: {n_con_stk}  |  Requieren compra: {n_sin_stk}'
             ws['A2'].font = Font(italic=True, name='Arial', size=10, color='444444')
             ws.merge_cells('A2:J2')
 
             hdrs = ['N°','Medicamento','Criticidad','Stock Bod.AA','Cob.(días)',
-                    'Req. 2 Semanas','Consumo 10D tend.','Disp.Bod.Farm.','Solicitar','Compra Externa']
+                    f'Req. Ciclo ({dias_ciclo_hoy}d)','Consumo 10D tend.','Disp.Bod.Farm.','Solicitar','Compra Externa']
             hfill = PatternFill('solid', fgColor=soften('2E7D32'))
             hfont = Font(bold=True, color=darken('2E7D32'), name='Arial', size=10)
             for ci, h in enumerate(hdrs, 1):
@@ -826,7 +918,7 @@ with tab_pedido_farm:
                         crit,
                         int(row.get('Stock Bodega AA actual', 0) or 0),
                         round(float(row.get('Cob. actual (dias)', 0) or 0), 1),
-                        int(row.get('Req. 2 semanas (10d)', 0) or 0),
+                        int(row.get('Req. ciclo (ud)', 0) or 0),
                         int(row.get('Consumo 10D proyectado', 0) or 0),
                         int(row.get('Disponible Bod. Farm.', 0) or 0),
                         int(row.get('Solicitar a Bod. Farm.', 0) or 0),
