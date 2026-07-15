@@ -917,16 +917,21 @@ async def main():
             if ddup.returncode != 0:
                 print(f"  [aviso] dedup_recetas.py terminó con código {ddup.returncode}")
 
-        # ── PASO 7-9 — SINCRONIZAR TODO (Escritorio + GitHub + Drive) ─────────
+        # ── PASO 7-9 — SINCRONIZAR TODO (Escritorio + GitHub + Drive + RCh) ────
         # SINCRONIZAR_TODO.bat es el mismo script que corre el acceso directo
         # "Sincronizar Todo" del Escritorio — una sola fuente de verdad para
-        # "cómo se publica todo", en vez de duplicar las 3 llamadas aquí y allá.
+        # "cómo se publica todo", en vez de duplicar las 4 llamadas aquí y allá.
+        # Incluye Recetas Cheque ISP → Drive (excepción autorizada por el usuario
+        # 2026-06-30, confirmada AUTOMÁTICA en cada corrida 2026-07-15 — sube RUT
+        # de pacientes sin confirmación puntual; --no-rch la desactiva).
         sync_bat = MAESTRO_DIR / "SINCRONIZAR_TODO.bat"
         if sync_bat.exists():
-            print("\n[7-9/9] Sincronizando todo (Escritorio + GitHub + Drive)...")
+            print("\n[7-9/9] Sincronizando todo (Escritorio + GitHub + Drive + Recetas Cheque)...")
             args = ["cmd", "/c", str(sync_bat)]
             if no_publicar:
                 args.append("--no-git")
+            if no_rch:
+                args.append("--no-rch")
             args.append("--no-pause")
             sret = subprocess.run(args, cwd=str(MAESTRO_DIR), env=env_utf8)
             if sret.returncode != 0:

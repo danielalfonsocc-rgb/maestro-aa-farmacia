@@ -1374,6 +1374,10 @@ def _pipeline_ped_dial(df_base):
     _cdl_fnd  = np.where(DIAS_LAB_OP > 0, dp['Prescrito_Farm_NoDial']  / DIAS_LAB_OP, 0)
     dp['Consumo_5D_Dial']       = (_cdl_dial * 5).round(1)
     dp['Consumo_5D_FarmNoDial'] = (_cdl_fnd  * 5).round(1)
+    # Requerimiento mensual de diálisis en DÍAS CORRIDOS (30d), no días hábiles —
+    # mismo criterio que pedido_fusion.py Hoja 3 (el pedido de diálisis es mensual
+    # calendario, no ligado al ciclo de reposición hábil de Farm_Bod/Bod_Farmacos).
+    dp['Requerimiento_Mensual_Dial_30d'] = (dp['Consumo_5D_Dial'] / 5 * 30).round(0)
     dp['Consumo_5D_Trend']  = dp.apply(
         lambda r: round(sum(r[f'CDL_S{s}'] for s in _s5_list), 1), axis=1)
     dp['Consumo_10D_Trend'] = dp.apply(
@@ -1461,6 +1465,32 @@ df_dial_bod_pedido = (
 
 print(f"  DIALISIS — recetas nefrologos: {len(df_dial):,}  |  medicamentos: {len(idx_dial)}")
 print(f"  DIALISIS — Pedido Farmacia: {len(df_dial_farm_pedido)}  |  Pedido Bodega: {len(df_dial_bod_pedido)}")
+
+# Universo COMPLETO de medicamentos prescritos por nefrólogos (no solo los que
+# necesitan reposición) — Dialisis_Pedido_Farm/Bod filtran a Necesidad>0 a
+# propósito (solo lo accionable); esta hoja es el requerimiento íntegro para
+# poder responder "cuánto se ocupa de X en diálisis" aunque el stock ya alcance.
+_dial_med_cols = {
+    'Stock_Farmacia_AA'      : 'Stock_Farmacia_AA',
+    'Stock_Bodega_AA'        : 'Stock_Bodega_AA',
+    'Stock_BODEGA_FARMACOS'  : 'Stock_BODEGA_FARMACOS',
+    'Consumo_5D_Solo_Dialisis'          : 'Consumo_5D_Dial',
+    'Consumo_5D_Farm_NoDial'            : 'Consumo_5D_FarmNoDial',
+    'CDL_Combinado'                     : 'CDL',
+    'Requerimiento_Mensual_Dialisis_30d': 'Requerimiento_Mensual_Dial_30d',
+    'Necesidad_Farm'         : 'Necesidad_Farm',
+    'Necesidad_Bod'          : 'Necesidad_Bod',
+    'Criticidad_Farm'        : 'Crit_Farm',
+    'Criticidad_Bod'         : 'Crit_Bod',
+}
+df_dial_medicamentos = (
+    df_ped_dial
+    .sort_values('Medicamento')
+    [['Medicamento'] + list(_dial_med_cols.values())]
+    .rename(columns={v: k for k, v in _dial_med_cols.items()})
+    .reset_index(drop=True)
+) if len(df_ped_dial) else pd.DataFrame(columns=['Medicamento'] + list(_dial_med_cols.keys()))
+print(f"  DIALISIS — universo completo (Dialisis_Medicamentos): {len(df_dial_medicamentos)}")
 
 # ═══════════════════════════════════════════════
 # 16. AUDITORÍA DE HOMOLOGACIÓN
@@ -1993,6 +2023,19 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
         elif col == 'Criticidad':                  ws16.column_dimensions[ltr].width = 14
         else:                                      ws16.column_dimensions[ltr].width = 18
     ws16.freeze_panes = 'B2'
+
+    # ── 16b. Dialisis_Medicamentos ─────────────────
+    # Universo COMPLETO prescrito por nefrólogos (no solo Necesidad>0) — permite
+    # ver el requerimiento de un medicamento de diálisis aunque el stock alcance.
+    df_dial_medicamentos.to_excel(writer, sheet_name='Dialisis_Medicamentos', index=False)
+    ws16b = writer.sheets['Dialisis_Medicamentos']
+    style_sheet(ws16b, df_dial_medicamentos, row_color_fn=color_pedido_bod,
+                header_fill=PatternFill('solid', fgColor='334155'))
+    for ci, col in enumerate(list(df_dial_medicamentos.columns), 1):
+        ltr = get_column_letter(ci)
+        if col == 'Medicamento': ws16b.column_dimensions[ltr].width = 52
+        else:                    ws16b.column_dimensions[ltr].width = 18
+    ws16b.freeze_panes = 'B2'
 
     # ── 17. SGLI_Estres ───────────────────────────
     # Reposicion restringida por CAPACIDAD FISICA (motor sgli.py). Baseline
