@@ -900,42 +900,16 @@ async def main():
         # (2 Excel SGLI_Historico_*.xlsx por corrida, ~15s desperdiciados) —
         # visto en vivo el 2026-07-13: SGLI_Historico_..._1801 y _1802.
 
-        # ── PASO 6 — PUBLICAR EN GITHUB ───────────────────────────────────────
-        git_dir  = MAESTRO_DIR / ".git"
-        publicar = MAESTRO_DIR / "PUBLICAR_DATOS.bat"
-        if no_publicar:
-            print("\n[6/9] --no-publicar: omito la publicación en GitHub (modo prueba).")
-        elif git_dir.exists() and publicar.exists():
-            print("\n[6/9] Publicando datos en GitHub...")
-            pub = subprocess.run(
-                ["cmd", "/c", str(publicar)],
-                cwd=str(MAESTRO_DIR),
-            )
-            if pub.returncode != 0:
-                print("  [AVISO] Publicación falló — ejecuta PUBLICAR_DATOS.bat manualmente.")
-        else:
-            print("\n[6/9] GitHub no configurado — omitiendo publicación.")
-            print("      Ejecuta CONFIGURAR_GITHUB.bat para activarlo.")
-
-        # ── PASO 7 — COPIAR RESULTADOS AL ESCRITORIO ─────────────────────────
-        # Deja copias legibles de TODAS las salidas (app, GT, recetas cheque y
-        # auditoría) en el Escritorio → carpeta «Farmacia AA», para revisarlas
-        # sin entrar al repo. Copia, no mueve: el repo sigue siendo la fuente.
-        pub_esc = MAESTRO_DIR / "publicar_escritorio.py"
-        if pub_esc.exists():
-            print("\n[7/9] Copiando resultados al Escritorio (carpeta «Farmacia AA»)...")
-            subprocess.run(
-                [sys.executable, str(pub_esc)],
-                cwd=str(MAESTRO_DIR), env=env_utf8,
-            )
-
-        # ── PASO 8 — DEDUPLICAR RECETAS GT ───────────────────────────────────
+        # ── PASO 6 — DEDUPLICAR RECETAS GT ────────────────────────────────────
         # Detecta y limpia recetas duplicadas entre archivos GT descargados con
         # rangos solapados (sobre-extracción). Actúa en modo --limpiar: crea .bak
-        # antes de modificar cualquier archivo.
+        # antes de modificar cualquier archivo. Corre ANTES de publicar para que
+        # GitHub/Escritorio/Drive reciban la versión ya limpia (antes el dedup
+        # corría a mitad del publicado y GitHub/Escritorio se quedaban con la
+        # versión sin deduplicar hasta la corrida siguiente).
         dedup_py = MAESTRO_DIR / "dedup_recetas.py"
         if dedup_py.exists():
-            print("\n[8/9] Deduplicando recetas GT por sobre-extracción...")
+            print("\n[6/9] Deduplicando recetas GT por sobre-extracción...")
             ddup = subprocess.run(
                 [sys.executable, str(dedup_py), "--limpiar"],
                 cwd=str(MAESTRO_DIR), env=env_utf8,
@@ -943,24 +917,22 @@ async def main():
             if ddup.returncode != 0:
                 print(f"  [aviso] dedup_recetas.py terminó con código {ddup.returncode}")
 
-        # ── PASO 9 — SUBIR A GOOGLE DRIVE ────────────────────────────────────
-        # Sube las salidas (Consolidado, GT, Auditoría, Reposición) a la carpeta
-        # «Farmacia AA» en Drive, con la misma estructura que el Escritorio.
-        # Los datos de pacientes (Recetas Cheque, CSV sábana) NO se suben (Ley 19.628).
-        # Requiere token_drive.json generado previamente con --setup.
-        pub_drive = MAESTRO_DIR / "publicar_drive.py"
-        token_drive = MAESTRO_DIR / "token_drive.json"
-        if pub_drive.exists() and token_drive.exists():
-            print("\n[9/9] Subiendo resultados a Google Drive...")
-            dret = subprocess.run(
-                [sys.executable, str(pub_drive)],
-                cwd=str(MAESTRO_DIR), env=env_utf8,
-            )
-            if dret.returncode != 0:
-                print(f"  [aviso] publicar_drive.py terminó con código {dret.returncode}")
-                print("  Ejecuta manualmente:  py publicar_drive.py")
-        elif pub_drive.exists():
-            print("\n[9/9] Google Drive: sin token — ejecuta 'py publicar_drive.py --setup' para activar.")
+        # ── PASO 7-9 — SINCRONIZAR TODO (Escritorio + GitHub + Drive) ─────────
+        # SINCRONIZAR_TODO.bat es el mismo script que corre el acceso directo
+        # "Sincronizar Todo" del Escritorio — una sola fuente de verdad para
+        # "cómo se publica todo", en vez de duplicar las 3 llamadas aquí y allá.
+        sync_bat = MAESTRO_DIR / "SINCRONIZAR_TODO.bat"
+        if sync_bat.exists():
+            print("\n[7-9/9] Sincronizando todo (Escritorio + GitHub + Drive)...")
+            args = ["cmd", "/c", str(sync_bat)]
+            if no_publicar:
+                args.append("--no-git")
+            args.append("--no-pause")
+            sret = subprocess.run(args, cwd=str(MAESTRO_DIR), env=env_utf8)
+            if sret.returncode != 0:
+                print(f"  [aviso] SINCRONIZAR_TODO.bat terminó con código {sret.returncode}")
+        else:
+            print("\n[7-9/9] SINCRONIZAR_TODO.bat no encontrado — omitiendo publicación.")
     else:
         print("  [ERROR] maestro_aa.py falló — revisa los mensajes arriba")
 
