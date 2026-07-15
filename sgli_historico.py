@@ -24,7 +24,7 @@ Fórmula principal:
     STOCK_A_PEDIR = CDL_hist × DIAS_cobertura + CDL_hist × Indice_Repo
     NECESIDAD     = max(0, STOCK_A_PEDIR − Stock_Farmacia)
 
-DIAS_cobertura según día hábil del reporte: Lunes=1, Martes=2, ..., Viernes=5
+DIAS_cobertura según día hábil del reporte: Lunes=5, Martes=4, Miércoles=3, Jueves=2, Viernes=1
 
 Fuentes metodológicas:
   · ABC XYZ analysis — EazyStock (eazystock.com/blog/abc-xyz-analysis)
@@ -685,10 +685,12 @@ def _agregar_hoja_dialisis(wb: Workbook, hoy: date) -> None:
 
     HEADERS = ["Medicamento",
                "Req Mensual\nDiálisis (22d.h.)", "Req Mensual\nTotal (22d.h.)",
-               "Stock\nFarmacia", "Stock\nTotal", "Fuente\nSugerida", "Observación"]
+               "Stock\nFarmacia", "Stock\nTotal", "Cobertura\nActual (días)",
+               "Fuente\nSugerida", "Observación"]
     COLS   = ["Medicamento",
               "Req_Mensual_22d", "Req_Mensual_Total",
-              "Stock_Farm", "Stock_Total", "Fuente_Sugerida", "Observacion"]
+              "Stock_Farm", "Stock_Total", "Cob_Actual_Dias",
+              "Fuente_Sugerida", "Observacion"]
 
     N = len(HEADERS)
     _hoja_titulo(ws,
@@ -730,7 +732,7 @@ def _agregar_hoja_dialisis(wb: Workbook, hoy: date) -> None:
                 c.font = Font(bold=True, size=10,
                               color="375623" if v == "FARMACIA AA" else "17375E")
 
-    anchos = [42, 13, 12, 9, 9, 14, 46]
+    anchos = [42, 13, 12, 9, 9, 12, 14, 46]
     for ci, w in enumerate(anchos, 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = "A4"

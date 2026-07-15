@@ -393,7 +393,7 @@ def write_h2(ws, rows, hoy, semana, dias_ciclo):
         f'{hoy.strftime("%d/%m/%Y")}  ·  S{semana}',
         len(HDRS2))
     _subtit(ws,
-        f'Ciclo 10d hábiles (inicio 29-jun, repite c/2 semanas) | Quedan {dias_ciclo}d | '
+        f'Ciclo 10d hábiles (inicio {CICLO_INICIO.strftime("%d-%m")}, repite c/2 semanas) | Quedan {dias_ciclo}d | '
         f'Cob. Bod.AA = Stock Bod.AA ÷ CDL (días de cobertura actual, antes del pedido) | '
         f'A Reponer = max(0, CDL×{dias_ciclo}d − (Stock Bod.AA + Stock Farm.AA)), '
         f'redondeado al empaque CENABAST | '

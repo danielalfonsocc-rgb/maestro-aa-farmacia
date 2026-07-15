@@ -143,9 +143,9 @@ def leer_reporte_gt(path):
 
 # ── Cruce con el histórico ─────────────────────────────────────────────────────
 def cruzar_historico(recetas_set, archivos):
-    """Devuelve {n_receta: {"tipo_receta","estado","lineas":[{id,prod,recetada,pendiente,entregada,estado_presc}]}}.
+    """Devuelve {n_receta: {"tipo_receta","lineas":[{id,prod,recetada,pendiente}]}}.
     Deduplica líneas por ID Receta Detalle."""
-    det = defaultdict(lambda: {"tipo_receta": "", "estado": "", "gt": "", "lineas": OrderedDict()})
+    det = defaultdict(lambda: {"tipo_receta": "", "lineas": OrderedDict()})
     vistos = set()
     for fp in archivos:
         try:
@@ -161,10 +161,9 @@ def cruzar_historico(recetas_set, archivos):
                 continue
             K = {_key(h): i for i, h in enumerate(hdr)}
             ix_rec = K.get("numeroreceta"); ix_tr = K.get("tiporeceta")
-            ix_est = K.get("estado"); ix_id = K.get("idrecetadetalle")
-            ix_pre = K.get("prescripcion"); ix_ep = K.get("estadoprescripcion")
+            ix_id = K.get("idrecetadetalle")
+            ix_pre = K.get("prescripcion")
             ix_cr = K.get("cantidadrecetada"); ix_cp = K.get("cantidadpendiente")
-            ix_ce = K.get("cantidadentregada"); ix_gt = K.get("gestionterritorial")
             if ix_rec is None or ix_pre is None:
                 print(f"  [aviso] {os.path.basename(fp)} sin columnas esperadas — omito")
                 continue
@@ -182,14 +181,10 @@ def cruzar_historico(recetas_set, archivos):
                 vistos.add(vk)
                 d = det[rec]
                 if not d["tipo_receta"] and ix_tr is not None: d["tipo_receta"] = (row[ix_tr] or "").strip()
-                if not d["estado"] and ix_est is not None: d["estado"] = (row[ix_est] or "").strip()
-                if not d["gt"] and ix_gt is not None: d["gt"] = (row[ix_gt] or "").strip()
                 d["lineas"][vk] = {
                     "prod": (row[ix_pre] or "").strip(),
                     "recetada": _num(row[ix_cr]) if ix_cr is not None else 0,
                     "pendiente": _num(row[ix_cp]) if ix_cp is not None else 0,
-                    "entregada": _num(row[ix_ce]) if ix_ce is not None else 0,
-                    "estado_presc": (row[ix_ep] or "").strip() if ix_ep is not None else "",
                 }
     return det
 

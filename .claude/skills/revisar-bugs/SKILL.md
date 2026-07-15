@@ -169,6 +169,26 @@ Presentar los **menores** al usuario para que decida.
 | 2026-06-30 | cruce_gt.py | (falso positivo descartado) csv SÍ se usa en csv.reader línea 155 | ⛔ No es bug |
 | 2026-06-30 | cruce_gt.py | (falso positivo descartado) variable 'g' en sorted() de escribir_excel() no genera shadowing real | ⛔ No es bug |
 | 2026-06-30 | utils_aa.py | (falso positivo descartado) lambda c,_c=cols es patrón intencional anti late-binding | ⛔ No es bug |
+| 2026-07-15 | maestro_aa.py | criticidad() (Faltantes) ordenaba alfabéticamente el string '[CRITICO]...' en vez de por severidad real | ✅ Corregido (sort vía crit_nivel) |
+| 2026-07-15 | maestro_aa.py | _pipeline_ped_dial sin regla de alta rotación (Consumo_2D_Trend) que sí aplica la sección 14/E | ✅ Corregido |
+| 2026-07-15 | app_pedidos.py | fe_map/_fe_map_dial: int(NaN or 1) crashea si Unidades_Caja no es numérico | ✅ Corregido (2 ocurrencias) |
+| 2026-07-15 | app_pedidos.py | tab_pedido_bod no neteaba el déficit contra rep_h2_map (ciclo Bod_Farmacos), a diferencia de calc_h1 en pedido_fusion.py | ✅ Corregido |
+| 2026-07-15 | sgli.py | _resolver_fisico(): Talla NaN se guardaba como string literal "NAN" (bool(NaN) es True) | ✅ Corregido |
+| 2026-07-15 | reposicion_dias_habiles.py | calcular_reposicion() con filas=[] devolvía DataFrame sin columna 'Alertas' → KeyError | ✅ Corregido |
+| 2026-07-15 | pedido_fusion.py | subtítulo hoja Bod_Farmacos con "29-jun" hardcodeado, desactualizado tras recalibrar CICLO_INICIO | ✅ Corregido |
+| 2026-07-15 | agente_duplicados.py | profs_prev con dropna() no filtraba strings vacíos → RUN Profesional vacío matcheaba como "mismo médico" | ✅ Corregido |
+| 2026-07-15 | auditoria_duplicados_profunda.py | run_profs sin normalizar (guiones/puntos/mayúsculas) → "N° médicos" podía divergir de "Médico(s)" | ✅ Corregido |
+| 2026-07-15 | auditoria_duplicados_profunda.py | rec vacío (sin filas Farmacia AT Abierta) → NaT.strftime() crashea sin aviso claro | ✅ Corregido (guard rec.empty) |
+| 2026-07-15 | sgli_historico.py | Cob_Actual_Dias (hoja Diálisis) se calculaba pero nunca se incluía en HEADERS/COLS | ✅ Corregido |
+| 2026-07-15 | sgli_historico.py | docstring cabecera decía "Lunes=1...Viernes=5", DIAS_REPORTE real es al revés | ✅ Corregido |
+| 2026-07-15 | publicar_escritorio.py | docstring de uso no documentaba `--pedido` (existe y funciona) | ✅ Corregido |
+| 2026-07-15 | cruce_gt.py | cruzar_historico() parseaba 4 columnas (estado/gt/entregada/estado_presc) nunca usadas | ✅ Corregido (eliminado el parseo) |
+| 2026-07-15 | dedup_recetas.py | c_rec fallback a columna 0 si no encontraba Nº Receta (mismo patrón ya corregido en cruce_gt.py 2026-06-29) | ✅ Corregido (ambas funciones) |
+| 2026-07-15 | dedup_recetas.py | .bak se sobrescribía en corridas --limpiar consecutivas, perdiendo el respaldo del original real | ✅ Corregido (skip si ya existe) |
+| 2026-07-15 | dedup_recetas.py | orden de archivos GT por mtime en vez de la fecha codificada en el nombre del archivo | ✅ Corregido (_fecha_orden) |
+| 2026-07-15 | dedup_recetas.py | import Font/PatternFill/Alignment no usados en _guardar_gt_xlsx_sin | ✅ Corregido |
+| 2026-07-15 | publicar_escritorio.py | (falso positivo descartado) reportado "sync_gt sin filtro _RANGO_RE" — el filtro ya estaba en el código real al verificar | ⛔ No es bug (ya corregido en trabajo previo sin commitear) |
+| 2026-07-15 | publicar_drive.py | (falso positivo descartado) reportado "sync_gt con sort lexicográfico de fechas" — ya usaba _clave_cronologica (fecha real) al verificar | ⛔ No es bug (ya corregido en trabajo previo sin commitear) |
 
 ## Datos sensibles
 

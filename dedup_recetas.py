@@ -31,6 +31,20 @@ for _s in (sys.stdout, sys.stderr):
 MAESTRO_DIR = os.path.dirname(os.path.abspath(__file__))
 GT_DIR_DEFAULT = os.path.join(os.path.dirname(MAESTRO_DIR), "04_Farmacia_Gestion_Territorial")
 
+_FECHA_RE = re.compile(r"(\d{2}-\d{2}-\d{4})")
+
+
+def _fecha_orden(path):
+    """Fecha más reciente codificada en el nombre reporteGestionTerritorial_<desde>_<hasta>.xlsx
+    — no mtime, que puede no reflejar el orden real si el archivo se copia/sincroniza después."""
+    fechas = _FECHA_RE.findall(os.path.basename(path))
+    if fechas:
+        try:
+            return max(datetime.strptime(f, "%d-%m-%Y") for f in fechas)
+        except ValueError:
+            pass
+    return datetime.fromtimestamp(os.path.getmtime(path))
+
 
 def _key(h):
     h = unicodedata.normalize("NFKD", str(h or "")).encode("ascii", "ignore").decode().lower()
@@ -52,7 +66,11 @@ def _cargar_gt_xlsx(path):
         return set(), [], []
     hdr = [str(c).strip() if c is not None else "" for c in rows[hi]]
     K = {_key(h): i for i, h in enumerate(hdr)}
-    c_rec = next((K[k] for k in ("nreceta", "noreceta", "numeroreceta") if k in K), 0)
+    c_rec = next((K[k] for k in ("nreceta", "noreceta", "numeroreceta") if k in K), None)
+    if c_rec is None:
+        print(f"  [aviso] {os.path.basename(path)}: no encontré columna Nº Receta — omito archivo",
+              file=sys.stderr)
+        return set(), [], []
     nums = set()
     data_rows = []
     for r in rows[hi + 1:]:
@@ -68,7 +86,6 @@ def _cargar_gt_xlsx(path):
 def _guardar_gt_xlsx_sin(path_orig, path_dest, excluir_recetas):
     """Guarda una copia del GT Excel omitiendo las recetas en excluir_recetas."""
     from openpyxl import load_workbook, Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment
     wb_in = load_workbook(path_orig, read_only=True, data_only=True)
     ws_in = wb_in[wb_in.sheetnames[0]]
     rows = [r for r in ws_in.iter_rows(values_only=True)]
@@ -80,7 +97,11 @@ def _guardar_gt_xlsx_sin(path_orig, path_dest, excluir_recetas):
         return 0
     hdr_row = rows[hi]
     K = {_key(str(c).strip() if c else ""): i for i, c in enumerate(hdr_row)}
-    c_rec = next((K[k] for k in ("nreceta", "noreceta", "numeroreceta") if k in K), 0)
+    c_rec = next((K[k] for k in ("nreceta", "noreceta", "numeroreceta") if k in K), None)
+    if c_rec is None:
+        print(f"  [aviso] {os.path.basename(path_orig)}: no encontré columna Nº Receta — no se modifica",
+              file=sys.stderr)
+        return 0
 
     wb_out = Workbook()
     ws_out = wb_out.active
@@ -108,7 +129,7 @@ def _guardar_gt_xlsx_sin(path_orig, path_dest, excluir_recetas):
 # ── GT dedup ──────────────────────────────────────────────────────────────────
 def analizar_gt(gt_dir, limpiar=False):
     patron = os.path.join(gt_dir, "reporteGestionTerritorial_*.xlsx")
-    archivos = sorted(glob.glob(patron), key=os.path.getmtime)  # orden cronológico
+    archivos = sorted(glob.glob(patron), key=_fecha_orden)  # orden cronológico real (fecha en el nombre)
     if not archivos:
         print(f"[GT] No hay archivos GT en {gt_dir}")
         return
@@ -155,7 +176,8 @@ def analizar_gt(gt_dir, limpiar=False):
         for arch, excluir in sorted(a_excluir.items()):
             nombre = os.path.basename(arch)
             bak = arch + ".bak"
-            shutil.copy2(arch, bak)
+            if not os.path.exists(bak):
+                shutil.copy2(arch, bak)
             eliminadas = _guardar_gt_xlsx_sin(arch, arch, excluir)
             print(f"    {nombre}: {eliminadas} fila(s) eliminadas (.bak guardado)")
 

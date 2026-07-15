@@ -35,6 +35,7 @@ Uso:
     py publicar_escritorio.py --rch          # solo el acceso directo de recetas cheque
     py publicar_escritorio.py --auditoria
     py publicar_escritorio.py --reposicion   # solo Reposicion_DiasHabiles_AA.xlsx
+    py publicar_escritorio.py --pedido       # solo Pedido_Fusion_AA.xlsx
     py publicar_escritorio.py --centinela    # solo Centinela_Reportes\
     py publicar_escritorio.py --duplicados   # solo accesos de Agente/Auditoria Duplicados
     py publicar_escritorio.py --enlaces      # solo (re)crea carpetas, LEEME y accesos
@@ -243,7 +244,8 @@ def sync_gt():
         REP.say("[Gestion Territorial] (sin out_gt todavía)")
         return
     rangos = sorted(
-        [d for d in glob.glob(os.path.join(src, "*")) if os.path.isdir(d)],
+        [d for d in glob.glob(os.path.join(src, "*"))
+         if os.path.isdir(d) and _RANGO_RE.match(os.path.basename(d))],
         key=os.path.basename,
     )
     if not rangos:

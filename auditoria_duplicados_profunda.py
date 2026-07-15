@@ -105,7 +105,8 @@ def cargar_y_preparar(solo_ultimo: bool) -> pd.DataFrame:
         rec["Apellido Paterno Profesional"].fillna("") + " " +
         rec["Apellido Materno Profesional"].fillna("")
     ).str.strip().str.title()
-    rec["_run_prof"] = rec["RUN Profesional"].fillna("").str.strip()
+    rec["_run_prof"] = (rec["RUN Profesional"].fillna("").str.strip()
+                         .str.upper().str.replace(r"[.\-]", "", regex=True))
     rec["_esp"]      = rec["Especialidad"].fillna("").str.strip()
     rec["_cant_r"]   = pd.to_numeric(rec["Cantidad Recetada"],  errors="coerce").fillna(0)
     rec["_cant_e"]   = pd.to_numeric(rec["Cantidad Entregada"], errors="coerce").fillna(0)
@@ -113,6 +114,10 @@ def cargar_y_preparar(solo_ultimo: bool) -> pd.DataFrame:
     rec = rec.dropna(subset=["_fecha"])
     rec = rec[rec["Número Receta"].fillna("").str.strip() != ""]
     rec = rec[rec["_med"] != ""]
+
+    if rec.empty:
+        print("[AVISO] No hay prescripciones de Farmacia AT Abierta en el rango cargado.")
+        sys.exit(0)
 
     print(f"Filas Farmacia AT Abierta válidas: {len(rec):,}  "
           f"| rango: {rec['_fecha'].min():%d-%m-%Y} a {rec['_fecha'].max():%d-%m-%Y}")

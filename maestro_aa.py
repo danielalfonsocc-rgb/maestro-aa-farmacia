@@ -43,7 +43,7 @@ from datetime import datetime, timedelta
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from aa_colors import CRIT_FILL_HEX, crit_fill, crit_hex, soften, darken, text_on, fill_hex, FONT_CRITICO
+from aa_colors import CRIT_FILL_HEX, crit_fill, crit_hex, crit_nivel, soften, darken, text_on, fill_hex, FONT_CRITICO
 from sgli import calcular_sgli, cargar_tallas, FACTOR_CARGA_DEFAULT
 from utils_aa import norm_erp, HOMOLOGACION_RAW, HOMOLOGACION
 
@@ -788,7 +788,12 @@ def accion(row):
     return 'COMPRA URGENTE — SIN RESPALDO EN BODEGA FARMACOS'
 
 df_falt['Accion_Sugerida'] = df_falt.apply(accion, axis=1)
-df_falt.sort_values(['Criticidad','Pacientes_Afectados'], ascending=[True, False], inplace=True)
+# Orden por severidad real (1=mas urgente) via crit_nivel, no por texto de
+# 'Criticidad' — el string '[CRITICO]...' ordena alfabeticamente DESPUES de
+# '[ALTO]'/'[BAJO]', lo que sacaba los faltantes mas urgentes del tope.
+df_falt['_nivel_orden'] = df_falt['Criticidad'].apply(crit_nivel)
+df_falt.sort_values(['_nivel_orden','Pacientes_Afectados'], ascending=[True, False], inplace=True)
+df_falt.drop(columns=['_nivel_orden'], inplace=True)
 
 print(f"  Faltantes reales AA: {len(df_falt):,}")
 
@@ -1373,13 +1378,20 @@ def _pipeline_ped_dial(df_base):
         lambda r: round(sum(r[f'CDL_S{s}'] for s in _s5_list), 1), axis=1)
     dp['Consumo_10D_Trend'] = dp.apply(
         lambda r: round(sum(r[f'CDL_S{s}'] for s in _s10_list), 1), axis=1)
+    dp['Consumo_2D_Trend']  = dp.apply(
+        lambda r: round(sum(r[f'CDL_S{s}'] for s in _s2_list), 1), axis=1)
     dp['Factor_Carga_5D'] = (dp['Consumo_5D_Trend'] /
                               (dp['CDL'] * 5).replace(0, np.nan)).round(3).fillna(1)
 
     dp['Cob_Farm_Dias'] = (dp['Stock_Farmacia_AA'] / dp['CDL']).round(1)
     dp['Cob_Bod_Dias']  = (dp['Stock_Bodega_AA']   / dp['CDL']).round(1)
 
-    _nec_farm_bruta = np.maximum(dp['Consumo_5D_Trend'] - dp['Stock_Farmacia_AA'], 0).round(1)
+    # Alta rotacion (CDL >= UMBRAL_ALTA_ROTACION_CDL) cubre solo 2 dias habiles,
+    # no 5 — misma regla que la seccion 14/E (df_ped, Requerimiento_Farm).
+    dp['Requerimiento_Farm'] = np.where(
+        dp['CDL'] >= UMBRAL_ALTA_ROTACION_CDL,
+        dp['Consumo_2D_Trend'], dp['Consumo_5D_Trend'])
+    _nec_farm_bruta = np.maximum(dp['Requerimiento_Farm'] - dp['Stock_Farmacia_AA'], 0).round(1)
     dp['Necesidad_Farm'] = [
         redondear_empaque(n, m, FACTOR_EMPAQUE)
         for n, m in zip(_nec_farm_bruta, dp['Medicamento'])

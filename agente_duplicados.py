@@ -224,8 +224,8 @@ def tool_detectar_duplicados(fecha: str, ventana_dias: int = 90) -> dict:
             continue
 
         run_anon    = _anon(run)
-        profs_prev  = set(previas["_run_prof"].dropna().unique())
-        mismo_med   = row["_run_prof"] in profs_prev
+        profs_prev  = set(p for p in previas["_run_prof"] if p)
+        mismo_med   = bool(row["_run_prof"]) and row["_run_prof"] in profs_prev
         dias_ult    = int((tgt - previas["_fecha"].max()).days)
         n_prescr    = len(previas)
 

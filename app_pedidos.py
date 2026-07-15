@@ -455,7 +455,26 @@ fe_map = {}
 if len(df_sgli_base):
     for _, _r in df_sgli_base.iterrows():
         _m = str(_r.get('Medicamento', '')).strip()
-        fe_map[_m] = int(pd.to_numeric(_r.get('Unidades_Caja', 1), errors='coerce') or 1) or 1
+        _v = pd.to_numeric(_r.get('Unidades_Caja', 1), errors='coerce')
+        fe_map[_m] = int(_v) if pd.notna(_v) and _v > 0 else 1
+
+# rep_h2_map: lo que Bodega AA ya recibiría del ciclo Bod.AA->Bod.Fármacos para
+# cada medicamento (equivalente a calc_h2/rep en pedido_fusion.py) — se usa para
+# netear el pedido urgente de la pestaña "Pedido a Bodega AA" contra lo que ya
+# viene en camino, mismo criterio que calc_h1 en pedido_fusion.py (2026-07-14).
+rep_h2_map = {}
+for _, _r in df_bod.iterrows():
+    _med    = str(_r.get('Medicamento', '')).strip()
+    _cons10 = pd.to_numeric(_r.get('Consumo_10D_Trend', 0), errors='coerce')
+    _cons10 = 0.0 if pd.isna(_cons10) else float(_cons10)
+    _req2   = pd.to_numeric(_r.get('Req_2_Semanas', 0), errors='coerce')
+    _req2   = 0.0 if pd.isna(_req2) else float(_req2)
+    _cdl    = (_cons10 / 10) if _cons10 > 0 else (_req2 / 10 if _req2 > 0 else 0.0)
+    _sbod   = int(_get(_r, 'Stock_Bod_Actual', 0) or 0)
+    _sfarm  = int(_get(_r, 'Stock_Farm_Actual', 0) or 0)
+    _req_ciclo = math.ceil(_cdl * dias_ciclo_hoy) if _cdl > 0 else 0
+    _fe     = int(fe_map.get(_med, 1)) or 1
+    rep_h2_map[_med] = _ceil_fe(max(0, _req_ciclo - (_sbod + _sfarm)), _fe)
 
 if 'pedido' not in st.session_state:
     st.session_state.pedido = {}
@@ -541,9 +560,15 @@ with tab_pedido_bod:
         raw     = max(0, math.ceil(cdl * dias_ef_hoy) + ss - sfarm) if cdl > 0 else 0
         fe      = int(fe_map.get(med, 1)) or 1
         nec     = _ceil_fe(raw, fe)
+        # Deficit hacia Bod.Fármacos neteado contra lo que el ciclo Bod_Farmacos
+        # ya trae en camino (rep_h2_map) — evita pedir dos veces el mismo faltante,
+        # mismo criterio que calc_h1 en pedido_fusion.py (2026-07-14).
+        _def_bruto = max(nec - int(sbod), 0)
+        _rep_bod   = int(rep_h2_map.get(med, 0))
+        _def_neto  = _ceil_fe(max(0, _def_bruto - _rep_bod), fe) if _def_bruto > 0 else 0
         _nec_pb.append(nec)
         _tras_pb.append(min(nec, int(sbod)))
-        _def_pb.append(max(nec - int(sbod), 0))
+        _def_pb.append(_def_neto)
 
     df_pb['_nec']  = _nec_pb
     df_pb['_tras'] = _tras_pb
@@ -582,14 +607,18 @@ with tab_pedido_bod:
             tras  = int(row['_tras'])
             def_  = int(row['_def'])
             sbod_pb = int(float(_get(row, 'Stock_Bodega_Disponible', 0)))
+            rep_bod_pb = int(rep_h2_map.get(str(_get(row, 'Medicamento', '')).strip(), 0))
             if nec <= 0:
                 accion_pb = ''
             elif sbod_pb >= nec:
                 accion_pb = f'Traspasar {nec} ud desde Bodega AA'
             elif sbod_pb > 0:
-                accion_pb = f'Traspasar {sbod_pb} ud desde Bodega AA + gestionar {nec - sbod_pb} ud externo'
+                accion_pb = (f'Traspasar {sbod_pb} ud desde Bodega AA + gestionar {def_} ud externo'
+                             if def_ > 0 else
+                             f'Traspasar {sbod_pb} ud desde Bodega AA (resto cubierto por ciclo Bod.Fármacos en camino, {rep_bod_pb} ud)')
             else:
-                accion_pb = f'SIN STOCK en Bodega AA — gestionar {nec} ud externo'
+                accion_pb = (f'SIN STOCK en Bodega AA — gestionar {def_} ud externo' if def_ > 0
+                             else f'SIN STOCK en Bodega AA — cubierto por ciclo Bod.Fármacos en camino ({rep_bod_pb} ud)')
             filas_pb.append({
                 'Medicamento'      : str(_get(row, 'Medicamento', '')),
                 'Criticidad'       : str(_get(row, 'Criticidad', '5-OK')),
@@ -1017,7 +1046,8 @@ with tab_dialisis:
         if len(df_sgli_base):
             for _, r in df_sgli_base.iterrows():
                 _m = str(r.get('Medicamento', '')).strip()
-                _fe_map_dial[_m] = int(pd.to_numeric(r.get('Unidades_Caja', 1), errors='coerce') or 1) or 1
+                _v = pd.to_numeric(r.get('Unidades_Caja', 1), errors='coerce')
+                _fe_map_dial[_m] = int(_v) if pd.notna(_v) and _v > 0 else 1
 
         dfa = df_dial_farm.copy()
         dfa['_dial5d'] = _cn(dfa, 'Consumo_5D_Solo_Dialisis')

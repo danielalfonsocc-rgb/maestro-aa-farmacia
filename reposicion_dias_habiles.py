@@ -178,6 +178,8 @@ def calcular_reposicion(df_sgli, df_stock, feriados=None, hoy=None,
         df = df.sort_values(by=["_urg", "_estres", "_nivel", "_cdl"],
                             ascending=[True, True, True, False]).reset_index(drop=True)
         df = df[COLUMNAS]
+    else:
+        df = pd.DataFrame(columns=COLUMNAS)
     return df
 
 # ───────────────────────── STANDALONE: EXCEL ─────────────────────────

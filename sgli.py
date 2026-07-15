@@ -262,7 +262,8 @@ def _resolver_fisico(nombre, overrides, factor_empaque,
     talla_f, upb_f = FORMA_DEFAULTS.get(forma, FORMA_DEFAULTS['OTRO'])
 
     # Talla: override > columna persistida > forma
-    talla = ov.get('Talla') or (talla_row if talla_row else None) or talla_f
+    talla_row_ok = talla_row if (isinstance(talla_row, str) and talla_row.strip()) else None
+    talla = ov.get('Talla') or talla_row_ok or talla_f
     talla = str(talla).upper()
 
     # Volumen de caja (para EXTERNO o precision): override > columna persistida
