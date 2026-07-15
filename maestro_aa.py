@@ -1677,6 +1677,18 @@ df_sgli = calcular_sgli(
 )
 print(f"  Tabla SGLI (capacidad): {len(df_sgli):,} meds  ·  baseline FC={FACTOR_CARGA_DEFAULT}  ·  overrides talla={len(_sgli_overrides)}")
 
+# Factor_Empaque confiable para Dialisis_Medicamentos: Unidades_Caja de
+# SGLI_Estres (cenabast_tallas.csv, curado a mano) — mismo criterio que
+# pedido_fusion.py calc_h3. Reemplaza el Factor_Empaque de df_master, que viene
+# de cenabast_intermediacion.csv con un matching de nombre más débil.
+if len(df_dial_medicamentos):
+    _fe_map_sgli = {
+        str(r['Medicamento']).strip(): int(r['Unidades_Caja'])
+        for _, r in df_sgli.iterrows()
+        if pd.notna(r.get('Unidades_Caja')) and r['Unidades_Caja'] > 0
+    }
+    df_dial_medicamentos['Factor_Empaque'] = df_dial_medicamentos['Medicamento'].map(_fe_map_sgli).fillna(1).astype(int)
+
 with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
 
     # ── 1. Resumen Ejecutivo ──────────────────────

@@ -584,7 +584,12 @@ def _agregar_hoja_pedido_bod_farmacos(wb: Workbook, df_final: pd.DataFrame,
 def _agregar_hoja_dialisis(wb: Workbook, hoy: date) -> None:
     """Hoja: requerimiento mensual de diálisis con sugerencia de fuente.
 
-    Carga Dialisis_Pedido_Farm y Dialisis_Pedido_Bod del Consolidado.
+    Carga Dialisis_Medicamentos del Consolidado — universo COMPLETO de
+    medicamentos prescritos por nefrólogos (no solo los que necesitan pedido;
+    Dialisis_Pedido_Farm/Bod filtran a Necesidad>0 a propósito y por eso
+    omitían medicamentos con stock suficiente, ej. Furosemida).
+    Requerimiento mensual en DÍAS CORRIDOS (30), no días hábiles — el pedido
+    de diálisis es mensual calendario, igual que en pedido_fusion.py calc_h3.
     Fuente: Bodega AA si req mensual ≥ DIALISIS_UMBRAL_BODEGA ud; Farmacia AA si menor.
     """
     ws = wb.create_sheet("Dialisis_Mensual")
@@ -595,41 +600,26 @@ def _agregar_hoja_dialisis(wb: Workbook, hoy: date) -> None:
         return
 
     xl = pd.ExcelFile(cons_path, engine="openpyxl")
-    dfs = []
-    for hoja in ["Dialisis_Pedido_Farm", "Dialisis_Pedido_Bod"]:
-        if hoja in xl.sheet_names:
-            df_h = xl.parse(hoja)
-            df_h["_origen"] = hoja
-            dfs.append(df_h)
-
-    if not dfs:
-        ws.cell(row=1, column=1, value="No hay hojas Dialisis_Pedido_Farm/Bod en el Consolidado.")
+    if "Dialisis_Medicamentos" not in xl.sheet_names:
+        ws.cell(row=1, column=1, value="No hay hoja Dialisis_Medicamentos en el Consolidado.")
         return
 
-    df = pd.concat(dfs, ignore_index=True)
-    # dedup: mantener la fila con mayor CMP_Mensual_22d
-    if "CMP_Mensual_22d" in df.columns:
-        df["CMP_Mensual_22d"] = pd.to_numeric(df["CMP_Mensual_22d"], errors="coerce").fillna(0)
-        df = df.sort_values("CMP_Mensual_22d", ascending=False).drop_duplicates(
-            subset=["Medicamento"], keep="first"
-        )
-    else:
-        df = df.drop_duplicates(subset=["Medicamento"], keep="first")
+    df = xl.parse("Dialisis_Medicamentos")
+    df = df.drop_duplicates(subset=["Medicamento"], keep="first")
 
     # CDL diálisis exclusivo
-    if "Consumo_5D_Solo_Dialisis" in df.columns:
-        df["CDL_Dialisis"] = pd.to_numeric(
-            df["Consumo_5D_Solo_Dialisis"], errors="coerce"
-        ).fillna(0) / 5
-    else:
-        df["CDL_Dialisis"] = pd.to_numeric(
-            df.get("CDL_DiasHab", pd.Series(dtype=float)), errors="coerce"
-        ).fillna(0)
+    df["CDL_Dialisis"] = pd.to_numeric(
+        df.get("Consumo_5D_Solo_Dialisis", 0), errors="coerce"
+    ).fillna(0) / 5
+    df = df[df["CDL_Dialisis"] > 0].copy()
 
-    df["Req_Mensual_22d"] = (df["CDL_Dialisis"] * 22).apply(math.ceil)
+    df["Fe"] = pd.to_numeric(df.get("Factor_Empaque", 1), errors="coerce").fillna(1).clip(lower=1).apply(int)
+    df["Req_Mensual_30d"] = df.apply(
+        lambda r: int(math.ceil(r["CDL_Dialisis"] * 30 / r["Fe"]) * r["Fe"]), axis=1
+    )
 
-    # Stock actual (si viene del Consolidado)
-    for col_map in [("Stock_Farm_Actual", "Stock_Farm"), ("Stock_Bod_Actual", "Stock_Bod")]:
+    # Stock actual (ya viene de Dialisis_Medicamentos con nombres propios)
+    for col_map in [("Stock_Farmacia_AA", "Stock_Farm"), ("Stock_Bodega_AA", "Stock_Bod")]:
         src, dst = col_map
         if src in df.columns:
             df[dst] = pd.to_numeric(df[src], errors="coerce").fillna(0).apply(int)
@@ -642,14 +632,14 @@ def _agregar_hoja_dialisis(wb: Workbook, hoy: date) -> None:
         axis=1,
     )
 
-    # CMP Mensual 22d (CDL total × 22, no solo diálisis)
-    if "CMP_Mensual_22d" not in df.columns:
-        if "CDL_DiasHab" in df.columns:
-            df["CMP_Mensual_22d"] = (
-                pd.to_numeric(df["CDL_DiasHab"], errors="coerce").fillna(0) * 22
-            ).apply(math.ceil)
-        else:
-            df["CMP_Mensual_22d"] = df["Req_Mensual_22d"]
+    # CDL Total (medicamento completo, combinado farm no-dial + diálisis)
+    if "CDL_Combinado" in df.columns:
+        df["CDL_Total"] = pd.to_numeric(df["CDL_Combinado"], errors="coerce").fillna(0).round(2)
+    else:
+        df["CDL_Total"] = df["CDL_Dialisis"]
+
+    # Req mensual total (30 días corridos × CDL total combinado)
+    df["Req_Mensual_Total"] = (df["CDL_Total"] * 30).apply(math.ceil)
 
     # Fuente sugerida
     def _fuente(req_dial: int, req_total: int) -> tuple[str, str]:
@@ -663,46 +653,37 @@ def _agregar_hoja_dialisis(wb: Workbook, hoy: date) -> None:
                 f"Consumo diálisis bajo ({req_dial} ud/mes): puede salir directamente de Farmacia AA")
 
     fuentes = df.apply(
-        lambda r: _fuente(int(r["Req_Mensual_22d"]), int(r.get("CMP_Mensual_22d", 0))),
+        lambda r: _fuente(int(r["Req_Mensual_30d"]), int(r["Req_Mensual_Total"])),
         axis=1,
     )
     df["Fuente_Sugerida"] = [f[0] for f in fuentes]
     df["Observacion"]     = [f[1] for f in fuentes]
 
-    df.sort_values(["Fuente_Sugerida", "Req_Mensual_22d"], ascending=[True, False], inplace=True)
+    df.sort_values(["Fuente_Sugerida", "Req_Mensual_30d"], ascending=[True, False], inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    # CDL Total (medicamento completo, no solo diálisis)
-    if "CDL_DiasHab" in df.columns:
-        df["CDL_Total"] = pd.to_numeric(df["CDL_DiasHab"], errors="coerce").fillna(0).round(2)
-    elif "CMP_Mensual_22d" in df.columns:
-        df["CDL_Total"] = (df["CMP_Mensual_22d"] / 22).round(2)
-    else:
-        df["CDL_Total"] = df["CDL_Dialisis"]
-
-    # Req mensual total (22 días hábiles × CDL total)
-    df["Req_Mensual_Total"] = (df["CDL_Total"] * 22).apply(math.ceil)
-
-    HEADERS = ["Medicamento",
-               "Req Mensual\nDiálisis (22d.h.)", "Req Mensual\nTotal (22d.h.)",
+    HEADERS = ["Medicamento", "Fe\n(ud/envase)",
+               "Req Mensual\nDiálisis (30d)", "Req Mensual\nTotal (30d)",
                "Stock\nFarmacia", "Stock\nTotal", "Cobertura\nActual (días)",
                "Fuente\nSugerida", "Observación"]
-    COLS   = ["Medicamento",
-              "Req_Mensual_22d", "Req_Mensual_Total",
+    COLS   = ["Medicamento", "Fe",
+              "Req_Mensual_30d", "Req_Mensual_Total",
               "Stock_Farm", "Stock_Total", "Cob_Actual_Dias",
               "Fuente_Sugerida", "Observacion"]
 
     N = len(HEADERS)
     _hoja_titulo(ws,
-        f"REQUERIMIENTO MENSUAL DIÁLISIS (22 días hábiles)  |  {hoy.strftime('%d/%m/%Y')}  |  "
+        f"REQUERIMIENTO MENSUAL DIÁLISIS (30 días corridos)  |  {hoy.strftime('%d/%m/%Y')}  |  "
         f"{(df['Fuente_Sugerida']=='BODEGA AA').sum()} desde Bodega AA  |  "
         f"{(df['Fuente_Sugerida']=='FARMACIA AA').sum()} desde Farmacia AA", "5B2878", N)
 
     nota_row = 2
     ws.merge_cells(start_row=nota_row, start_column=1, end_row=nota_row, end_column=N)
-    nota = (f"Req Mensual = CDL × 22 días hábiles  |  "
+    nota = (f"Req Mensual = CDL × 30 días corridos (el pedido de diálisis es mensual "
+            f"calendario, no días hábiles), redondeado al empaque (Fe)  |  "
             f"Fuente: BODEGA AA si consumo diálisis ≥ {DIALISIS_UMBRAL_BODEGA} ud/mes "
-            f"o req total ≥ 500 ud/mes; FARMACIA AA si menor")
+            f"o req total ≥ 500 ud/mes; FARMACIA AA si menor  |  "
+            f"Universo completo (incluye meds con stock suficiente, ej. Furosemida)")
     ws.cell(row=nota_row, column=1, value=nota).font = Font(italic=True, size=9, color="595959")
     ws.row_dimensions[nota_row].height = 13
 
@@ -716,7 +697,7 @@ def _agregar_hoja_dialisis(wb: Workbook, hoy: date) -> None:
             v = row.get(col, "")
             if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
                 v = 0 if col != "Observacion" else ""
-            if col in ("Req_Mensual_22d", "Req_Mensual_Total", "Stock_Farm", "Stock_Bod", "Stock_Total"):
+            if col in ("Fe", "Req_Mensual_30d", "Req_Mensual_Total", "Stock_Farm", "Stock_Bod", "Stock_Total"):
                 v = int(v) if v != "" else 0
             elif col == "Cob_Actual_Dias":
                 v = round(float(v), 1) if v != "" else 0
@@ -732,7 +713,7 @@ def _agregar_hoja_dialisis(wb: Workbook, hoy: date) -> None:
                 c.font = Font(bold=True, size=10,
                               color="375623" if v == "FARMACIA AA" else "17375E")
 
-    anchos = [42, 13, 12, 9, 9, 12, 14, 46]
+    anchos = [42, 11, 13, 12, 9, 9, 12, 14, 46]
     for ci, w in enumerate(anchos, 1):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.freeze_panes = "A4"

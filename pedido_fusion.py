@@ -8,9 +8,10 @@ Genera  Pedido_Fusion_AA_<fecha>.xlsx  con 3 hojas:
       Factor_Empaque = Unidades_Caja de SGLI_Estres (ICP CENABAST)
       Pedir Hoy ajustado al día de la semana (no hay columna Req.5d)
   2 "Bod_Farmacos"   Bodega AA → Bodega Fármacos (ciclo 2 semanas)
-  3 "Dialisis"       Diálisis mensual: Farmacia AA + Bodega AA
+  3 "Dialisis"       Universo COMPLETO de diálisis (98 meds), todos los días —
       Consumo = Consumo_5D_Solo_Dialisis / 5 × 30 (días naturales)
-      Activa en S3 o con --forzar-dialisis
+      El pedido MENSUAL real solo se ejecuta en S3 (--forzar-dialisis marca
+      la nota de "semana de pedido" fuera de S3, ya no oculta la hoja)
 
 Sin llamadas a IA — solo pandas + openpyxl.
 
@@ -200,11 +201,10 @@ def _leer(maestro):
         except Exception:
             return pd.DataFrame()
     return {k: sh(v) for k, v in {
-        'sgli' : 'SGLI_Estres',
-        'farm' : 'Pedido_Farm_Bodega',
-        'bod'  : 'Pedido_Repos_Bodega',
-        'dfarm': 'Dialisis_Pedido_Farm',
-        'dbod' : 'Dialisis_Pedido_Bod',
+        'sgli'    : 'SGLI_Estres',
+        'farm'    : 'Pedido_Farm_Bodega',
+        'bod'     : 'Pedido_Repos_Bodega',
+        'dialmed' : 'Dialisis_Medicamentos',
     }.items()}
 
 # ─────────────── Hoja 1: Farmacia AA → Bodega AA ────────────────────────────
@@ -423,9 +423,9 @@ def write_h2(ws, rows, hoy, semana, dias_ciclo):
 
 # ─────────────── Hoja 3: Diálisis (Farm + Bod) ──────────────────────────────
 
-# Fe ICP usado internamente para redondear mensual, no como columna visible
 HDRS3 = [
     ('Medicamento',              44),
+    ('Fe (ud/envase)',           13),   # Factor de empaque CENABAST usado para redondear
     ('Cons. Mensual Diál. (ud)', 18),
     ('Cob.Farm (mes)',           12),   # Stock Farm / Cons.Mensual
     ('A Pedir Farm. (ud)',       14),
@@ -434,97 +434,78 @@ HDRS3 = [
     ('Obs',                      46),
 ]
 
-def calc_h3(df_dfarm, df_dbod, fe_map, rep_h2_map=None):
+def calc_h3(df_dialmed, fe_map, rep_h2_map=None):
+    """Universo COMPLETO de medicamentos de diálisis (hoja Dialisis_Medicamentos
+    de maestro_aa.py, sin filtrar por Necesidad>0) — a diferencia de la versión
+    anterior (que solo veía Dialisis_Pedido_Farm/Bod, ya filtradas a lo
+    accionable), esto muestra TODO medicamento con consumo de diálisis aunque
+    el stock alcance (ej. Furosemida), consistente todos los días, no solo S3."""
     rep_h2_map = rep_h2_map or {}
-
-    def _idx(df, stock_col):
-        d = {}
-        for _, r in df.iterrows():
-            m = str(r.get('Medicamento', '')).strip()
-            d[m] = {
-                'c5d'   : _n(r.get('Consumo_5D_Solo_Dialisis', 0)),
-                'stock' : int(_n(r.get(stock_col, 0))),
-                'fe'    : int(_n(r.get('Factor_Empaque', 1))) or 1,
-            }
-        return d
-
-    fd = _idx(df_dfarm, 'Stock_Farm_Actual')
-    bd = _idx(df_dbod,  'Stock_Bod_Actual')
-    meds = sorted(set(list(fd.keys()) + list(bd.keys())))
-
     rows = []
-    for med in meds:
-        f = fd.get(med, {})
-        b = bd.get(med,  {})
-        c5d = f.get('c5d', 0) or b.get('c5d', 0)
+    for _, r in df_dialmed.iterrows():
+        med = str(r.get('Medicamento', '')).strip()
+        c5d = _n(r.get('Consumo_5D_Solo_Dialisis', 0))
         if c5d <= 0:
             continue
         # Unidades_Caja de SGLI_Estres (cenabast_tallas.csv, curado a mano) es la
-        # fuente confiable — el Factor_Empaque propio de la hoja Dialisis viene de
-        # cenabast_intermediacion.csv con un matching de nombre mas debil y cae a 1
-        # (sin redondeo) para muchos medicamentos que si tienen empaque conocido.
-        fe = int(fe_map.get(med, 0)) or f.get('fe', 1) or b.get('fe', 1) or 1
-        mensual  = _ceil_fe(c5d / 5 * 30, fe)
-        # Si el medicamento no aparece en Dialisis_Pedido_Farm/Bod, maestro_aa.py ya
-        # determino que ese nivel tiene stock suficiente (Necesidad_Farm/Bod<=0) —
-        # no tratar la ausencia como stock=0, o se genera un pedido falso.
-        sfarm    = f.get('stock', 0) if med in fd else None
-        sbod     = b.get('stock', 0) if med in bd else None
-        apfarm   = _ceil_fe(max(0, mensual - sfarm), fe) if sfarm is not None else 0
+        # fuente confiable de empaque — cae a 1 (sin redondeo) si el medicamento
+        # no tiene talla conocida ahí.
+        fe = int(fe_map.get(med, 0)) or 1
+        mensual = _ceil_fe(c5d / 5 * 30, fe)
+        sfarm   = int(_n(r.get('Stock_Farmacia_AA', 0)))
+        sbod    = int(_n(r.get('Stock_Bodega_AA', 0)))
+        apfarm  = _ceil_fe(max(0, mensual - sfarm), fe)
 
         # El CDL de Bod_Farmacos ya es COMBINADO (incluye diálisis, ver calc_h2),
         # así que el "A Reponer" de esa hoja ya trae en camino parte (o todo) de lo
         # que diálisis necesita de Bodega AA. Si ambas hojas se piden la misma
         # semana (coincide con S3), sin netear se pediría dos veces a Bod.Fármacos
         # contra el mismo stock base. Se descuenta el rep del ciclo antes de pedir.
-        rep_bod  = int(rep_h2_map.get(med, 0))
-        sbod_proy = (sbod + rep_bod) if sbod is not None else None
-        apbod    = _ceil_fe(max(0, mensual - sbod_proy), fe) if sbod_proy is not None else 0
-        cob_farm = round(sfarm / mensual, 1) if (sfarm is not None and mensual > 0) else None
-        cob_bod  = round(sbod  / mensual, 1) if (sbod  is not None and mensual > 0) else None
+        rep_bod   = int(rep_h2_map.get(med, 0))
+        sbod_proy = sbod + rep_bod
+        apbod     = _ceil_fe(max(0, mensual - sbod_proy), fe)
+        cob_farm  = round(sfarm / mensual, 1) if mensual > 0 else None
+        cob_bod   = round(sbod  / mensual, 1) if mensual > 0 else None
 
         obs = []
         if apfarm > 0: obs.append(f'Farm: solicitar {apfarm} ud a Bodega AA')
         if apbod  > 0: obs.append(f'Bod:  solicitar {apbod} ud a Bod.Fármacos')
-        if rep_bod > 0 and (apbod > 0 or max(0, mensual - (sbod or 0)) > 0):
+        if rep_bod > 0 and (apbod > 0 or max(0, mensual - sbod) > 0):
             obs.append(f'(neteado con {rep_bod} ud que ya trae el ciclo Bod_Farmacos)')
         if not obs:    obs = ['Stock suficiente en ambos niveles']
 
-        # (med, mensual, cob_farm, apfarm, cob_bod, apbod, obs) — Fe invisible, aplicado en mensual
-        rows.append((med, mensual, cob_farm, apfarm, cob_bod, apbod, ' / '.join(obs)))
+        # (med, fe, mensual, cob_farm, apfarm, cob_bod, apbod, obs)
+        rows.append((med, fe, mensual, cob_farm, apfarm, cob_bod, apbod, ' / '.join(obs)))
 
     rows.sort(key=lambda x: x[0])
     return rows
 
 
-def write_h3(ws, rows, hoy, semana, activa):
+def write_h3(ws, rows, hoy, semana, es_semana_pedido):
     _titulo(ws,
         f'DIÁLISIS MENSUAL — Farm. AA + Bodega AA  ·  {hoy.strftime("%d/%m/%Y")}  ·  S{semana}',
         len(HDRS3))
-    if not activa:
-        _subtit(ws,
-            f'⚠  Pedido de diálisis solo en S3. Semana actual: S{semana}. '
-            f'Usa --forzar-dialisis para generar fuera de S3.',
-            len(HDRS3))
-        ws.merge_cells(f'A4:{get_column_letter(len(HDRS3))}4')
-        ws.cell(4, 1, 'Sin datos — ejecutar en S3 o con --forzar-dialisis').font = \
-            Font(italic=True, size=10, color='B45309', name='Arial')
-        return
+    nota_semana = ('✅ S3 — semana de pedido: ejecutar los traspasos/compras de esta hoja.'
+                   if es_semana_pedido else
+                   f'ℹ️ Solo consulta — el pedido mensual de diálisis se ejecuta en la 3ª semana '
+                   f'del mes (S3). Semana actual: S{semana}. Esta hoja se genera todos los días '
+                   f'para ver el consumo, pero no se debe pedir fuera de S3.')
     _subtit(ws,
+        f'{nota_semana}  |  '
         'Cons.Mensual = C5D_Diál÷5×30, redondeado al empaque CENABAST (días naturales) | '
         'Cob.Farm/Bod = Stock÷Cons.Mensual (en meses, sobre stock actual) | '
         'A Pedir Bod. = max(0, Mensual − (Stock Bod.AA + lo que ya trae el ciclo Bod_Farmacos)) '
         '— evita pedir dos veces a Bod.Fármacos contra el mismo stock',
-        len(HDRS3))
+        len(HDRS3), height=48)
     _hdr(ws, 3, HDRS3)
     for i, vals in enumerate(rows, 4):
-        # cob_farm@col3 y cob_bod@col5 en meses → 0.0
-        _fila_dial(ws, i, vals, {2, 3, 4, 5, 6}, cols_fmt1d={3, 5})
+        # fe@col2, mensual@col3, cob_farm@col4, apfarm@col5, cob_bod@col6, apbod@col7
+        _fila_dial(ws, i, vals, {2, 3, 4, 5, 6, 7}, cols_fmt1d={4, 6})
     ws.freeze_panes = 'A4'
     if rows:
         last = 3 + len(rows)
         ws.auto_filter.ref = f'A3:{get_column_letter(len(HDRS3))}{last}'
-        _totals(ws, 4, last, len(HDRS3), {2, 4, 6})
+        _totals(ws, 4, last, len(HDRS3), {3, 5, 7})
         ws.print_area = f'A1:{get_column_letter(len(HDRS3))}{last + 1}'
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
@@ -568,14 +549,20 @@ def main():
     # Diálisis a Bod.Fármacos, y no pedir dos veces contra el mismo déficit.
     rep_h2_map = {v[0]: v[7] for v in r2}
     r1 = calc_h1(data['farm'], fe_map, def_, args.todos, rep_h2_map)
-    dial_activa = args.forzar_dialisis or sem == 3
-    r3 = calc_h3(data['dfarm'], data['dbod'], fe_map, rep_h2_map) if dial_activa else []
+    # La hoja Dialisis se genera TODOS los días con el universo completo (para
+    # poder consultar consumo, ej. Furosemida, aunque el stock alcance) — el
+    # pedido real de diálisis sigue siendo mensual y solo se ejecuta en S3;
+    # --forzar-dialisis ahora solo fuerza la marca de "semana de pedido" fuera
+    # de S3, ya no controla si la hoja tiene datos (write_h3 se lo indica al
+    # usuario en la nota de la hoja en vez de vaciarla).
+    es_semana_pedido = args.forzar_dialisis or sem == 3
+    r3 = calc_h3(data['dialmed'], fe_map, rep_h2_map)
 
     wb = openpyxl.Workbook()
     ws1 = wb.active; ws1.title = 'Farm_Bod'
     write_h1(ws1,                             r1, def_, hoy, sem)
     write_h2(wb.create_sheet('Bod_Farmacos'), r2, hoy, sem, dc)
-    write_h3(wb.create_sheet('Dialisis'),     r3, hoy, sem, dial_activa)
+    write_h3(wb.create_sheet('Dialisis'),     r3, hoy, sem, es_semana_pedido)
 
     sal = os.path.join(WORK_DIR,
         f'Pedido_Fusion_AA_{hoy.strftime("%Y%m%d_%H%M")}.xlsx')
@@ -583,16 +570,14 @@ def main():
 
     # índices: h1=(med,crit,sfarm,cob_actual,cdl,ud,accion1,accion2)                  → ud@5
     #          h2=(med,crit,sbod,cob_bod,sfarm,sbfarm,req_ciclo,rep,accion)          → rep@7
-    #          h3=(med,mensual,cob_farm,apfarm,cob_bod,apbod,obs)                    → apfarm@3, apbod@5
+    #          h3=(med,fe,mensual,cob_farm,apfarm,cob_bod,apbod,obs)                 → apfarm@4, apbod@6
     n1 = sum(1 for v in r1 if v[5] > 0)
     n2 = sum(1 for v in r2 if v[7] > 0)
-    n3 = sum(1 for v in r3 if (v[3] + v[5]) > 0)
+    n3 = sum(1 for v in r3 if (v[4] + v[6]) > 0)
     print(f'Farm->Bod       : {len(r1)} meds ({n1} con pedido)')
     print(f'Bod->Farmacos   : {len(r2)} meds ({n2} con reposicion)')
-    if dial_activa:
-        print(f'Dialisis        : {len(r3)} meds ({n3} con faltante)')
-    else:
-        print(f'Dialisis        : fuera de S3 (usa --forzar-dialisis)')
+    print(f'Dialisis        : {len(r3)} meds ({n3} con faltante)'
+          f'{"  [S3 — semana de pedido]" if es_semana_pedido else "  [solo consulta, pedido real en S3]"}')
     print(f'\nExcel: {os.path.basename(sal)}')
 
 
