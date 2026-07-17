@@ -841,17 +841,36 @@ async def main():
         # "Mes en curso" = mes de hoy: la programación de meses futuros puede
         # existir con Cantidad Solicitada en 0 (nadie ha solicitado todavía),
         # así que no tiene sentido adelantarse — se pide siempre el mes actual.
+        async def _seleccionar_diag(page, selector, valor, campo):
+            """select_option con diagnostico: si el valor no matchea ninguna
+            <option>, imprime las opciones reales disponibles antes de relanzar
+            la excepcion (para saber, sin re-loguearse, si cambio el ID o el
+            formato del value — ej. mes con cero a la izquierda)."""
+            try:
+                await page.select_option(selector, valor)
+            except Exception:
+                try:
+                    opciones = await page.eval_on_selector(
+                        selector,
+                        "el => Array.from(el.options).map(o => o.value + ':' + o.textContent.trim())",
+                    )
+                    print(f"  [diag] {campo} ({selector}): valor '{valor}' no encontrado. "
+                          f"Opciones reales: {opciones}")
+                except Exception as e2:
+                    print(f"  [diag] {campo} ({selector}): no se encontro el elemento ({e2})")
+                raise
+
         if not no_programacion:
             print("\n[4b/9] Reporte de Programación AA (mes en curso)...")
             try:
                 await page.goto(PROGRAMACION_REPORTE)
                 await page.wait_for_load_state("networkidle")
                 await page.wait_for_timeout(1_500)
-                await page.select_option("#ano", str(today.year))
-                await page.select_option("#mes", str(today.month))
-                await page.select_option("#distribucion", DISTRIB_FARMACOS)
-                await page.select_option("#select_proyecto", PROYECTO_LOCAL)
-                await page.select_option("#cc", CC_FARMACIA)
+                await _seleccionar_diag(page, "#ano", str(today.year), "Año")
+                await _seleccionar_diag(page, "#mes", str(today.month), "Mes")
+                await _seleccionar_diag(page, "#distribucion", DISTRIB_FARMACOS, "Distribucion")
+                await _seleccionar_diag(page, "#select_proyecto", PROYECTO_LOCAL, "Proyecto")
+                await _seleccionar_diag(page, "#cc", CC_FARMACIA, "Centro de Costo")
                 await page.wait_for_timeout(500)
                 await descargar(
                     page, MAESTRO_DIR,
