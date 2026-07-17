@@ -8,6 +8,7 @@ cantidad_de_productos_consumidos_en_centro_de_costo_farmacia*.xlsx
 
 # ── Debug y temporales ────────────────────────────────────────────────────────
 debug_*.png
+_tmp_*.png
 ~$*.xlsx
 ~$*.xls
 
@@ -43,7 +44,7 @@ Programacion_AA/
 _archivo/
 Auditoria_Duplicados_Profunda*.xlsx
 Pedido_Fusion_AA_*.xlsx
-Reposicion_DiasHabiles_AA_*.xlsx
+Requerimiento_Dialisis_No_Inyectables_*.xlsx
 SGLI_Historico_*.xlsx
 *.log
 
