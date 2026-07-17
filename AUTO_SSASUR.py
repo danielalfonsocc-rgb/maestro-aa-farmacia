@@ -954,6 +954,17 @@ async def main():
             if pret.returncode != 0:
                 print(f"  [aviso] pedido_fusion.py terminó con código {pret.returncode}")
 
+        # ── PASO 5f — PEDIDO FUSIONADO SIMPLE (Farm_Bodega + Faltantes_AA) ────
+        pedido_simple_py = MAESTRO_DIR / "pedido_fusion_simple.py"
+        if pedido_simple_py.exists():
+            print(f"\n[5f/9] Generando Pedido Fusionado Simple (Farm_Bodega + Faltantes_AA)...")
+            psret = subprocess.run(
+                [sys.executable, str(pedido_simple_py)],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
+            if psret.returncode != 0:
+                print(f"  [aviso] pedido_fusion_simple.py terminó con código {psret.returncode}")
+
         # NOTA: sgli_historico.py NO se corre aquí — maestro_aa.py YA lo llama
         # internamente al final de su propio main() (import sgli_historico;
         # sgli_historico.main()). Correrlo de nuevo en este paso lo duplicaba
