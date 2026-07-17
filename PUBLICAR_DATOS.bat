@@ -4,16 +4,8 @@ cd /d "%~dp0"
 
 if not exist ".git" goto :nogit
 
-for /f "tokens=1-3 delims=/ " %%a in ("%DATE%") do (
-    set DIA=%%a
-    set MES=%%b
-    set ANO=%%c
-)
-for /f "tokens=1-2 delims=: " %%a in ("%TIME%") do (
-    set HORA=%%a
-    set MIN=%%b
-)
-set MSG=Datos %DIA%/%MES%/%ANO% %HORA%:%MIN%
+for /f "delims=" %%i in ('powershell -NoProfile -Command "Get-Date -Format 'dd-MM-yyyy HH:mm'"') do set FECHA_HORA=%%i
+set MSG=Datos %FECHA_HORA%
 
 echo   Subiendo datos a GitHub...
 git add Consolidado_AA_MAESTRO.xlsx Resumen_Pedidos_AA.xlsx 2>nul
