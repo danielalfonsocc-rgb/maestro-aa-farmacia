@@ -19,6 +19,23 @@ def setup_stdout() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
+# ── Rutas configurables por variable de entorno ──────────────────────────────
+# Carpeta y plantilla del formulario ISP de Recetas Cheque: viven fuera del
+# repo (son específicas de la máquina de la QF), así que estaban hardcodeadas
+# en 3 scripts distintos. Se centralizan acá con default = la ruta actual,
+# y se pueden sobrescribir sin tocar código en cualquier otra máquina:
+#   set MAESTRO_RCH_DIR=D:\OtraCarpeta\Farmacia_AT_Abierta_RCh
+#   set MAESTRO_PLANTILLA_RCH=D:\OtraCarpeta\Formulario-Notificacion-...xlsx
+RCH_DIR = os.environ.get(
+    "MAESTRO_RCH_DIR",
+    r"C:\Users\danie\Downloads\Farmacia_AT_Abierta_RCh\Farmacia_AT_Abierta_RCh",
+)
+PLANTILLA_BLANCO_RCH = os.environ.get(
+    "MAESTRO_PLANTILLA_RCH",
+    r"C:\Users\danie\Downloads\02_Farmacia_Recetas_e_Informes_CSV\Formulario-Notificacion-Recetas-Cheque_v11.xlsx",
+)
+
+
 # Blindaje contra datos auto-detectados desactualizados (incidente 2026-07-13:
 # AUTO_SSASUR puede fallar/omitir la descarga de recetas en silencio —solo
 # imprime [AVISO] y sigue— y un script que auto-detecta "el CSV más reciente
@@ -67,6 +84,7 @@ HOMOLOGACION_RAW: dict[str, str] = {
     "ACIDO FOLICO 5 MG COMPRIMIDO":                            "ACIDO FOLICO CM 5 MG",
     "ACIDO URSODEOXICOLICO 250 MG COMPRIMIDO":                 "ACIDO URSODEOXICOLICO CM 250 MG",
     "ACETAZOLAMIDA 250 MG COMPRIMIDO":                         "ACETAZOLAMIDA  CM 250 MG",
+    "ACETAZOLAMIDA 250 MG CM UD":                               "ACETAZOLAMIDA  CM 250 MG",
     "TRAMADOL 100 MG/ML FC 10 ML":                             "TRAMADOL FRASCO GOTAS 100 MG/ML /10 ML",
     "LAGRIMAS ARTIFICIALES":                                   "LAGRIMAS ARTIFICIALES 0,4% X 10 ML",
     "BUDESONIDA 200 MCG/DO INH FC 200DO":                      "BUDESONIDA 200 MCG/DO INH FC",
@@ -80,6 +98,8 @@ HOMOLOGACION_RAW: dict[str, str] = {
     "LIDOCAINA CLORHIDRATO 2 % AM 5 ML":                       "LIDOCAINA CLORHIDRATO 2 % AM 5ML",
     "ACIDO TRANEXAMICO CM 500 MG":                             "ACIDO TRANEXAMICO 500 MG COMPRIMIDO",
     "ACENOCUMAROL  CM 4 MG":                                   "ACENOCUMAROL 4 MG CM",
+    "CINTA PARA DETERMINACION GLICEMIA  USO PACIENTE UD.":     "CINTA PARA DETERMINACION GLUCOSA USO PACIENTE UD.",
+    "SALMETEROL Y FLUTICASONA 250 MG/25 MG INH UD":            "SALMETEROL /FLUTICASONA 250 MG/25 MG INH UD",
 }
 HOMOLOGACION: dict[str, str] = {norm_erp(k): norm_erp(v) for k, v in HOMOLOGACION_RAW.items()}
 

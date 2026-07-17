@@ -13,7 +13,9 @@ Qué hace:
               ·  Bodega Despacha = "FARMACIA AT ABIERTA"
   3. Mapea el código HHHA → F-código ISP + nombre + presentación.
   4. Agrega a la planilla SOLO los folios que no estén ya (dedup por N° Folio).
-     No toca filas existentes. La QF completa a mano DV QF y Nombre QF.
+     No toca filas existentes. La QF completa a mano: RUN QF, DV QF, Nombre QF
+     y Posología. Texto en Calibri 11 mayúscula; números sin notación
+     científica (compatibles con Google Sheets).
 
 Versus el script original de la QF, esta versión:
   · Normaliza los nombres de columna con unicodedata (mapea tildes a la letra
@@ -58,12 +60,14 @@ PREFIJO_CSV = "informe_completo_recetas"
 
 # verificar_frescura(): blindaje compartido contra datos auto-detectados
 # desactualizados (incidente S.52, ver utils_aa.py para el detalle).
+# RCH_DIR / PLANTILLA_BLANCO_RCH: configurables por variable de entorno
+# (MAESTRO_RCH_DIR / MAESTRO_PLANTILLA_RCH) para poder correr esto en una
+# máquina distinta a la de la QF sin editar código.
 sys.path.insert(0, MAESTRO_DIR)
-from utils_aa import verificar_frescura
+from utils_aa import verificar_frescura, RCH_DIR, PLANTILLA_BLANCO_RCH as PLANTILLA_BLANCO
 
 # Carpeta donde la QF mantiene el formulario ISP mensual. Se elige el .xlsx más
 # reciente que empiece con este prefijo (maneja el rollover v11_junio → v12_julio).
-RCH_DIR     = r"C:\Users\danie\Downloads\Farmacia_AT_Abierta_RCh\Farmacia_AT_Abierta_RCh"
 PREFIJO_FORM = "Formulario-Notificacion-Recetas-Cheque"
 HOJA_RCH    = "Registro de RCh"
 FILA_DATOS  = 12   # los registros empiezan en la fila 12
@@ -71,7 +75,6 @@ FILA_DATOS  = 12   # los registros empiezan en la fila 12
 # Plantilla ISP en blanco (B7/B8 vacíos, sin registros) usada para crear
 # automáticamente el formulario del mes siguiente cuando la sábana trae datos
 # de un mes que todavía no tiene formulario en RCH_DIR.
-PLANTILLA_BLANCO = r"C:\Users\danie\Downloads\02_Farmacia_Recetas_e_Informes_CSV\Formulario-Notificacion-Recetas-Cheque_v11.xlsx"
 
 # ── MAPEO HHHA → F-código ISP + Nombre + Presentación ────────────────────────
 MAPEO_HHHA = {
@@ -136,15 +139,6 @@ def split_rut(s):
             pass
         return rut, dv
     return s, None
-
-
-def get_posologia(row):
-    dosis  = str(row["Dosis"]).strip()    if pd.notna(row["Dosis"])    else ""
-    interv = str(row["Intervalo"]).strip() if pd.notna(row["Intervalo"]) else ""
-    per    = str(row["Periodo.1"]).strip() if pd.notna(row["Periodo.1"]) else ""
-    obs    = str(row["Observacion Medica Prescripcion"]).strip() if pd.notna(row["Observacion Medica Prescripcion"]) else ""
-    partes = [p for p in [dosis, interv, per] if p and p not in ("nan", "NaN")]
-    return " ".join(partes) if partes else (obs if obs and obs not in ("nan", "NaN") else "SEGUN INDICACION")
 
 
 def sanitizar_folio(folio):
@@ -317,8 +311,6 @@ def main():
     rch[["RUT_MED", "DV_MED"]] = rch["RUN Profesional"].apply(lambda x: pd.Series(split_rut(x)))
     rch[["RUT_PAC", "DV_PAC"]] = rch["RUN"].apply(lambda x: pd.Series(split_rut(x)))
     rch[["RUT_ADQ", "DV_ADQ"]] = rch["Run Persona Retira"].apply(lambda x: pd.Series(split_rut(x)))
-    rch["RUT_QF"]        = rch["Usuario Creacion Registro"].apply(lambda x: int(str(x).strip()) if pd.notna(x) else None)
-    rch["POSOLOGIA"]     = rch.apply(get_posologia, axis=1)
     rch["FECHA_PRESC_N"] = rch["Fecha Atencion"].apply(to_excel_date)
     rch["FECHA_DISP_N"]  = rch["Fecha Entrega Receta"].apply(to_excel_date)
     rch["FECHA_DISP_D"]  = rch["Fecha Entrega Receta"].apply(parse_fecha)
@@ -334,7 +326,7 @@ def main():
     #    formulario, filtrado por su propio periodo B7/B8.
     if a.form:
         actualizar_formulario(form_path, rch, sin_filtro_mes=a.sin_filtro_mes, no_backup=a.no_backup)
-        print("\n  Recuerda completar a mano: DV QF y Nombre QF.")
+        print("\n  Recuerda completar a mano: RUN QF, DV QF, Nombre QF y Posologia.")
         if not a.no_pause:
             input("\nPresiona Enter para cerrar...")
         return
@@ -358,7 +350,7 @@ def main():
         print("  Formulario : " + os.path.basename(ruta))
         actualizar_formulario(ruta, rch, sin_filtro_mes=False, no_backup=a.no_backup)
 
-    print("\n  Recuerda completar a mano: DV QF y Nombre QF.")
+    print("\n  Recuerda completar a mano: RUN QF, DV QF, Nombre QF y Posologia.")
     if not a.no_pause:
         input("\nPresiona Enter para cerrar...")
 
@@ -405,43 +397,57 @@ def actualizar_formulario(form_path, rch, sin_filtro_mes, no_backup):
             print(f"  [aviso] No pude crear respaldo: {e}")
 
     # Escribir filas nuevas.
-    sample_font = Font(name="Arial", size=10)
+    # Calibri 11 mayúscula: formato exigido por la QF para el registro ISP.
+    sample_font = Font(name="Calibri", size=11)
     thin   = Side(style="thin")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     primera = ultima_fila_con_datos(ws) + 1
     sin_fcod = 0
+    # Columnas numéricas (0-based): Folio, RUT médico, RUT paciente, Cantidad,
+    # RUT adquirente, Cantidad(2), constante final. Formato "0" plano (sin
+    # separador de miles) para que Google Sheets no las muestre en notación
+    # científica al abrir el .xlsx subido a Drive.
+    COLS_NUMERO = {0, 1, 3, 10, 13, 19, 21}
+    # RUN QF (col. 17) y Posología (col. 12) quedan en blanco: llenado manual
+    # de la QF, no se autocompletan desde la sábana.
 
     for idx, (_, row) in enumerate(nuevos.iterrows()):
         er = primera + idx
         cant = int(row["Cantidad Entregada"]) if pd.notna(row["Cantidad Entregada"]) else None
         if not row["F_COD"]:
             sin_fcod += 1
+        direccion = str(row["Direccion"]).strip().upper() if pd.notna(row["Direccion"]) else None
+        comuna    = str(row["Comuna"]).strip().upper()    if pd.notna(row["Comuna"])    else None
         valores = [
             row["FOLIO_INT"],
             row["RUT_MED"], row["DV_MED"],
             row["RUT_PAC"], row["DV_PAC"],
-            str(row["Direccion"]) if pd.notna(row["Direccion"]) else None,
-            str(row["Comuna"])    if pd.notna(row["Comuna"])    else None,
+            direccion,
+            comuna,
             row["F_COD"],
-            "=VLOOKUP(H" + str(er) + ",OCULTA!A:B,2,0)",
-            row["PRESENTACION"],
+            "=UPPER(VLOOKUP(H" + str(er) + ",OCULTA!A:B,2,0))",
+            row["PRESENTACION"].upper() if row["PRESENTACION"] else row["PRESENTACION"],
             cant,
-            row["POSOLOGIA"],
+            None,                           # Posología: llenado manual QF
             row["FECHA_PRESC_N"],
             row["RUT_ADQ"], row["DV_ADQ"],
             row["FECHA_DISP_N"],
-            row["RUT_QF"], None, None,
+            None, None, None,               # RUN QF, DV QF, Nombre QF: llenado manual
             cant,
-            row["PRESENTACION"],
+            row["PRESENTACION"].upper() if row["PRESENTACION"] else row["PRESENTACION"],
             1,
         ]
         for ci, val in enumerate(valores):
             cell = ws.cell(row=er, column=ci + 1)
+            if isinstance(val, str) and not val.startswith("="):
+                val = val.upper()
             cell.value  = val
             cell.font   = sample_font
             cell.border = border
             if ci in (12, 15) and val is not None:
                 cell.number_format = "DD/MM/YYYY"
+            elif ci in COLS_NUMERO and val is not None:
+                cell.number_format = "0"
 
     # Guardar (manejar Excel abierto).
     try:
