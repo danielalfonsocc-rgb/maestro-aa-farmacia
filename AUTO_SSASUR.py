@@ -842,19 +842,25 @@ async def main():
         # existir con Cantidad Solicitada en 0 (nadie ha solicitado todavía),
         # así que no tiene sentido adelantarse — se pide siempre el mes actual.
         async def _seleccionar_diag(page, selector, valor, campo):
-            """select_option con diagnostico: si el valor no matchea ninguna
-            <option>, imprime las opciones reales disponibles antes de relanzar
-            la excepcion (para saber, sin re-loguearse, si cambio el ID o el
-            formato del value — ej. mes con cero a la izquierda)."""
+            """select_option con diagnostico: si falla, imprime las opciones reales
+            disponibles antes de relanzar la excepcion (para saber, sin re-loguearse,
+            si cambio el ID o el formato del value — ej. mes con cero a la izquierda).
+            force=True: SSASUR empezo a envolver estos <select> con un widget JS que
+            los oculta visualmente (reemplazados por una caja con flecha) — el
+            elemento real sigue en el DOM con sus <option> intactas, pero Playwright
+            rechaza select_option() por su chequeo de visibilidad. force=True se
+            salta ese chequeo y opera igual sobre el <select> real (confirmado en
+            vivo 17-07-2026: sin force, timeout 'element is not visible' pese a que
+            la opcion buscada SI figura en la lista de opciones del diagnostico)."""
             try:
-                await page.select_option(selector, valor)
+                await page.select_option(selector, valor, force=True)
             except Exception:
                 try:
                     opciones = await page.eval_on_selector(
                         selector,
                         "el => Array.from(el.options).map(o => o.value + ':' + o.textContent.trim())",
                     )
-                    print(f"  [diag] {campo} ({selector}): valor '{valor}' no encontrado. "
+                    print(f"  [diag] {campo} ({selector}): no se pudo fijar '{valor}'. "
                           f"Opciones reales: {opciones}")
                 except Exception as e2:
                     print(f"  [diag] {campo} ({selector}): no se encontro el elemento ({e2})")
