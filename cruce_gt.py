@@ -116,6 +116,11 @@ def leer_reporte_gt(path):
     c_np   = col("numeroprescripciones", "nprescripciones")
     c_tret = col("tiporetiro")
 
+    requeridas = {"paciente": c_pac, "run": c_run, "estabdestino": c_dst, "periodo": c_per}
+    faltantes = [k for k, v in requeridas.items() if v is None]
+    if faltantes:
+        print(f"  [aviso] columnas no encontradas en el reporte GT: {faltantes} — revisar encabezados de {path}")
+
     def g(r, i):
         return str(r[i]).strip() if (i is not None and i < len(r) and r[i] is not None) else ""
 

@@ -97,9 +97,8 @@ def main():
     print("\n" + "=" * 72)
     print("1) CONSUMO MENSUAL (unidades entregadas)")
     print("=" * 72)
-    con = sub[sub["_ent"] > 0].copy()
-    con["_mes"] = con["_fecha"].dt.to_period("M")
-    mensual = con.groupby("_mes")["_ent"].sum().sort_index()
+    sub["_mes"] = sub["_fecha"].dt.to_period("M")
+    mensual = sub.groupby("_mes")["_ent"].sum().sort_index()
     for m, v in mensual.items():
         print(f"   {m}:  {int(v):>10,} ud")
     full = mensual.iloc[:-1] if len(mensual) > 1 else mensual
@@ -158,15 +157,14 @@ def main():
     print("\n" + "=" * 72)
     print("4) DUPLICIDAD DE PRESCRIPCIÓN (por paciente)")
     print("=" * 72)
-    sub["_mes4"] = sub["_fecha"].dt.to_period("M")
     pac = sub.groupby("RUN").agg(
         recetas=("ID Receta Detalle", "count"),
         n_recetas=("Número Receta", "nunique"),
         medicos=("_medico", "nunique"),
-        meses=("_mes4", "nunique"),
+        meses=("_mesp", "nunique"),
     )
     print(f"   Pacientes distintos     : {pac.shape[0]:,}")
-    dup_mes = sub.groupby(["RUN", "_mes4"])["Número Receta"].nunique()
+    dup_mes = sub.groupby(["RUN", "_mesp"])["Número Receta"].nunique()
     ru_dup = dup_mes[dup_mes >= 2].index.get_level_values(0).unique()
     print(f"   Con ≥2 recetas en 1 mes : {len(ru_dup):,}")
     multi_med = pac[pac["medicos"] >= 2]

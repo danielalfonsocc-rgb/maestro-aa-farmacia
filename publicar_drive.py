@@ -17,7 +17,7 @@ Estructura en Drive:
             <fecha>/
                 <ESTAB DESTINO>/  planillas + letrero históricos
                 Cruce_GT_Clasificacion.xlsx
-    3 - Pedido Fusionado/     Pedido_Fusion_AA.xlsx
+    3 - Pedido Fusionado/     Pedido_Fusion_AA.xlsx + Pedido_Fusion_Simple_AA.xlsx
     4 - Auditoria Prescripcion/  Auditoria_Prescripcion_Resumen.xlsx
     6 - Centinela/<Sxx>/      centinela_Sxx.json + centinela_Sxx.pdf por semana
     7 - Programacion AA/      Resumen_Programacion_AA.xlsx (conteo vs programación)
@@ -421,6 +421,13 @@ def sync_pedido(service, raiz_id, stats, cache=None):
         print(f"  Pedido_Fusion_AA.xlsx: {r}")
     else:
         print("  Pedido_Fusion_AA.xlsx: no encontrado, omitido")
+
+    src = _mas_reciente(os.path.join(WORK_DIR, "Pedido_Fusion_Simple_AA*.xlsx"))
+    if src:
+        r = _subir(service, src, fid, nuevo_nombre="Pedido_Fusion_Simple_AA.xlsx", stats=stats)
+        print(f"  Pedido_Fusion_Simple_AA.xlsx: {r}")
+    else:
+        print("  Pedido_Fusion_Simple_AA.xlsx: no encontrado, omitido")
 
 
 def sync_centinela(service, raiz_id, stats, cache=None):

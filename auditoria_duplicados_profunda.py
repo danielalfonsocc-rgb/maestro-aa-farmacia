@@ -92,7 +92,6 @@ def cargar_y_preparar(solo_ultimo: bool) -> pd.DataFrame:
 
     rec["_med"]      = rec["Prescripción"].fillna("").apply(norm_erp).map(
                            lambda x: HOMOLOGACION.get(x, x))
-    rec["_est"]      = _est.loc[rec.index]
     fa               = pd.to_datetime(rec["Fecha Atención"],       dayfirst=True, errors="coerce")
     fe               = pd.to_datetime(rec["Fecha Entrega Receta"], dayfirst=True, errors="coerce")
     rec["_fecha"]    = fa.fillna(fe)

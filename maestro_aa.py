@@ -15,8 +15,8 @@ FLUJO (secciones numeradas en el código):
   16.   Auditoría de homologación de nombres
   17.   Comparación de stocks por bodega del hospital
   18.   Resumen ejecutivo KPIs
-  19.   Escritura Excel → Consolidado_AA_MAESTRO.xlsx (17 hojas)
-  20.   Resumen Semanal operativo → Resumen_Pedidos_AA.xlsx (4 hojas)
+  19.   Escritura Excel → Consolidado_AA_MAESTRO.xlsx (19 hojas)
+  20.   Resumen Semanal operativo → Resumen_Pedidos_AA.xlsx (5 hojas)
 
 ARCHIVOS DE ENTRADA (en la misma carpeta):
   - informe_completo_recetas*.csv   → recetas del ERP SSASUR (módulo RECETA)
@@ -24,8 +24,8 @@ ARCHIVOS DE ENTRADA (en la misma carpeta):
   Ambos se descargan con AUTO_SSASUR.bat → AUTO_SSASUR.py (Playwright)
 
 ARCHIVOS DE SALIDA:
-  - Consolidado_AA_MAESTRO.xlsx     → leído por la app Streamlit (17 hojas)
-  - Resumen_Pedidos_AA.xlsx         → Excel operativo simplificado (4 hojas)
+  - Consolidado_AA_MAESTRO.xlsx     → leído por la app Streamlit (19 hojas)
+  - Resumen_Pedidos_AA.xlsx         → Excel operativo simplificado (5 hojas)
 
 GLOSARIO:
   CDL     Consumo Diario Laboral (ud/día hábil) — base de todos los cálculos
@@ -41,11 +41,11 @@ import numpy as np
 import re, os, glob, math, warnings, unicodedata
 from datetime import datetime, timedelta
 from openpyxl import load_workbook
-from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
-from aa_colors import CRIT_FILL_HEX, crit_fill, crit_hex, crit_nivel, soften, darken, text_on, fill_hex, FONT_CRITICO
+from aa_colors import CRIT_FILL_HEX, crit_fill, crit_hex, crit_nivel, soften, darken, fill_hex
 from sgli import calcular_sgli, cargar_tallas, FACTOR_CARGA_DEFAULT
-from utils_aa import norm_erp, HOMOLOGACION_RAW, HOMOLOGACION
+from utils_aa import norm_erp, HOMOLOGACION
 
 warnings.filterwarnings('ignore')
 
@@ -85,7 +85,7 @@ def norm_col(name: str) -> str:
 # RULE 2 – ERP NAME NORMALISER  (importado desde utils_aa)
 # RULE 3 – HOMOLOGATION TABLE   (importado desde utils_aa)
 # ─────────────────────────────────────────────
-# norm_erp, HOMOLOGACION_RAW, HOMOLOGACION vienen del import de arriba.
+# norm_erp, HOMOLOGACION vienen del import de arriba.
 
 # ─────────────────────────────────────────────
 # FACTOR DE EMPAQUE (CENABAST) — para aproximar pedidos a empaques completos
@@ -509,13 +509,6 @@ df_rec['Bodega_Despacha']    = df_rec['Bodega_Despacha'].fillna('').str.strip().
 df_rec['Prescripcion_norm'] = df_rec['Prescripcion'].apply(norm_erp)
 df_rec['Prescripcion_norm'] = df_rec['Prescripcion_norm'].map(lambda x: HOMOLOGACION.get(x, x))
 
-# ─── Periodo numérico (para dedup consumo) ───
-# "1 de 12" → 1  |  "3 de 6" → 3  |  cualquier otro → 1
-def extraer_periodo_num(p):
-    p = str(p).strip()
-    m = re.match(r'^(\d+)\s+de\s+\d+', p, re.IGNORECASE)
-    return int(m.group(1)) if m else 1
-df_rec['Periodo_num'] = df_rec['Periodo'].apply(extraer_periodo_num)
 
 # ═══════════════════════════════════════════════
 # 3. FECHA_MAX, PERÍODOS (Rule 4+5)
@@ -2137,8 +2130,8 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
 # ═══════════════════════════════════════════════
 # 20. RESUMEN SEMANAL — Resumen_Pedidos_AA.xlsx
 #     Excel operativo simplificado para imprimir o compartir:
-#     4 hojas: Faltantes_Semana | Pedido_Farmacia_AA | Pedido_Bodega_AA |
-#              Dialisis_Farmacia
+#     5 hojas: Faltantes_Semana | Pedido_Farmacia_AA | Pedido_Bodega_AA |
+#              Dialisis_Farmacia | Dialisis_Bodega
 # ═══════════════════════════════════════════════
 _RES_BASE  = os.path.join(WORK_DIR, "Resumen_Pedidos_AA.xlsx")
 _RES_DATED = os.path.join(WORK_DIR,

@@ -45,7 +45,6 @@ from aa_colors import crit_nivel
 # ── Constantes fisicas / del modelo ───────────────────────────────────────────
 VOLUMEN_GAVETA_CM3       = 2790
 TALLA_BASE_CAJAS         = {'S': 23, 'M': 15, 'L': 9}     # cajas por 1 gaveta
-TALLA_VOL_REF_CM3        = {'S': 120, 'M': 180, 'L': 300}  # volumen caja de referencia
 ROTACION_GAVETAS         = {'ALTA': 3, 'NORMAL': 1}
 UMBRAL_ALTA_ROTACION_CDL = 30      # ud/dia habil -> ALTA (igual que maestro_aa)
 FACTOR_CARGA_DEFAULT     = 1.15
@@ -100,10 +99,6 @@ COLUMNAS_SGLI = [
 ]
 
 _ETIQUETA_NIVEL = {1: '1-CRITICO', 2: '2-ALTO', 3: '3-MODERADO', 4: '4-BAJO', 5: '5-OK'}
-
-
-def etiqueta_criticidad(crit) -> str:
-    return _ETIQUETA_NIVEL.get(crit_nivel(crit), '5-OK')
 
 
 def calcular_freq_revision(cdl: float, criticidad=None, variabilidad: float = 0.0) -> int:
@@ -319,7 +314,7 @@ def calcular_sgli(df, factor_carga=FACTOR_CARGA_DEFAULT, *, overrides=None,
         return pd.DataFrame(columns=COLUMNAS_SGLI)
 
     fc = float(factor_carga)
-    ir_factor_cap = max(1, math.floor(IR_MAX / fc + _EPS)) if fc > 0 else IR_MAX
+    ir_factor_cap = max(1, min(IR_MAX, math.floor(IR_MAX / fc + _EPS))) if fc > 0 else IR_MAX
     overrides = overrides or {}
 
     def _col(c):

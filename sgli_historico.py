@@ -613,7 +613,10 @@ def _agregar_hoja_dialisis(wb: Workbook, hoy: date) -> None:
     ).fillna(0) / 5
     df = df[df["CDL_Dialisis"] > 0].copy()
 
-    df["Fe"] = pd.to_numeric(df.get("Factor_Empaque", 1), errors="coerce").fillna(1).clip(lower=1).apply(int)
+    if "Factor_Empaque" in df.columns:
+        df["Fe"] = pd.to_numeric(df["Factor_Empaque"], errors="coerce").fillna(1).clip(lower=1).apply(int)
+    else:
+        df["Fe"] = 1
     df["Req_Mensual_30d"] = df.apply(
         lambda r: int(math.ceil(r["CDL_Dialisis"] * 30 / r["Fe"]) * r["Fe"]), axis=1
     )
@@ -884,7 +887,7 @@ def generar_planilla(df_final: pd.DataFrame, hoy: date, dias_cobertura: int,
         ("FÓRMULA PRINCIPAL", True),
         ("Stock a Pedir = CDL_hist × Días_cobertura + CDL_hist × Índice_Repo",
          "→  (cobertura básica + stock de seguridad proporcional al grupo)"),
-        ("Días_cobertura: Lun=1, Mar=2, Mié=3, Jue=4, Vie=5",
+        ("Días_cobertura: Lun=5, Mar=4, Mié=3, Jue=2, Vie=1",
          "→  varía según el día en que se ejecuta el reporte"),
         ("Necesidad = max(0, Stock_a_Pedir − Stock_Farmacia)", "→  cantidad real a reponer"),
         ("", False),
@@ -1026,8 +1029,12 @@ def main():
     merged["Stock_Seguridad"] = (merged["CDL_Prom"] * merged["Indice_Repo"]).apply(math.ceil)
     merged["Cant_A_Pedir"]    = (merged["CDL_Prom"] * dias_cober).apply(math.ceil)
     merged["Stock_Objetivo"]  = merged["Cant_A_Pedir"] + merged["Stock_Seguridad"]
-    merged["Necesidad"]       = (merged["Stock_Objetivo"] - merged["Stock_Farm"]).clip(lower=0).apply(
-        lambda x: math.ceil(float(x))
+    merged["Necesidad"] = merged.apply(
+        lambda r: _redondear_empaque(
+            max(0.0, float(r["Stock_Objetivo"]) - float(r["Stock_Farm"])),
+            str(r["Medicamento"])
+        ),
+        axis=1,
     )
     merged["Periodo_Hist"] = periodo_str
     merged["Accion"] = merged.apply(

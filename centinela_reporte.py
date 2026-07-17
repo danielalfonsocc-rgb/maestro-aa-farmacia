@@ -180,6 +180,13 @@ def leer_stock(xlsx_path):
             c_zgen = next((j for j, v in enumerate(row_s) if "zgen" in v.lower()), 3)
             break
 
+    if h_row == -1 or c_desc == -1 or c_cant == -1:
+        raise RuntimeError(
+            f"No se pudo detectar el encabezado (Descripción/Cantidad) en las primeras "
+            f"8 filas de {xlsx_path}. El formato del reporte de stock SSASur pudo haber "
+            f"cambiado; revisar manualmente antes de confiar en el reporte."
+        )
+
     xlsx_fecha = ""
     for row in raw[:3]:
         txt = " ".join(str(c or "") for c in row)

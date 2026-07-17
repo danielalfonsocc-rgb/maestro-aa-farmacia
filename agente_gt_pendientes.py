@@ -266,7 +266,7 @@ def main():
     print(f"  DIFERIBLE : {cnt.get('DIFERIBLE', 0):>3}")
 
     # Costo estimado Haiku: $0.80/MTok in, $4/MTok out, $0.08/MTok cache_read
-    costo = (total_in * 0.80 + total_out * 4.0 + total_cache_r * 0.08) / 1_000_000
+    costo = (total_in * 0.80 + total_out * 4.0 + total_cache_r * 0.08 + total_cache_w * 1.00) / 1_000_000
     print(f"\n  Tokens: in={total_in}  out={total_out}  "
           f"cache_r={total_cache_r}  cache_w={total_cache_w}")
     print(f"  Costo estimado: US${costo:.4f}")

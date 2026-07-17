@@ -86,22 +86,6 @@ def place_logo(ws, path, col_letter, target_h_px, col_off_px, row_off_px, from_r
                              ext=XDRPositiveSize2D(pixels_to_EMU(tw), pixels_to_EMU(th)))
     ws.add_image(img); return True
 
-def banda_encabezado(ws, ncols, titulo, subtitulo, h_logo_ss=62, h_logo_hosp=46, off_hosp=70, roff_hosp=22):
-    last=get_column_letter(ncols)
-    ws.row_dimensions[1].height=34; ws.row_dimensions[2].height=34
-    ws.merge_cells("A1:B2"); ws.merge_cells(f"{get_column_letter(ncols-1)}1:{last}2")
-    tf=get_column_letter(3); tl=get_column_letter(ncols-2)
-    ws.merge_cells(f"{tf}1:{tl}2"); t=ws[f"{tf}1"]; t.value=titulo
-    t.font=Font(name="Calibri",size=18,bold=True,color="FFFFFF"); t.alignment=Alignment(horizontal="center",vertical="center")
-    for rr in (1,2):
-        for cc in range(1,ncols+1): ws.cell(row=rr,column=cc).fill=PatternFill("solid",fgColor=NAVY)
-    if not place_logo(ws, LOGO_SS, "A", h_logo_ss, 12, 14):
-        c=ws["A1"]; c.value="[ LOGO SS ]"; c.font=Font(size=9,bold=True,color="FFFFFF"); c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
-    if not place_logo(ws, LOGO_HOSP, get_column_letter(ncols-1), h_logo_hosp, off_hosp, roff_hosp):
-        c=ws.cell(row=1,column=ncols-1); c.value="[ LOGO HOSP ]"; c.font=Font(size=9,bold=True,color="FFFFFF"); c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
-    ws.merge_cells(f"A3:{last}3"); s=ws["A3"]; s.value=subtitulo
-    s.font=Font(name="Calibri",size=11,bold=True,color=NAVY); s.alignment=Alignment(horizontal="center",vertical="center")
-    s.fill=PatternFill("solid",fgColor=LIGHT); ws.row_dimensions[3].height=20
 
 def bloque_qf(ws, fila_inicio, ancho_label="A:B", ancho_linea="C:F", sz=10):
     ws.merge_cells(f"A{fila_inicio}:F{fila_inicio}")
@@ -325,10 +309,13 @@ def _leer_csv(path):
 
 def cargar_historico(path):
     idx={}
-    if not path or not os.path.exists(path): return idx
+    if not path: return idx
+    if not os.path.exists(path):
+        print(f"  ⚠ --historico no encontrado: {path} (se continúa SIN cruce de identidad)")
+        return idx
     if path.lower().endswith(".json"):
         d=json.load(open(path, encoding="utf-8"))
-        filas=d.get("pacientes", d if isinstance(d,list) else d.get("registros",[]))
+        filas = d if isinstance(d,list) else d.get("pacientes", d.get("registros",[]))
         for r in filas:
             run=norm_run(r.get("run") or r.get("rut") or ""); nom=norm_nombre(r.get("nombre") or r.get("paciente") or "")
             if run and nom: idx.setdefault(run,set()).add(nom)
@@ -367,7 +354,10 @@ def cargar_sidra(path):
     """Lee el SIDRA una sola vez y devuelve (idx_identidad, mapa_refrigerados).
        idx_identidad: run_normalizado -> set(nombres).  mapa_refrigerados: n_receta -> 'Insulina X, Insulina Y'."""
     idx={}; refri={}
-    if not path or not os.path.exists(path): return idx, refri
+    if not path: return idx, refri
+    if not os.path.exists(path):
+        print(f"  ⚠ --historico no encontrado: {path} (se continúa SIN cruce de identidad)")
+        return idx, refri
     if path.lower().endswith(".json"):
         return cargar_historico(path), {}
     REC={"numeroreceta","nreceta","nroreceta","receta"}
@@ -551,7 +541,7 @@ def to_pdf(path, outdir):
                            check=False, capture_output=True, timeout=120)
         if os.path.exists(pdf_path):
             _forzar_carta(pdf_path)
-            return
+            return True
     except FileNotFoundError:
         pass
     except Exception as e:
@@ -568,10 +558,11 @@ def to_pdf(path, outdir):
         xl.Quit()
         if os.path.exists(pdf_path):
             _forzar_carta(pdf_path)
-            return
+            return True
     except Exception as e:
         print(f"  (Excel win32com falló: {e})")
     print(f"  (PDF omitido — sin LibreOffice ni Excel disponible)")
+    return False
 
 FECHA="(sin fecha)"
 
@@ -591,7 +582,7 @@ def main():
     origen=data.get("origen","Farmacia Hospital de Pitrufquén")
     os.makedirs(a.salida, exist_ok=True)
     idx_ref, refri_map = cargar_sidra(a.historico)   # identidad + refrigerados, en una sola lectura
-    hist_on=bool(a.historico)
+    hist_on=bool(a.historico) and os.path.exists(a.historico)
     if refri_map:
         n_ref=sum(1 for g in data["registros"] if g["receta"] in refri_map)
         print(f"Refrigerados en SIDRA (activan letrero): {n_ref} recetas — la columna Refrigerados de la planilla solo se llena con datos manuscritos")
@@ -624,10 +615,13 @@ def main():
         le=os.path.join(a.salida, f"{slug(destino)}_Letrero.xlsx"); letrero(destino, lleva, le)
         # Letrero: solo PDF (xlsx temporal se elimina)
         if not a.no_pdf:
-            to_pdf(le, a.salida)
-            try: os.remove(le)
-            except OSError: pass
-            archivos_dest.append(f"{slug(destino)}_Letrero.pdf")
+            if to_pdf(le, a.salida):
+                try: os.remove(le)
+                except OSError: pass
+                archivos_dest.append(f"{slug(destino)}_Letrero.pdf")
+            else:
+                archivos_dest.append(os.path.basename(le))
+                print(f"  (Letrero: PDF no generado, se conserva {os.path.basename(le)})")
         else:
             archivos_dest.append(os.path.basename(le))
         resumen=f"{len(regs_norm)} normales" + (f" + {len(regs_ctrl)} controlados" if regs_ctrl else "")

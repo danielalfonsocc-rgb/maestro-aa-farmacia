@@ -125,7 +125,6 @@ def _df() -> pd.DataFrame:
     ).str.strip().str.title()
     rec["_run_prof"] = rec["RUN Profesional"].fillna("").str.strip()
     rec["_esp"]      = rec["Especialidad"].fillna("").str.strip()
-    rec["_est"]      = est
     rec["_cant_e"]   = pd.to_numeric(rec["Cantidad Entregada"], errors="coerce").fillna(0)
     rec["_cant_r"]   = pd.to_numeric(rec["Cantidad Recetada"],  errors="coerce").fillna(0)
 
@@ -149,7 +148,6 @@ def _nivel_evento(sub: pd.DataFrame) -> pd.DataFrame:
 
     g = sub.groupby(["RUN", "_med", "_run_prof", "_fecha"]).agg(
         paciente  = ("_paciente", _primero),
-        med_nombre= ("Prescripción", _primero),
         cuotas    = ("Periodo", parse_cuotas),
         medico    = ("_medico", _primero),
         esp       = ("_esp", _primero),
@@ -171,8 +169,9 @@ def tool_cargar_recetas_dia(fecha: str) -> dict:
     dia  = rec[rec["_fecha"].dt.date == tgt.date()]
 
     if dia.empty:
-        return {"fecha": fecha, "n_lineas": 0, "n_pacientes": 0,
-                "n_medicamentos_distintos": 0, "top_medicamentos": [],
+        return {"fecha": fecha, "n_lineas_csv": 0, "n_eventos_prescripcion": 0,
+                "n_pacientes": 0, "n_medicamentos_distintos": 0,
+                "top_medicamentos": [],
                 "aviso": "No hay recetas para esta fecha en los CSV disponibles."}
 
     evts = _nivel_evento(dia)

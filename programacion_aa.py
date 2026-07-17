@@ -60,7 +60,7 @@ from openpyxl.utils import get_column_letter
 WORK_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, WORK_DIR)
 from utils_aa import norm_erp, HOMOLOGACION, setup_stdout  # noqa: E402
-from pedido_fusion import _feriados, _dias_ciclo, CICLO_INICIO  # noqa: E402
+from pedido_fusion import _feriados, _dias_ciclo  # noqa: E402
 
 setup_stdout()
 

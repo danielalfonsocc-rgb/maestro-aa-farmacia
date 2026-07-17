@@ -224,6 +224,13 @@ HDRS1 = [
 ]
 
 def calc_h1(df_farm, fe_map, dias_ef, todos=False, rep_h2_map=None):
+    return [x['v'] for x in _calc_h1_rows(df_farm, fe_map, dias_ef, todos, rep_h2_map)]
+
+
+def _calc_h1_rows(df_farm, fe_map, dias_ef, todos=False, rep_h2_map=None):
+    """Filas completas de la hoja Farm_Bod, incluyendo campos internos (p.ej.
+    '_sbod') que calc_h1() no expone en su tupla pública 'v' pero que otras
+    salidas (pedido_fusion_simple.py) sí necesitan."""
     rep_h2_map = rep_h2_map or {}
     rows = []
     for _, r in df_farm.iterrows():
@@ -277,11 +284,11 @@ def calc_h1(df_farm, fe_map, dias_ef, todos=False, rep_h2_map=None):
 
         rows.append({
             'v': (med, crit, sfarm, cob_actual, round(cdl, 1), ud, accion1, accion2),
-            '_nv': nv, '_ud': ud,
+            '_nv': nv, '_ud': ud, '_sbod': sbod,
         })
 
     rows.sort(key=lambda x: x['v'][0])
-    return [x['v'] for x in rows]
+    return rows
 
 
 def write_h1(ws, rows, dias_ef, hoy, semana):

@@ -97,16 +97,6 @@ a { color:#0F766E; }                     /* teal = enlace/acción */
 .t-crit3 { border-left-color:#F59E0B; }
 .t-ok    { border-left-color:#16A34A; }
 
-/* ── Bloque-med (pestaña Buscar) — blanco, riel de estado ─────── */
-.bloque-med {
-    background:#fff; border:1px solid #EEF0F4; border-left:5px solid #94A3B8;
-    padding:16px 20px; border-radius:14px; margin-bottom:10px;
-    box-shadow:0 1px 2px rgba(16,24,40,.04);
-}
-.crit-1  { border-left-color:#DC2626; }
-.crit-2  { border-left-color:#EA580C; }
-.crit-3  { border-left-color:#F59E0B; }
-.crit-ok { border-left-color:#16A34A; }
 
 /* ── Números y etiquetas ──────────────────────────────────────── */
 .num-grande { font-size:2.05rem; font-weight:800; color:#111827; line-height:1; }
@@ -431,11 +421,6 @@ with st.sidebar:
     st.info(f"📅 {hoy.strftime('%d/%m/%Y')}  ·  Semana **S{semana}**")
 
     st.markdown("---")
-    n_ped = len(st.session_state.get('pedido', {}))
-    if n_ped:
-        st.markdown(f"🛒 **{n_ped} medicamento{'s' if n_ped>1 else ''} en pedido**")
-    else:
-        st.caption("Tu pedido aparece en la pestaña 🔍 Buscar")
 
 # ─── Datos ───────────────────────────────────────────────────────────────────
 df_stock    = datos['stock']
@@ -483,8 +468,6 @@ for _, _r in df_bod.iterrows():
     _fe     = int(fe_map.get(_med, 1)) or 1
     rep_h2_map[_med] = _ceil_fe(max(0, _req_ciclo - (_sbod + _sfarm)), _fe)
 
-if 'pedido' not in st.session_state:
-    st.session_state.pedido = {}
 
 # ═══════════════════════════════════════════════════════════════════════
 # ENCABEZADO DE MARCA + LEYENDA  (visible sobre todas las pestañas)

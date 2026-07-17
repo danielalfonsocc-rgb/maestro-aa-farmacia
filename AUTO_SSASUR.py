@@ -733,6 +733,12 @@ async def main():
                     print(f"  Bloque {fi} → {ff}  [{'completo → sella' if es_completo else 'parcial'}]")
                     try:
                         csv = await descargar_sabana(page, fi, ff)
+                        cabecera = csv.lstrip()[:200].lower()
+                        if "<html" in cabecera or "<!doctype" in cabecera or "iniciar sesión" in cabecera:
+                            print(f"    [ERROR] Bloque {fi}→{ff}: la respuesta parece ser la página de "
+                                  f"login (sesión expirada) — NO se guarda ni se sella. Reintenta la corrida.")
+                            bstart = bend + timedelta(days=1)
+                            continue
                         n_filas = max(sum(1 for l in csv.splitlines() if l.strip()) - 1, 0)
                         if n_filas > 0 or es_completo:
                             # Si el bloque está completo (30 días ya pasaron) se sella aunque
