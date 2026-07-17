@@ -205,6 +205,7 @@ def _leer(maestro):
         'farm'    : 'Pedido_Farm_Bodega',
         'bod'     : 'Pedido_Repos_Bodega',
         'dialmed' : 'Dialisis_Medicamentos',
+        'falt30'  : 'Faltantes_Absolutos_30D',
     }.items()}
 
 # ─────────────── Hoja 1: Farmacia AA → Bodega AA ────────────────────────────
@@ -512,6 +513,78 @@ def write_h3(ws, rows, hoy, semana, es_semana_pedido):
     ws.page_setup.orientation = 'landscape'
 
 
+# ─────────────── Hoja 4: Faltantes Absolutos AA (30 días) ──────────────────
+
+HDRS4 = [
+    ('Medicamento',              44),
+    ('Criticidad',               34),
+    ('Pacientes Afectados',      15),
+    ('Recetas',                  10),
+    ('Faltante (ud)',            13),
+    ('Stock Bod. Fármacos',      16),
+    ('Acción',                   50),
+]
+
+def calc_h4(df_falt30):
+    """Filas ya vienen filtradas y agregadas desde maestro_aa.py (hoja
+    Faltantes_Absolutos_30D): prescripción vigente de los últimos 30 días en
+    el mostrador de Atención Abierta con Stock Farm.AA + Bod.AA = 0 (quiebre
+    real, no solo demanda pendiente cubierta por stock existente)."""
+    if df_falt30 is None or not len(df_falt30):
+        return []
+    rows = []
+    for _, r in df_falt30.iterrows():
+        med    = str(r.get('Medicamento', '')).strip()
+        crit   = str(r.get('Criticidad', ''))
+        pax    = int(_n(r.get('Pacientes_Afectados', 0)))
+        nrec   = int(_n(r.get('N_Recetas', 0)))
+        falt   = int(_n(r.get('Faltante_Neto', 0)))
+        sbf    = int(_n(r.get('Stock_BODEGA_FARMACOS', 0)))
+        accion = str(r.get('Accion_Sugerida', ''))
+        rows.append({
+            'v': (med, crit, pax, nrec, falt, sbf, accion),
+            '_nv': _nivel(crit),
+        })
+    rows.sort(key=lambda x: (x['_nv'], -x['v'][2]))
+    return [x['v'] for x in rows]
+
+
+def write_h4(ws, rows, hoy):
+    _titulo(ws,
+        f'FALTANTES ABSOLUTOS AT ABIERTA — últimos 30 días  ·  {hoy.strftime("%d/%m/%Y")}',
+        len(HDRS4))
+    _subtit(ws,
+        'Medicamentos con prescripción vigente (PENDIENTE/SOLICITADO) de los últimos 30 días en '
+        'el mostrador de Atención Abierta que NO se ha podido despachar por quiebre real de stock '
+        '(Stock Farmacia AA + Bodega AA = 0 en este momento) | Faltante = unidades pendientes de '
+        'entrega | Stock Bod. Fármacos indica si hay respaldo para traspaso o si se requiere compra '
+        'urgente',
+        len(HDRS4), height=48)
+    _hdr(ws, 3, HDRS4)
+    for i, vals in enumerate(rows, 4):
+        _fila_crit(ws, i, vals, vals[1], {2, 3, 4, 5})
+        ac = str(vals[6])
+        if 'COMPRA URGENTE' in ac:
+            c = ws.cell(i, 7)
+            c.fill = _pfill('FFDAD6')
+            c.font = Font(name='Arial', size=10, color='9B1C1C', bold=True)
+        elif 'TRASPASAR' in ac:
+            c = ws.cell(i, 7)
+            c.fill = _pfill('F0FDF4')
+            c.font = Font(name='Arial', size=10, color='166534')
+    ws.freeze_panes = 'A4'
+    if rows:
+        last = 3 + len(rows)
+        ws.auto_filter.ref = f'A3:{get_column_letter(len(HDRS4))}{last}'
+        _totals(ws, 4, last, len(HDRS4), {3, 4, 5})
+        ws.print_area = f'A1:{get_column_letter(len(HDRS4))}{last + 1}'
+    else:
+        ws.cell(4, 1, 'Sin faltantes absolutos en los últimos 30 días.')
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
+    ws.page_setup.orientation = 'landscape'
+
+
 # ─────────────── main ────────────────────────────────────────────────────────
 
 def main():
@@ -557,12 +630,14 @@ def main():
     # usuario en la nota de la hoja en vez de vaciarla).
     es_semana_pedido = args.forzar_dialisis or sem == 3
     r3 = calc_h3(data['dialmed'], fe_map, rep_h2_map)
+    r4 = calc_h4(data['falt30'])
 
     wb = openpyxl.Workbook()
     ws1 = wb.active; ws1.title = 'Farm_Bod'
     write_h1(ws1,                             r1, def_, hoy, sem)
     write_h2(wb.create_sheet('Bod_Farmacos'), r2, hoy, sem, dc)
     write_h3(wb.create_sheet('Dialisis'),     r3, hoy, sem, es_semana_pedido)
+    write_h4(wb.create_sheet('Faltantes_AA'), r4, hoy)
 
     sal = os.path.join(WORK_DIR,
         f'Pedido_Fusion_AA_{hoy.strftime("%Y%m%d_%H%M")}.xlsx')
@@ -578,6 +653,7 @@ def main():
     print(f'Bod->Farmacos   : {len(r2)} meds ({n2} con reposicion)')
     print(f'Dialisis        : {len(r3)} meds ({n3} con faltante)'
           f'{"  [S3 — semana de pedido]" if es_semana_pedido else "  [solo consulta, pedido real en S3]"}')
+    print(f'Faltantes AA 30d: {len(r4)} meds sin poder despachar en Atencion Abierta')
     print(f'\nExcel: {os.path.basename(sal)}')
 
 
