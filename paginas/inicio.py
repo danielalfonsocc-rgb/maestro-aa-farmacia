@@ -101,7 +101,7 @@ MODULOS = [
      "Pedido a Bodega, faltantes, SGLI y diálisis en un dashboard.",
      _status_pedidos),
     ("paginas/pedidos_fusionados.py", "c-indigo", "🔗", "Pedidos Fusionados",
-     "Pedido consolidado del día: Farm↔Bodega + Bodega↔Fármacos + diálisis en un solo Excel.",
+     "Pedido consolidado del día: Farm↔Bodega + Bodega↔Fármacos + diálisis + faltantes 30d en un solo Excel.",
      _status_fusion),
     ("paginas/centinela.py", "c-rose", "🩺", "Centinela",
      "Reporte semanal de medicamentos centinela — campaña de invierno, PDF listo para el MINSAL.",

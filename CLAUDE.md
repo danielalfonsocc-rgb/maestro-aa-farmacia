@@ -18,7 +18,7 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 | `auditoria_medicamento.py` | Auditoría clínica genérica: `--contiene NOMBRE --dosis X` |
 | `auditoria_duplicados_profunda.py` | Auditoría duplicados histórica con vigencia actual y propuestas IA |
 | `auditoria_prescripcion.py` | Pre-calcula `auditoria_prescripcion.json` (consumido por app_pedidos) |
-| `pedido_fusion.py` | Genera Pedido_Fusion_AA_<fecha>.xlsx (Farm_Bod + Bod_Farmacos + Dialisis) |
+| `pedido_fusion.py` | Genera Pedido_Fusion_AA_<fecha>.xlsx (Farm_Bod + Bod_Farmacos + Dialisis + Faltantes_AA) |
 | `programacion_aa.py` | Planilla ciclo Bodega AA: Cantidad Programada/Solicitada (reporte SSASUR) vs Stock Bodega AA vs Stock Real (conteo). `--aplicar-conteo` genera el Resumen final en `Programacion_AA\`. Sin IA |
 | `sgli_historico.py` | Planilla SGLI histórica — clasificación ABC-XYZ |
 | `centinela_reporte.py` | Reporte semanal centinela campaña invierno (PDF MINSAL) |

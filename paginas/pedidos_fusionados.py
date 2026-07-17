@@ -19,13 +19,20 @@ from aa_colors import crit_nivel
 st.set_page_config(page_title="Pedidos Fusionados — Maestro AA", page_icon="🔗",
                     layout="wide", initial_sidebar_state="expanded")
 inject_css()
-hero("🔗", "Pedidos Fusionados", "Pedido consolidado del día: Farm↔Bodega · Bodega↔Fármacos · Diálisis")
+hero("🔗", "Pedidos Fusionados", "Pedido consolidado del día: Farm↔Bodega · Bodega↔Fármacos · Diálisis · Faltantes 30d")
 
 SHEETS = [
     ("Farm_Bod", "📝 Farmacia AA → Bodega AA"),
     ("Bod_Farmacos", "🏭 Bodega AA → Bodega Fármacos"),
     ("Dialisis", "💉 Diálisis (solo S3)"),
+    ("Faltantes_AA", "⛔ Faltantes Absolutos (30d)"),
 ]
+
+# Columna a usar para la métrica "con pedido/reposición > 0" de cada hoja (por
+# posición, 0-based) — Faltantes_AA no tiene columna de pedido, así que usa
+# "Faltante (ud)" y una etiqueta propia en vez de la genérica.
+_COL_METRICA = {"Farm_Bod": 5, "Bod_Farmacos": 5, "Dialisis": 5, "Faltantes_AA": 4}
+_LABEL_METRICA = {"Faltantes_AA": "Con faltante > 0"}
 
 _BADGE_CRIT = {
     1: 'background-color:#FEF2F2;color:#B91C1C;font-weight:700',
@@ -48,7 +55,7 @@ def _estilo(df):
 
 with st.sidebar:
     st.markdown("## 🔗 Pedidos Fusionados")
-    st.caption("3 hojas en un solo Excel: pedido del día + reposición de bodega + diálisis.")
+    st.caption("4 hojas en un solo Excel: pedido del día + reposición de bodega + diálisis + faltantes absolutos 30d.")
     st.markdown("---")
     st.markdown("### Generar nuevo")
     forzar_dialisis = st.checkbox("Forzar hoja Diálisis", help="Incluir aunque no sea la 3ª semana del mes")
@@ -111,11 +118,12 @@ for (sheet, label), tab in zip(SHEETS, tabs):
             st.success("✅ Sin filas en esta hoja (nada pendiente).")
             continue
         n_pedido = 0
-        if len(df.columns) > 5:
-            ultima_col = df.columns[5]
+        col_idx = _COL_METRICA.get(sheet, 5)
+        if len(df.columns) > col_idx:
+            ultima_col = df.columns[col_idx]
             n_pedido = int(pd.to_numeric(df[ultima_col], errors="coerce").fillna(0).gt(0).sum())
         mcol1, mcol2 = st.columns(2)
         mcol1.metric("Medicamentos en la hoja", f"{len(df)}")
-        mcol2.metric("Con pedido/reposición > 0", f"{n_pedido}")
+        mcol2.metric(_LABEL_METRICA.get(sheet, "Con pedido/reposición > 0"), f"{n_pedido}")
         st.dataframe(_estilo(df), use_container_width=True, hide_index=True,
                      height=min(50 + len(df) * 35, 620))

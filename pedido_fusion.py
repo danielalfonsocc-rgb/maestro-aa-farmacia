@@ -2,7 +2,7 @@
 """
 pedido_fusion.py v2 — Planilla Simplificada de Pedidos AA
 ==========================================================
-Genera  Pedido_Fusion_AA_<fecha>.xlsx  con 3 hojas:
+Genera  Pedido_Fusion_AA_<fecha>.xlsx  con 4 hojas:
 
   1 "Farm_Bod"       Farmacia AA → Bodega AA
       Factor_Empaque = Unidades_Caja de SGLI_Estres (ICP CENABAST)
@@ -12,6 +12,8 @@ Genera  Pedido_Fusion_AA_<fecha>.xlsx  con 3 hojas:
       Consumo = Consumo_5D_Solo_Dialisis / 5 × 30 (días naturales)
       El pedido MENSUAL real solo se ejecuta en S3 (--forzar-dialisis marca
       la nota de "semana de pedido" fuera de S3, ya no oculta la hoja)
+  4 "Faltantes_AA"   Faltantes absolutos AT Abierta (últimos 30 días) — quiebre
+      real de stock (Farm.AA + Bod.AA = 0) con prescripción vigente pendiente
 
 Sin llamadas a IA — solo pandas + openpyxl.
 
@@ -589,7 +591,7 @@ def write_h4(ws, rows, hoy):
 
 def main():
     ap = argparse.ArgumentParser(
-        description='Planilla simplificada Pedidos AA — 3 hojas, sin IA.')
+        description='Planilla simplificada Pedidos AA — 4 hojas, sin IA.')
     ap.add_argument('--forzar-dialisis', action='store_true',
                     help='Genera hoja Diálisis aunque no sea S3')
     ap.add_argument('--todos', action='store_true',
