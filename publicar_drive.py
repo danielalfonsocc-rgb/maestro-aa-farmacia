@@ -16,7 +16,6 @@ Estructura en Drive:
                 Cruce_GT_Clasificacion.xlsx
     3 - Pedido Fusionado/     Pedido_Fusion_AA.xlsx
     4 - Auditoria Prescripcion/  Auditoria_Prescripcion_Resumen.xlsx
-    5 - Reposicion/           Reposicion_DiasHabiles_AA.xlsx
     6 - Centinela/<Sxx>/      centinela_Sxx.json + centinela_Sxx.pdf por semana
 
 Primera vez (requiere Google Cloud credentials.json):
@@ -24,7 +23,7 @@ Primera vez (requiere Google Cloud credentials.json):
 
 Uso normal (token ya generado):
   py publicar_drive.py           # sube todo
-  py publicar_drive.py --solo-app  --solo-gt  --solo-pedido  --solo-auditoria  --solo-rep  --solo-centinela
+  py publicar_drive.py --solo-app  --solo-gt  --solo-pedido  --solo-auditoria  --solo-centinela
 """
 import argparse, glob, hashlib, json, os, re, sys
 from datetime import datetime
@@ -44,7 +43,6 @@ SUB_APP     = "1 - App Pedidos"
 SUB_GT      = "2 - Gestion Territorial"
 SUB_PEDIDO  = "3 - Pedido Fusionado"
 SUB_AUDIT   = "4 - Auditoria Prescripcion"
-SUB_REP     = "5 - Reposicion"
 SUB_CENTINELA = "6 - Centinela"
 
 # IDs de carpetas ya creadas en Drive (evita duplicados en búsquedas)
@@ -308,16 +306,6 @@ def sync_auditoria(service, raiz_id, stats, cache=None):
         print("  Auditoria_Prescripcion_Resumen.xlsx: no encontrado, omitido")
 
 
-def sync_reposicion(service, raiz_id, stats, cache=None):
-    fid = _obtener_o_crear_carpeta(service, SUB_REP, raiz_id, cache)
-    src = _mas_reciente(os.path.join(WORK_DIR, "Reposicion_DiasHabiles_AA*.xlsx"))
-    if src:
-        r = _subir(service, src, fid, nuevo_nombre="Reposicion_DiasHabiles_AA.xlsx", stats=stats)
-        print(f"  Reposicion_DiasHabiles_AA.xlsx: {r}")
-    else:
-        print("  Reposicion_DiasHabiles_AA.xlsx: no encontrado, omitido")
-
-
 def sync_pedido(service, raiz_id, stats, cache=None):
     fid = _obtener_o_crear_carpeta(service, SUB_PEDIDO, raiz_id, cache)
     src = _mas_reciente(os.path.join(WORK_DIR, "Pedido_Fusion_AA*.xlsx"))
@@ -362,7 +350,6 @@ def main():
     ap.add_argument("--solo-gt",       action="store_true")
     ap.add_argument("--solo-pedido",   action="store_true")
     ap.add_argument("--solo-auditoria",action="store_true")
-    ap.add_argument("--solo-rep",      action="store_true")
     ap.add_argument("--solo-centinela",action="store_true")
     a = ap.parse_args()
 
@@ -386,7 +373,7 @@ def main():
     if NOMBRE_RAIZ in known:
         raiz_id = known[NOMBRE_RAIZ]
         # Pre-carga sub-carpetas fijas para evitar búsquedas API
-        for sub in (SUB_APP, SUB_GT, SUB_PEDIDO, SUB_AUDIT, SUB_REP, SUB_CENTINELA):
+        for sub in (SUB_APP, SUB_GT, SUB_PEDIDO, SUB_AUDIT, SUB_CENTINELA):
             if sub in known:
                 cache[(sub, raiz_id)] = known[sub]
         # Pre-carga carpetas de Historial + rangos si están en el JSON
@@ -404,7 +391,7 @@ def main():
 
     stats = {"ok": 0, "skip": 0, "fail": 0}
 
-    todos = not any([a.solo_app, a.solo_gt, a.solo_pedido, a.solo_auditoria, a.solo_rep, a.solo_centinela])
+    todos = not any([a.solo_app, a.solo_gt, a.solo_pedido, a.solo_auditoria, a.solo_centinela])
 
     print(f"\n[Drive] Subiendo a «{NOMBRE_RAIZ}» (id={raiz_id[:8]}…)")
     ts = datetime.now().strftime("%H:%M:%S")
@@ -425,10 +412,6 @@ def main():
     if todos or a.solo_auditoria:
         print(f"\n  ── {SUB_AUDIT} ──")
         sync_auditoria(svc, raiz_id, stats, cache)
-
-    if todos or a.solo_rep:
-        print(f"\n  ── {SUB_REP} ──")
-        sync_reposicion(svc, raiz_id, stats, cache)
 
     if todos or a.solo_centinela:
         print(f"\n  ── {SUB_CENTINELA} ──")

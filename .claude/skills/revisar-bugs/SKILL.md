@@ -69,7 +69,6 @@ ARCHIVOS_PRINCIPALES = [
     "AUTO_SSASUR.py",
     "app_pedidos.py",
     "sgli.py",
-    "reposicion_dias_habiles.py",
     "pedido_fusion.py",
     "agente_duplicados.py",
     "auditoria_duplicados_profunda.py",

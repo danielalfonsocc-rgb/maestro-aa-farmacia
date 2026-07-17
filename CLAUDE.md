@@ -10,7 +10,6 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 | `maestro_aa.py` | Consolidación principal → `Consolidado_AA_MAESTRO.xlsx` (14 hojas) |
 | `app_pedidos.py` | Dashboard Streamlit — pedidos, faltantes, alertas |
 | `sgli.py` | Motor SGLI: reposición basada en demanda (sin techo de capacidad) |
-| `reposicion_dias_habiles.py` | Reposición ajustada por feriados y Freq_Revision |
 | `utils_aa.py` | **Módulo compartido**: norm_erp, HOMOLOGACION (20 entradas), cargar_recetas_csv |
 | `cruce_gt.py` | Cruce con Guías de Tratamiento |
 | `recetas_cheque.py` | Formulario ISP recetas cheque (estupefacientes/psicotrópicos) — obligación legal |
@@ -20,6 +19,7 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 | `auditoria_duplicados_profunda.py` | Auditoría duplicados histórica con vigencia actual y propuestas IA |
 | `auditoria_prescripcion.py` | Pre-calcula `auditoria_prescripcion.json` (consumido por app_pedidos) |
 | `pedido_fusion.py` | Genera Pedido_Fusion_AA_<fecha>.xlsx (Farm_Bod + Bod_Farmacos + Dialisis) |
+| `programacion_aa.py` | Planilla ciclo Bodega AA: Cantidad Programada/Solicitada (reporte SSASUR) vs Stock Bodega AA vs Stock Real (conteo). `--aplicar-conteo` genera el Resumen final en `Programacion_AA\`. Sin IA |
 | `sgli_historico.py` | Planilla SGLI histórica — clasificación ABC-XYZ |
 | `centinela_reporte.py` | Reporte semanal centinela campaña invierno (PDF MINSAL) |
 | `AUTO_SSASUR.py` | Descarga automatizada SSASur (recetas + stock + GT) → dedup → Drive |
@@ -37,6 +37,7 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 - **RUTs**: nunca a la API. `agente_duplicados.py` anonimiza con SHA-256 antes de llamar a Claude.
 - **GT raw downloads**: van a `../04_Farmacia_Gestion_Territorial/` (carpeta hermana del repo). Nombrado: `reporteGestionTerritorial_<desde>_<hasta>.xlsx`. `dedup_recetas.py` busca ahí.
 - **Drive**: NO subir CSV sábanas ni stock xlsx (RUTs / Ley 19.628). Carpeta raíz `Farmacia AA` en Drive — IDs fijos en `_drive_folders.json`. Para activar: `SETUP_DRIVE.bat`.
+- **Rutas fuera del repo (otra máquina)**: `RCH_DIR` y `PLANTILLA_BLANCO_RCH` (carpeta/plantilla del formulario ISP de Recetas Cheque) viven en `utils_aa.py`, configurables por variable de entorno — `MAESTRO_RCH_DIR` y `MAESTRO_PLANTILLA_RCH` — para no hardcodear la ruta de la QF al correr esto en otro equipo. Default = la ruta actual de esta máquina.
 
 ## Economía de modelos (OBLIGATORIO respetar)
 
@@ -54,7 +55,7 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 - Ajustar CSS/layout Streamlit
 - Bugs predecibles (KeyError, dtype mismatch, merge incorrecto)
 - Scripts nuevos similares a los existentes (nueva auditoría, nuevo cruce)
-- Ajustar umbrales o fórmulas en `sgli.py` o `reposicion_dias_habiles.py`
+- Ajustar umbrales o fórmulas en `sgli.py`
 - Generación de nuevas hojas Excel con ReportLab/openpyxl
 
 ### Opus — solo razonamiento complejo

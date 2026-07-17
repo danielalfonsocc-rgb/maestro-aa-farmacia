@@ -17,10 +17,9 @@ sin entrar a la carpeta del repositorio.
     ├── 3 - Recetas Cheque\     SOLO un acceso directo a la carpeta local (datos de
     │                           pacientes NO se copian a la nube de OneDrive)
     ├── 4 - Auditoria Prescripcion\  Auditoria_Prescripcion_Resumen.xlsx (legible)
-    ├── 5 - Reposicion\         Reposicion_DiasHabiles_AA.xlsx (plan días hábiles)
-    ├── 6 - Pedido Fusionado\   Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
-    ├── 7 - Centinela\          Centinela_Reportes\<Sxx>\ (json + pdf) por semana
-    └── 8 - Auditoria Duplicados\  Accesos a Agente Duplicados IA + Auditoria Profunda
+    ├── 5 - Pedido Fusionado\   Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
+    ├── 6 - Centinela\          Centinela_Reportes\<Sxx>\ (json + pdf) por semana
+    └── 7 - Auditoria Duplicados\  Accesos a Agente Duplicados IA + Auditoria Profunda
                                     (corren a demanda; el Excel con nombres de pacientes
                                     NO se copia aquí — queda solo en la carpeta local)
 
@@ -34,7 +33,6 @@ Uso:
     py publicar_escritorio.py --gt           # solo Gestion Territorial (out_gt)
     py publicar_escritorio.py --rch          # solo el acceso directo de recetas cheque
     py publicar_escritorio.py --auditoria
-    py publicar_escritorio.py --reposicion   # solo Reposicion_DiasHabiles_AA.xlsx
     py publicar_escritorio.py --pedido       # solo Pedido_Fusion_AA.xlsx
     py publicar_escritorio.py --centinela    # solo Centinela_Reportes\
     py publicar_escritorio.py --duplicados   # solo accesos de Agente/Auditoria Duplicados
@@ -77,10 +75,9 @@ SUB_APP   = "1 - App Pedidos"
 SUB_GT    = "2 - Gestion Territorial"
 SUB_RCH    = "3 - Recetas Cheque"
 SUB_AUDIT  = "4 - Auditoria Prescripcion"
-SUB_REP    = "5 - Reposicion"
-SUB_PEDIDO = "6 - Pedido Fusionado"
-SUB_CENTINELA = "7 - Centinela"
-SUB_DUP    = "8 - Auditoria Duplicados"
+SUB_PEDIDO = "5 - Pedido Fusionado"
+SUB_CENTINELA = "6 - Centinela"
+SUB_DUP    = "7 - Auditoria Duplicados"
 
 # Iconos para distinguir los accesos directos (shell32.dll, índices clásicos).
 _SHELL32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "shell32.dll")
@@ -325,16 +322,6 @@ def sync_rch():
         pass
 
 
-def sync_reposicion():
-    dst = os.path.join(BASE, SUB_REP)
-    src = _mas_reciente(os.path.join(WORK_DIR, "Reposicion_DiasHabiles_AA*.xlsx"))
-    if not src:
-        REP.say("[Reposición] (aún no se ha generado el plan — corre reposicion_dias_habiles.py)")
-        return
-    _copiar(src, dst, nuevo_nombre="Reposicion_DiasHabiles_AA.xlsx")
-    REP.say(f"[Reposición] {os.path.basename(src)} → «{SUB_REP}»")
-
-
 def sync_pedido():
     dst = os.path.join(BASE, SUB_PEDIDO)
     src = _mas_reciente(os.path.join(WORK_DIR, "Pedido_Fusion_AA*.xlsx"))
@@ -528,10 +515,9 @@ cada vez que corres cada proceso.
   2 - Gestion Territorial  Lo del ÚLTIMO rango queda al frente; lo anterior, en Historial\\
   3 - Recetas Cheque       Acceso directo a la carpeta LOCAL (no sube datos de pacientes a la nube)
   4 - Auditoria Prescripcion  Auditoria_Prescripcion_Resumen.xlsx (ordena/filtra en Excel)
-  5 - Reposicion           Reposicion_DiasHabiles_AA.xlsx (plan días hábiles con feriados)
-  6 - Pedido Fusionado     Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
-  7 - Centinela             Reportes semanales (json + pdf) por semana epidemiológica
-  8 - Auditoria Duplicados Accesos a Agente Duplicados IA y Auditoria Profunda (a demanda,
+  5 - Pedido Fusionado     Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
+  6 - Centinela             Reportes semanales (json + pdf) por semana epidemiológica
+  7 - Auditoria Duplicados Accesos a Agente Duplicados IA y Auditoria Profunda (a demanda,
                             con su propio LEEME.txt explicando cada uno). El Excel con
                             nombres de pacientes NO se copia aquí (Escritorio = OneDrive).
 
@@ -589,7 +575,7 @@ _ACCESOS = [
 
 def crear_estructura(forzar_lnk=False):
     """Crea carpetas, LEEME y (si faltan o forzar_lnk) los accesos directos."""
-    for sub in (SUB_APP, SUB_GT, SUB_RCH, SUB_AUDIT, SUB_REP, SUB_PEDIDO, SUB_CENTINELA, SUB_DUP):
+    for sub in (SUB_APP, SUB_GT, SUB_RCH, SUB_AUDIT, SUB_PEDIDO, SUB_CENTINELA, SUB_DUP):
         os.makedirs(os.path.join(BASE, sub), exist_ok=True)
     try:
         with open(os.path.join(BASE, "LEEME.txt"), "w", encoding="utf-8") as fh:
@@ -637,7 +623,7 @@ def main():
         print("\nListo: carpetas y accesos directos actualizados.")
         return
 
-    selectivo = args & {"--app", "--gt", "--rch", "--auditoria", "--reposicion",
+    selectivo = args & {"--app", "--gt", "--rch", "--auditoria",
                          "--pedido", "--centinela", "--duplicados"}
     todo = not selectivo
 
@@ -649,8 +635,6 @@ def main():
         sync_rch()
     if todo or "--auditoria" in args:
         sync_auditoria()
-    if todo or "--reposicion" in args:
-        sync_reposicion()
     if todo or "--pedido" in args:
         sync_pedido()
     if todo or "--centinela" in args:

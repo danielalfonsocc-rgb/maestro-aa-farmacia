@@ -217,38 +217,7 @@ GLOSARIO = [
          "Cap_Max es informativo; no limita T. La alerta avisa que hace falta ampliar el espacio físico."),
     ]),
 
-    ("6. Reposición por Días Hábiles", [
-        ("Días Hábiles",
-         "Días de la semana en que opera la farmacia (lunes a viernes), excluyendo feriados "
-         "nacionales y regionales de Chile. El archivo feriados_chile.csv define el calendario.",
-         None,
-         "La farmacia NO dispensa fines de semana (< 0.2% del consumo histórico). "
-         "El blindaje es la reapertura del lunes, no el consumo sáb/dom."),
-        ("IR en Reposición por Días Hábiles",
-         "El módulo reposicion_dias_habiles.py usa la Freq_Revision per-medicamento "
-         "(de la hoja SGLI_Estres) para calcular el ROP de cada medicamento. Si Freq_Revision "
-         "no está disponible, recurre al IR global como fallback.",
-         "IR_efectivo = Freq_Revision (si disponible) o Dias_Reposicion_IR (IR global)", None),
-        ("ROP (Re-Order Point / Punto de Reorden)",
-         "Nivel de stock de Farmacia en el que se debe iniciar la reposición. "
-         "Desde la incorporación de Freq_Revision, el ROP es per-medicamento y equivale "
-         "al Stock_Minimo de la hoja SGLI_Estres.",
-         "ROP = ⌈CDL × Freq_Revision⌉ + ⌈CDL × SS_dias⌉",
-         "SS_dias = 1 (reapertura lunes) + 1 extra si criticidad 1-2. "
-         "El ROP y el Stock_Minimo de SGLI_Estres usan la misma fórmula."),
-        ("SS (Stock de Seguridad)",
-         "Colchón de unidades destinado a blindar la reapertura del lunes y absorber variaciones "
-         "imprevistas de demanda.",
-         "SS = ⌈CDL × SS_dias⌉   con SS_dias = 1 (normal) o 2 (criticidad 1-2)", None),
-        ("Próxima Reposición",
-         "Fecha del primer día hábil en que el stock proyectado cae al ROP, avanzando por el "
-         "calendario de días hábiles (saltando fines de semana y feriados). "
-         "Calculada por reposicion_dias_habiles.py.",
-         None,
-         "La columna 'Cubre_Cierre' indica si el stock actual aguanta hasta después del próximo cierre."),
-    ]),
-
-    ("7. Auditorías de Recetas", [
+    ("6. Auditorías de Recetas", [
         ("Receta",
          "Documento que autoriza la dispensación de un medicamento. En SSASur, las recetas "
          "crónicas anuales generan un número de receta por cuota mensual.",
@@ -283,7 +252,7 @@ GLOSARIO = [
          None),
     ]),
 
-    ("8. Centinela de Medicamentos (Campaña Invierno)", [
+    ("7. Centinela de Medicamentos (Campaña Invierno)", [
         ("Centinela",
          "Seguimiento semanal de un grupo reducido de medicamentos críticos durante la campaña "
          "de invierno (aumento de IRA/ERA). Genera un informe PDF estructurado para reportar "
@@ -300,7 +269,7 @@ GLOSARIO = [
          None, None),
     ]),
 
-    ("9. Módulos Compartidos y Utilidades", [
+    ("8. Módulos Compartidos y Utilidades", [
         ("utils_aa.py",
          "Módulo de utilidades compartidas del proyecto. Contiene norm_erp (normalización de "
          "nombres), HOMOLOGACION (tabla canónica de 20 entradas), cargar_recetas_csv y "
@@ -330,7 +299,7 @@ GLOSARIO = [
          "Paleta tinta-económica: crítico = rosa pastel + texto vino. Sin bandas oscuras."),
     ]),
 
-    ("10. Fuentes de Datos y Archivos", [
+    ("9. Fuentes de Datos y Archivos", [
         ("SSASur",
          "Servicio de Salud Araucanía Sur. Plataforma institucional desde donde se descarga "
          "el stock (reporte_de_stock) y las recetas (informe_completo_recetas) vía AUTO_SSASUR.py. "
@@ -351,7 +320,7 @@ GLOSARIO = [
          None, None),
         ("feriados_chile.csv",
          "Calendario de feriados nacionales y regionales de Chile. Usado por "
-         "reposicion_dias_habiles.py para calcular días hábiles reales. "
+         "pedido_fusion.py y sgli_historico.py para calcular días hábiles reales. "
          "Debe mantenerse actualizado anualmente.",
          "Columnas: Fecha (ISO) ; Nombre ; Confianza", None),
         ("SGLI_Estres (hoja del Consolidado)",
@@ -366,7 +335,7 @@ GLOSARIO = [
          None, None),
     ]),
 
-    ("11. Gestión Territorial (GT)", [
+    ("10. Gestión Territorial (GT)", [
         ("GT (Gestión Territorial)",
          "Proceso de distribución de medicamentos desde el Hospital de Pitrufquén hacia los "
          "establecimientos de la red Araucanía Sur (CESFAM, postas, hospitales del nodo).",
@@ -381,7 +350,7 @@ GLOSARIO = [
          "py cruce_gt.py", None),
     ]),
 
-    ("12. Constantes del Sistema", [
+    ("11. Constantes del Sistema", [
         ("FACTOR_CARGA_DEFAULT (1.15)",
          "Valor por defecto del factor de carga: 15% de margen sobre la demanda histórica media. "
          "Usado en todos los cálculos SGLI baseline.",
