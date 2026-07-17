@@ -314,6 +314,29 @@ def _subir_gt_rango(service, rango_dir, parent_fid, stats, cache, prefijo_log):
     return sorted(estabs_vistos)
 
 
+_GT_SYNC_STATE_FILE = os.path.join(WORK_DIR, "_gt_historial_sync.json")
+
+
+def _cargar_gt_sincronizados():
+    """Nombres de carpetas out_gt/<rango> que YA quedaron completas en Drive
+    Historial en una corrida anterior. Un rango es inmutable una vez que su
+    ventana de fechas dejó de ser la más nueva (AUTO_SSASUR no vuelve a
+    generar el mismo rango dos veces en uso normal), así que no hace falta
+    volver a listarlo ni re-subir sus archivos nunca más."""
+    if os.path.exists(_GT_SYNC_STATE_FILE):
+        try:
+            with open(_GT_SYNC_STATE_FILE, encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception:
+            pass
+    return set()
+
+
+def _guardar_gt_sincronizados(nombres):
+    with open(_GT_SYNC_STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(nombres), f, ensure_ascii=False, indent=2)
+
+
 def sync_gt(service, raiz_id, stats, cache):
     src_base = os.path.join(WORK_DIR, "out_gt")
     if not os.path.isdir(src_base):
@@ -335,18 +358,44 @@ def sync_gt(service, raiz_id, stats, cache):
     fid_gt   = _obtener_o_crear_carpeta(service, SUB_GT,      raiz_id, cache)
     fid_hist = _obtener_o_crear_carpeta(service, "Historial", fid_gt,  cache)
 
-    # ── Historial: un subfolder por rango, y dentro uno por establecimiento ──
-    for d in rangos:
-        fecha_rango = _fecha_fin_rango(os.path.basename(d)) or \
+    # ── Historial: un subfolder por rango. Los rangos ANTERIORES al último ya
+    # quedaron con su ventana de fechas fija — si ya se subieron completos en
+    # una corrida previa, se SALTAN enteros (ni se listan sus archivos) en vez
+    # de re-subirlos. Antes esto no pasaba: como los .xlsx se convierten a
+    # Google Sheets nativo (sin md5Checksum), el dedup por hash no aplicaba y
+    # CADA corrida de AUTO_SSASUR volvía a re-subir TODO el histórico
+    # acumulado (9 rangos y creciendo, cada uno traslapando ~13 de sus 14 días
+    # con el anterior). El último rango (ventana viva, todavía puede cambiar)
+    # se sigue subiendo siempre.
+    sincronizados = _cargar_gt_sincronizados()
+    nuevos_sincronizados = set(sincronizados)
+    anteriores, ultimo = rangos[:-1], rangos[-1]
+    saltados = 0
+    for d in anteriores:
+        nombre_rango = os.path.basename(d)
+        if nombre_rango in sincronizados:
+            saltados += 1
+            continue
+        fecha_rango = _fecha_fin_rango(nombre_rango) or \
                       datetime.fromtimestamp(os.path.getmtime(d)).strftime("%d-%m-%Y")
         fid_r = _obtener_o_crear_carpeta(service, fecha_rango, fid_hist, cache)
+        fails_antes = stats["fail"]
         _subir_gt_rango(service, d, fid_r, stats, cache,
                         prefijo_log=f"Historial/{fecha_rango}")
+        if stats["fail"] == fails_antes:
+            nuevos_sincronizados.add(nombre_rango)
+    if saltados:
+        print(f"  [GT] {saltados} rango(s) histórico(s) ya sincronizados — omitidos")
 
-    # ── Frente: último rango organizado por establecimiento bajo GT raíz ──
-    ultimo = rangos[-1]
     fecha_ultimo = _fecha_fin_rango(os.path.basename(ultimo)) or \
                    datetime.fromtimestamp(os.path.getmtime(ultimo)).strftime("%d-%m-%Y")
+    fid_r_ultimo = _obtener_o_crear_carpeta(service, fecha_ultimo, fid_hist, cache)
+    _subir_gt_rango(service, ultimo, fid_r_ultimo, stats, cache,
+                    prefijo_log=f"Historial/{fecha_ultimo}")
+
+    _guardar_gt_sincronizados(nuevos_sincronizados)
+
+    # ── Frente: último rango organizado por establecimiento bajo GT raíz ──
     estabs = _subir_gt_rango(service, ultimo, fid_gt, stats, cache,
                              prefijo_log="frente")
     estabs_str = ", ".join(estabs) if estabs else "(ninguno)"
