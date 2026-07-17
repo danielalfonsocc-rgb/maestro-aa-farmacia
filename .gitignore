@@ -1,6 +1,7 @@
 # ── Datos fuente del ERP (se descargan con AUTO_SSASUR.bat, no van al repo) ──
 informe_completo_recetas*.csv
 reporte_de_stock_*.xlsx
+cantidad_de_productos_consumidos_en_centro_de_costo_farmacia*.xlsx
 
 # ── Sesión SSASUR (contiene cookies/credenciales — NUNCA subir) ──────────────
 .ssasur_session.json
@@ -38,6 +39,7 @@ token_sheets.json
 out_gt/
 Documentos_Generados/
 Centinela_Reportes/
+Programacion_AA/
 _archivo/
 Auditoria_Duplicados_Profunda*.xlsx
 Pedido_Fusion_AA_*.xlsx

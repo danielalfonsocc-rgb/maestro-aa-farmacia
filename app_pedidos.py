@@ -11,7 +11,6 @@ from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 from aa_colors import CRIT_FILL_HEX, crit_fill, crit_nivel, crit_hex, soften, darken
 from sgli import calcular_sgli, to_markdown, FACTOR_CARGA_DEFAULT
-from reposicion_dias_habiles import calcular_reposicion, cargar_feriados
 # Reutiliza el mismo motor de "dias restantes" de pedido_fusion.py para que
 # las pestanas de pedido de la app coincidan con el Excel (en vez de mostrar
 # siempre la ventana fija de 5d/10d sin importar el dia de la semana/ciclo).
@@ -359,6 +358,13 @@ def _leer_maestro(ruta, mtime):
     bod      = pd.read_excel(ruta, sheet_name='Pedido_Repos_Bodega',  engine='openpyxl')
     falt     = pd.read_excel(ruta, sheet_name='Faltas_Farmacia_AA',   engine='openpyxl')
     falt_det = pd.read_excel(ruta, sheet_name='Faltantes_Detalle_AA', engine='openpyxl')
+    # Faltantes absolutos 30d (prescripcion vigente sin despachar por quiebre
+    # real, ultimos 30 dias, mostrador Atencion Abierta) — opcional para
+    # compatibilidad con un Consolidado generado antes de este cambio.
+    try:
+        falt30 = pd.read_excel(ruta, sheet_name='Faltantes_Absolutos_30D', engine='openpyxl')
+    except Exception:
+        falt30 = pd.DataFrame()
     # Dialisis (solo recetas de nefrologos) — opcional para compatibilidad
     try:
         dial_farm = pd.read_excel(ruta, sheet_name='Dialisis_Pedido_Farm', engine='openpyxl')
@@ -374,7 +380,7 @@ def _leer_maestro(ruta, mtime):
     except Exception:
         sgli = pd.DataFrame()
     return {'stock': stock, 'farm': farm, 'bod': bod,
-            'falt': falt, 'falt_det': falt_det,
+            'falt': falt, 'falt_det': falt_det, 'falt30': falt30,
             'dial_farm': dial_farm, 'dial_bod': dial_bod,
             'sgli': sgli, 'mtime': datetime.fromtimestamp(mtime)}
 
@@ -437,6 +443,7 @@ df_farm     = datos['farm']
 df_bod      = datos['bod']
 df_falt     = datos['falt']
 df_falt_det = datos['falt_det']
+df_falt30   = datos.get('falt30', pd.DataFrame())
 df_dial_farm = datos.get('dial_farm', pd.DataFrame())
 df_sgli_base = datos.get('sgli',      pd.DataFrame())
 todos_meds = sorted(df_stock['Medicamento'].dropna().unique().tolist())
@@ -508,13 +515,13 @@ st.markdown(f"""
 # ═══════════════════════════════════════════════════════════════════════
 # PESTAÑAS PRINCIPALES
 # ═══════════════════════════════════════════════════════════════════════
-tab_pedido_bod, tab_pedido_farm, tab_dialisis, tab_faltantes, tab_sgli, tab_reposicion, tab_auditoria, tab_feedback = st.tabs([
+tab_pedido_bod, tab_pedido_farm, tab_dialisis, tab_faltantes, tab_falt_abs, tab_sgli, tab_auditoria, tab_feedback = st.tabs([
     "📝  Pedido a Bodega AA",
     "🏭  Pedido a Bodega Fármacos",
     "💉  Diálisis",
     "🚨  Faltantes",
+    "⛔  Faltantes Absolutos (30d)",
     "🚦  SGLI · Capacidad",
-    "📅  Reposición (días hábiles)",
     "🔬  Auditoría de prescripción",
     "💬  Diagnóstico y Sugerencias",
 ])
@@ -1355,6 +1362,96 @@ with tab_faltantes:
             f"Sin Respaldo: {n_sin} · Con Respaldo Bod. Farm.: {n_con} · "
             f"Datos al {datos['mtime'].strftime('%d/%m/%Y %H:%M')}."
         )
+
+with tab_falt_abs:
+    st.markdown("## ⛔ Faltantes Absolutos — Atención Abierta (30 días)")
+    st.markdown(
+        "Medicamentos con **prescripción vigente** (PENDIENTE/SOLICITADO) de los **últimos 30 días** "
+        "en el mostrador de **Atención Abierta** que **no se han podido despachar** al paciente por "
+        "**quiebre real de stock** (Stock Farmacia AA + Bodega AA = 0 en este momento). "
+        "A diferencia de la pestaña 🚨 Faltantes (todo el historial disponible), esta vista se acota "
+        "a la ventana reciente de 30 días para reflejar el incumplimiento actual."
+    )
+    st.markdown("---")
+
+    if df_falt30.empty:
+        st.success("✅ No hay faltantes absolutos en los últimos 30 días.")
+    else:
+        df_fa = df_falt30.copy()
+        df_fa['_faltante'] = _num(df_fa, 'Faltante_Neto')
+        df_fa['_pac']      = _num(df_fa, 'Pacientes_Afectados')
+        df_fa['_rec']      = _num(df_fa, 'N_Recetas')
+        df_fa['_stk_bf']   = _num(df_fa, 'Stock_BODEGA_FARMACOS')
+        df_fa['_ord']      = (df_fa['Criticidad'].apply(orden_crit)
+                              if 'Criticidad' in df_fa.columns
+                              else pd.Series(5, index=df_fa.index))
+        df_fa.sort_values(['_ord', '_pac'], ascending=[True, False], inplace=True)
+
+        n_meds  = len(df_fa)
+        pac_tot = int(df_fa['_pac'].sum())
+        rec_tot = int(df_fa['_rec'].sum())
+        ud_tot  = int(df_fa['_faltante'].sum())
+
+        ma1, ma2, ma3, ma4 = st.columns(4)
+        ma1.metric("Medicamentos con faltante absoluto", f"{n_meds}")
+        ma2.metric("Pacientes afectados",                f"{pac_tot}")
+        ma3.metric("Recetas pendientes",                 f"{rec_tot}")
+        ma4.metric("Unidades sin despachar",              f"{ud_tot:,}")
+
+        st.markdown("---")
+        filas_fa = []
+        for _, row in df_fa.iterrows():
+            filas_fa.append({
+                'Medicamento'         : str(row.get('Medicamento', '')),
+                'Criticidad'          : str(row.get('Criticidad', '')),
+                'Faltante (ud)'       : int(row['_faltante']),
+                'Pacientes afectados' : int(row['_pac']),
+                'Recetas pendientes'  : int(row['_rec']),
+                'Stock Bod. Fármacos' : int(row['_stk_bf']),
+                'Accion'              : str(row.get('Accion_Sugerida', '') or ''),
+            })
+        st.dataframe(
+            estilo_tabla(pd.DataFrame(filas_fa)),
+            use_container_width=True, hide_index=True,
+            column_config={
+                'Medicamento'         : st.column_config.TextColumn("Medicamento",        width="large"),
+                'Criticidad'          : st.column_config.TextColumn("Criticidad",         width="small"),
+                'Faltante (ud)'       : st.column_config.NumberColumn("Faltante",         format="%d ud"),
+                'Pacientes afectados' : st.column_config.NumberColumn("Pacientes",        format="%d"),
+                'Recetas pendientes'  : st.column_config.NumberColumn("Recetas",          format="%d"),
+                'Stock Bod. Fármacos' : st.column_config.NumberColumn("Stock Bod. Farm.", format="%d"),
+                'Accion'              : st.column_config.TextColumn("Accion",             width="medium"),
+            },
+        )
+
+        st.markdown("---")
+        _cols_pdf_fa = [
+            {'name':'Medicamento',           'label':'Medicamento',      'width':7.5, 'align':'left'},
+            {'name':'Criticidad',            'label':'Criticidad',       'width':3.2, 'align':'center'},
+            {'name':'_faltante',             'label':'Faltante (ud)',    'width':2.4, 'align':'center'},
+            {'name':'_pac',                  'label':'Pacientes',        'width':2.0, 'align':'center'},
+            {'name':'Stock_BODEGA_FARMACOS', 'label':'Stock Bod.Farm.',  'width':2.4, 'align':'center'},
+            {'name':'Accion_Sugerida',       'label':'Accion Sugerida',  'width':5.5, 'align':'left'},
+        ]
+        cfa1, cfa2 = st.columns([2, 2])
+        with cfa1:
+            st.download_button(
+                label="📄 PDF Carta",
+                data=build_pdf(
+                    f"FALTANTES ABSOLUTOS AT ABIERTA — 30 DÍAS  |  {hoy.strftime('%d/%m/%Y')}",
+                    f"Medicamentos: {n_meds}  ·  Pacientes afectados: {pac_tot}  ·  "
+                    f"Unidades sin despachar: {ud_tot:,}",
+                    df_fa, _cols_pdf_fa, orientacion='landscape'
+                ),
+                file_name=f"Faltantes_Absolutos_30D_{hoy.strftime('%Y%m%d_%H%M')}.pdf",
+                mime="application/pdf",
+                type="primary", use_container_width=True,
+            )
+        with cfa2:
+            st.caption(
+                f"{n_meds} medicamento(s) · Datos al {datos['mtime'].strftime('%d/%m/%Y %H:%M')}."
+            )
+
 with tab_sgli:
     st.markdown("## 🚦 SGLI · Reposición por capacidad y demanda")
     st.markdown(
@@ -1526,166 +1623,6 @@ with tab_sgli:
 
             with st.expander("📋 Ver como tabla Markdown (Formato de Salida Obligatorio)"):
                 st.code(to_markdown(df_show), language="markdown")
-
-with tab_reposicion:
-    st.markdown("## 📅 Reposición en días hábiles")
-    st.markdown(
-        "Plan de reposición **Bodega AA → Farmacia AT Abierta** restringido a "
-        "**días hábiles**. La bodega no repone sáb/dom ni feriados, y la farmacia "
-        "prácticamente **no dispensa el fin de semana** (medido: 0,19%). Por eso el "
-        "blindaje asegura **reabrir el lunes** con stock, no stockear consumo de finde."
-    )
-
-    if df_sgli_base is None or df_sgli_base.empty:
-        st.info(
-            "La hoja **SGLI_Estres** aún no está en el Consolidado. Ejecuta "
-            "`ACTUALIZAR_DATOS.bat` (o `py maestro_aa.py`) y vuelve a recargar."
-        )
-    else:
-        feriados_rep = cargar_feriados()
-        with st.expander("ℹ️ Cómo se calcula / criterio de blindaje"):
-            st.markdown(
-                "- **CDL** = consumo por **día hábil** (de fecha de entrega real → sin "
-                "'pico fantasma' del lunes).\n"
-                "- **Stock de Seguridad** = `CDL × (1 reapertura + 1 extra si criticidad 1-2)`.\n"
-                "- **Stock Mínimo (ROP)** = `CDL × IR + Stock de Seguridad`. Cuando el stock "
-                "cae a este nivel → reponer el próximo día hábil.\n"
-                "- **IR** = frecuencia en días hábiles (motor SGLI: rotación + capacidad).\n"
-                "- **Próxima Reposición** = día hábil en que el stock proyectado toca el ROP, "
-                "saltando sáb/dom y feriados → nunca cae en día cerrado (adelanto a viernes "
-                "automático). **Cubre Cierre** marca las entregas que deben puentear un "
-                "fin de semana o feriado.\n"
-                "- **[ALERTA_ESTRES]** = el ROP supera la capacidad física de la gaveta "
-                "(no caben las unidades de un ciclo+colchón → sobrecarga de viernes / ampliar estante)."
-            )
-
-        c1, c2 = st.columns([2, 1.4])
-        with c1:
-            buf_finde = st.slider(
-                "Colchón de reapertura (días hábiles de seguridad)",
-                min_value=0, max_value=3, value=1, step=1,
-                help="Días de consumo que el stock de seguridad cubre para reabrir tras el "
-                     "cierre. =1 porque la demanda sáb/dom es ~0. Súbelo para una postura "
-                     "más conservadora.",
-            )
-        with c2:
-            solo_acc_rep = st.toggle("Solo accionables", value=True,
-                                     help="Muestra solo REPONER AHORA, BAJO MÍNIMO o [ALERTA_ESTRES].")
-
-        df_rep = calcular_reposicion(df_sgli_base, df_stock, feriados_rep, hoy,
-                                     buffer_finde=buf_finde)
-
-        al = df_rep["Alertas"]
-        n_rep = int(al.str.contains("REPONER AHORA").sum())
-        n_baj = int(al.str.contains("BAJO MINIMO").sum())
-        n_est = int(al.str.contains("ALERTA_ESTRES").sum())
-        n_cub = int((df_rep["Cubre_Cierre"] == "Si").sum())
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("🔴 Reponer ahora", n_rep)
-        m2.metric("🟠 Bajo mínimo", n_baj)
-        m3.metric("🧱 Alerta estrés", n_est)
-        m4.metric("📅 Cubren cierre", n_cub)
-
-        prox_fer = sorted(d for d in feriados_rep if d >= hoy.date())
-        if prox_fer:
-            _d = prox_fer[0]
-            st.caption(f"Próximo feriado considerado: **{_d.strftime('%d/%m/%Y')}** — "
-                       f"{feriados_rep[_d][0]}  ·  `feriados_chile.csv` "
-                       f"({len(feriados_rep)} feriados cargados).")
-
-        df_show = (df_rep[al.str.contains("REPONER AHORA|BAJO MINIMO|ALERTA_ESTRES")]
-                   .reset_index(drop=True)) if solo_acc_rep else df_rep
-
-        if len(df_show) == 0:
-            st.info("Ningún medicamento accionable con el colchón actual. ✅")
-        else:
-            st.dataframe(
-                estilo_tabla(df_show),
-                use_container_width=True, hide_index=True,
-                column_config={
-                    'Medicamento'        : st.column_config.TextColumn("Medicamento", width="large"),
-                    'Criticidad'         : st.column_config.TextColumn("Criticidad", width="small"),
-                    'Stock_Actual'       : st.column_config.NumberColumn("Stock Actual", format="%d"),
-                    'Stock_Bodega'       : st.column_config.NumberColumn("Stock Bodega", format="%d"),
-                    'CDL'                : st.column_config.NumberColumn("CDL (ud/día háb)", format="%.1f"),
-                    'Frecuencia'         : st.column_config.TextColumn("Frecuencia (días háb.)", width="small"),
-                    'Stock_Seguridad'    : st.column_config.NumberColumn("Stock Seg.", format="%d"),
-                    'Stock_Minimo_ROP'   : st.column_config.NumberColumn("Stock Mín. (ROP)", format="%d"),
-                    'Cap_Fisica'         : st.column_config.NumberColumn("Cap. gaveta", format="%d"),
-                    'Cobertura_Dias'     : st.column_config.TextColumn("Cobertura (d háb.)", width="small"),
-                    'Proxima_Reposicion' : st.column_config.TextColumn("Próx. Reposición", width="small"),
-                    'Cubre_Cierre'       : st.column_config.TextColumn("Cubre Cierre", width="small"),
-                    'Alertas'            : st.column_config.TextColumn("Alertas", width="medium"),
-                },
-                height=min(50 + len(df_show) * 35, 640),
-            )
-
-            def build_repos_excel():
-                wb = Workbook(); ws = wb.active; ws.title = "Plan_Reposicion"
-                hfill = PatternFill('solid', fgColor=soften('0F766E', 0.18))
-                hfont = Font(bold=True, color=darken('0F766E'), name='Arial', size=10)
-                cols = list(df_show.columns)
-                for ci, h in enumerate(cols, 1):
-                    c = ws.cell(row=1, column=ci, value=h)
-                    c.fill = hfill; c.font = hfont
-                    c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                ws.row_dimensions[1].height = 28
-                for ri, (_, row) in enumerate(df_show.iterrows(), 2):
-                    crit = str(row.get('Criticidad', '5-OK'))
-                    fill = PatternFill('solid', fgColor=crit_hex(crit))
-                    rep  = 'REPONER AHORA' in str(row.get('Alertas', ''))
-                    for ci, col in enumerate(cols, 1):
-                        v = row.get(col, ''); v = '' if pd.isna(v) else v
-                        c = ws.cell(row=ri, column=ci, value=v)
-                        c.fill = fill
-                        c.font = Font(name='Arial', size=10, bold=rep,
-                                      color='7F1D1D' if rep else '1F2937')
-                        c.alignment = Alignment(vertical='center',
-                                                wrap_text=(col in ('Medicamento', 'Alertas')))
-                for ci, col in enumerate(cols, 1):
-                    ltr = get_column_letter(ci)
-                    ws.column_dimensions[ltr].width = (
-                        46 if col == 'Medicamento' else 30 if col == 'Alertas' else 16)
-                ws.freeze_panes = 'B2'
-                buf = io.BytesIO(); wb.save(buf); buf.seek(0)
-                return buf
-
-            d1, d2, d3 = st.columns([2, 2, 2])
-            with d1:
-                st.download_button(
-                    "📥 Excel", data=build_repos_excel(),
-                    file_name=f"Reposicion_DiasHabiles_AA_{hoy.strftime('%Y%m%d_%H%M')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary", use_container_width=True,
-                )
-            with d2:
-                _cols_pdf_rep = [
-                    {'name': 'Medicamento',        'label': 'Medicamento',     'width': 4.8, 'align': 'left'},
-                    {'name': 'Criticidad',         'label': 'Criticidad',      'width': 2.0, 'align': 'center'},
-                    {'name': 'Stock_Actual',       'label': 'Stock',           'width': 1.5, 'align': 'center'},
-                    {'name': 'Stock_Minimo_ROP',   'label': 'Stock Min (ROP)', 'width': 1.9, 'align': 'center'},
-                    {'name': 'Frecuencia',         'label': 'Frecuencia',      'width': 2.6, 'align': 'left'},
-                    {'name': 'Proxima_Reposicion', 'label': 'Prox. Repos.',    'width': 2.0, 'align': 'center'},
-                    {'name': 'Cubre_Cierre',       'label': 'Cubre Cierre',    'width': 1.5, 'align': 'center'},
-                    {'name': 'Alertas',            'label': 'Alertas',         'width': 3.4, 'align': 'left'},
-                ]
-                st.download_button(
-                    "📄 PDF Carta",
-                    data=build_pdf(
-                        f"PLAN DE REPOSICIÓN EN DÍAS HÁBILES  |  {hoy.strftime('%d/%m/%Y')}",
-                        f"Bodega AA → Farmacia AT Abierta  ·  colchón {buf_finde} día(s) háb.  ·  "
-                        f"{len(df_show)} medicamentos  ·  {n_rep} reponer ahora",
-                        df_show, _cols_pdf_rep, orientacion='landscape',
-                    ),
-                    file_name=f"Reposicion_DiasHabiles_AA_{hoy.strftime('%Y%m%d_%H%M')}.pdf",
-                    mime="application/pdf", use_container_width=True,
-                )
-            with d3:
-                st.caption(
-                    f"{len(df_show)} de {len(df_rep)} medicamentos · colchón {buf_finde} d · "
-                    f"datos al {datos['mtime'].strftime('%d/%m/%Y %H:%M')}"
-                )
 
 with tab_auditoria:
     import json as _json_aud

@@ -12,6 +12,7 @@ Flujo:
      (SSASUR es una SPA que exige usar una única pestaña):
        a) Clic en la tarjeta RECETA → informe de recetas → descarga
        b) Vuelve al dashboard → clic en ABASTECIMIENTO → stock → descarga
+       c) Mismo módulo ABASTECIMIENTO → reporte Programación AA (mes en curso) → descarga
   4. Ejecuta maestro_aa.py para actualizar el Consolidado
   5. Publica los datos en GitHub (si está configurado)
 
@@ -44,16 +45,19 @@ Modos (CLI):
                        --desde dd/mm/yyyy --hasta dd/mm/yyyy (rango); --debug-gt
                        vuelca el formulario [DESCUBRIR …] y guarda screenshots.
   · --no-rch           no actualiza el registro ISP de recetas cheque
+  · --no-programacion  no baja el reporte de Programación AA (PASO 4b)
   · --no-publicar      no publica en GitHub (debug)
 
 El registro ISP de recetas cheque (recetas_cheque.py) corre como PASO 5d: usa
 la MISMA sábana ya descargada para agregar los folios cheque nuevos de Farmacia
 AT Abierta al formulario ISP del mes vigente (carpeta de la QF, fuera del repo).
 
-Tras el Consolidado corre también (sin argumentos, sin llamadas a IA):
-  5f) reposicion_dias_habiles.py → Reposicion_DiasHabiles_AA_<fecha>.xlsx
-Ese archivo ya era esperado por publicar_escritorio.py / publicar_drive.py; sin
-este paso quedaba publicando una copia vieja del plan.
+PASO 4b — Programación AA: dentro del mismo módulo ABASTECIMIENTO (después del
+stock), baja el reporte "Consumos por centro de costo" del MES EN CURSO
+(FARMACOS/LOCAL/FARMACIA) — lo consume programacion_aa.py para Cantidad
+Programada / Cantidad Solicitada del ciclo Bodega AA. No se adelanta a meses
+futuros: la Cantidad Solicitada de un mes que no ha empezado siempre viene en 0.
+
 (sgli_historico.py → SGLI_Historico_<fecha>.xlsx NO se agrega aquí: maestro_aa.py
 YA lo corre solo, al final de su propio main() — agregarlo lo duplicaba.)
 
@@ -85,6 +89,15 @@ DASHBOARD_URL    = "https://login.ssasur.cl/dashboard"
 RECETA_INFORME   = "https://www.ssasur.cl/receta/informes/sabana"
 STOCK_REPORTE    = "https://www.ssasur.cl/abastecimiento/reportes/stock_en_momento_bodega"
 BODEGA_TODAS     = "0"    # bodega → "TODAS" (todas las bodegas en un archivo)
+
+# ── Programación AA (reporte "Consumos por centro de costo") ───────────────────
+# Consumido por programacion_aa.py. Ir directo por URL SOLO funciona después de
+# entrar_modulo(page, "ABASTECIMIENTO") (acuña la sesión del módulo) — igual que
+# STOCK_REPORTE; probado en vivo 15-07-2026 (403 sin el módulo acuñado antes).
+PROGRAMACION_REPORTE = "https://www.ssasur.cl/abastecimiento/reportes/consumo_por_cc_desplegado"
+DISTRIB_FARMACOS = "5"    # <select id="distribucion"> → FARMACOS
+PROYECTO_LOCAL   = "3"    # <select id="select_proyecto"> → LOCAL (no "DAC LOCAL")
+CC_FARMACIA      = "75"   # <select id="cc"> → FARMACIA
 TIMEOUT_LOGIN    = 300_000   # 5 minutos para logarse
 TIMEOUT_DESCARGA = 600_000   # 10 minutos por descarga
 
@@ -561,6 +574,8 @@ async def main():
     no_gt    = "--no-gt" in sys.argv or solo_stock
     # Saltar el registro ISP de recetas cheque con --no-rch.
     no_rch   = "--no-rch" in sys.argv
+    # Saltar la descarga del reporte de Programación AA con --no-programacion.
+    no_programacion = "--no-programacion" in sys.argv
     debug_gt = "--debug-gt" in sys.argv        # volcados [DESCUBRIR …] + screenshots
     _fecha   = _arg_val("--fecha")             # atajo: mismo día en desde/hasta
     today = date.today()
@@ -814,6 +829,40 @@ async def main():
             await page.screenshot(path=str(MAESTRO_DIR / "debug_stock.png"))
             print("  Screenshot guardado: debug_stock.png")
 
+        # ════════════════════════════════════════════════════════════════════
+        #  PASO 4b — PROGRAMACIÓN AA  (mismo módulo ABASTECIMIENTO, mes en curso)
+        # ════════════════════════════════════════════════════════════════════
+        # Consumido por programacion_aa.py (Cantidad Programada / Cantidad
+        # Solicitada del ciclo Bodega AA). A diferencia del stock, este reporte
+        # SÍ tiene <select> nativos (confirmado por inspección del DOM
+        # 15-07-2026) — no hace falta clic+búsqueda por texto:
+        #   #ano, #mes (1-12), #distribucion (5=FARMACOS),
+        #   #select_proyecto (3=LOCAL), #cc (75=FARMACIA), #generarXLS_salida
+        # "Mes en curso" = mes de hoy: la programación de meses futuros puede
+        # existir con Cantidad Solicitada en 0 (nadie ha solicitado todavía),
+        # así que no tiene sentido adelantarse — se pide siempre el mes actual.
+        if not no_programacion:
+            print("\n[4b/9] Reporte de Programación AA (mes en curso)...")
+            try:
+                await page.goto(PROGRAMACION_REPORTE)
+                await page.wait_for_load_state("networkidle")
+                await page.wait_for_timeout(1_500)
+                await page.select_option("#ano", str(today.year))
+                await page.select_option("#mes", str(today.month))
+                await page.select_option("#distribucion", DISTRIB_FARMACOS)
+                await page.select_option("#select_proyecto", PROYECTO_LOCAL)
+                await page.select_option("#cc", CC_FARMACIA)
+                await page.wait_for_timeout(500)
+                await descargar(
+                    page, MAESTRO_DIR,
+                    lambda: page.click("#generarXLS_salida", force=True),
+                    "PROGRAMACION AA",
+                )
+            except Exception as e:
+                print(f"  [ERROR] Descarga Programación AA falló: {e}")
+                await page.screenshot(path=str(MAESTRO_DIR / "debug_programacion.png"))
+                print("  Screenshot guardado: debug_programacion.png")
+
         await browser.close()
 
     # ── PASO 5 — MAESTRO AA ────────────────────────────────────────────────────
@@ -879,20 +928,6 @@ async def main():
             )
             if pret.returncode != 0:
                 print(f"  [aviso] pedido_fusion.py terminó con código {pret.returncode}")
-
-        # ── PASO 5f — REPOSICIÓN DÍAS HÁBILES ────────────────────────────────
-        # Plan Bodega→Farmacia ajustado por feriados (reposicion_dias_habiles.py).
-        # publicar_escritorio.py y publicar_drive.py ya esperan este archivo —
-        # sin este paso quedaban copiando una versión vieja del plan.
-        repo_py = MAESTRO_DIR / "reposicion_dias_habiles.py"
-        if repo_py.exists():
-            print(f"\n[5f/9] Generando Reposición Días Hábiles (Bodega→Farmacia)...")
-            rret = subprocess.run(
-                [sys.executable, str(repo_py)],
-                cwd=str(MAESTRO_DIR), env=env_utf8,
-            )
-            if rret.returncode != 0:
-                print(f"  [aviso] reposicion_dias_habiles.py terminó con código {rret.returncode}")
 
         # NOTA: sgli_historico.py NO se corre aquí — maestro_aa.py YA lo llama
         # internamente al final de su propio main() (import sgli_historico;

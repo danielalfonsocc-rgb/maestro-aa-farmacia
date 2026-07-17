@@ -798,6 +798,49 @@ df_falt.drop(columns=['_nivel_orden'], inplace=True)
 print(f"  Faltantes reales AA: {len(df_falt):,}")
 
 # ═══════════════════════════════════════════════
+# 8b. FALTANTES ABSOLUTOS AA (30 días, Atención Abierta)
+# ═══════════════════════════════════════════════
+# Igual definición que Faltantes Reales AA (sec. 8) — prescripción vigente
+# (PENDIENTE/SOLICITADO, no ANULADO/RECHAZADO/DEVUELTO) que aún no se ha podido
+# entregar — pero acotado a: (a) los últimos 30 días de Fecha_Atencion, y
+# (b) despacho por el mostrador de Atención Abierta (Bodega_Despacha ==
+# FARMACIA AT ABIERTA). Stock_AA_Total == 0 confirma que es quiebre real, no
+# solo demanda pendiente que ya se puede cubrir con lo que hay en bodega/farmacia.
+cutoff_30 = HOY - pd.Timedelta(days=30)
+mask_falt30 = (
+    df_aa_univ['Estado_Prescripcion'].isin(['PENDIENTE', 'SOLICITADO']) &
+    (df_aa_univ['Cantidad_Pendiente'] > 0) &
+    (df_aa_univ['Fecha_Atencion'] >= cutoff_30) &
+    (df_aa_univ['Bodega_Despacha'] == 'FARMACIA AT ABIERTA')
+)
+df_pend30 = df_aa_univ[mask_falt30].copy()
+
+dem_agg30 = df_pend30.groupby('Prescripcion_norm').agg(
+    Cant_Demanda_Activa=('Cantidad_Pendiente', 'sum'),
+    Pacientes_Afectados=('RUN',               'nunique'),
+    N_Recetas           =('Numero_Receta',     'nunique'),
+).reset_index()
+
+df_falt30 = dem_agg30.merge(
+    df_master[['Medicamento','Stock_Farmacia_AA','Stock_Bodega_AA','Stock_AA_Total',
+               'Stock_Hospital_Total'] +
+              [f'Stock_{b.replace(" ","_")}' for b in ORDEN_TRASPASO]],
+    left_on='Prescripcion_norm', right_on='Medicamento', how='left'
+).fillna(0)
+
+df_falt30 = df_falt30[df_falt30['Stock_AA_Total'] == 0].copy()
+df_falt30['Faltante_Neto'] = np.maximum(
+    df_falt30['Cant_Demanda_Activa'] - df_falt30['Stock_AA_Total'], 0
+)
+df_falt30['Criticidad'] = df_falt30.apply(criticidad, axis=1)
+df_falt30['Accion_Sugerida'] = df_falt30.apply(accion, axis=1)
+df_falt30['_nivel_orden'] = df_falt30['Criticidad'].apply(crit_nivel)
+df_falt30.sort_values(['_nivel_orden','Pacientes_Afectados'], ascending=[True, False], inplace=True)
+df_falt30.drop(columns=['_nivel_orden'], inplace=True)
+
+print(f"  Faltantes absolutos AA (30d, Atencion Abierta): {len(df_falt30):,}")
+
+# ═══════════════════════════════════════════════
 # 9. PENDIENTES 15D
 # ═══════════════════════════════════════════════
 cutoff_15 = HOY - pd.Timedelta(days=15)
@@ -1556,6 +1599,8 @@ kpis = {
     'Medicamentos con Quiebre':    len(df_quiebres),
     'Faltantes Reales AA':         len(df_falt),
     'Pacientes Afectados (falt.)': int(df_falt['Pacientes_Afectados'].sum()),
+    'Faltantes Absolutos AA 30d':  len(df_falt30),
+    'Pacientes Afectados (30d)':   int(df_falt30['Pacientes_Afectados'].sum()),
     'Pendientes 15d':              len(df_p15),
     'Cobertura Objetivo (días)':   COB_OBJETIVO,
     'Medicamentos a Reponer':      len(df_repos),
@@ -1774,6 +1819,20 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
     df_falt_det.to_excel(writer, sheet_name='Faltantes_Detalle_AA', index=False)
     ws4 = writer.sheets['Faltantes_Detalle_AA']
     style_sheet(ws4, df_falt_det, row_color_fn=color_falt)
+
+    # ── 4b. Faltantes_Absolutos_30D ───────────────
+    # Faltantes reales (sec.4) acotados a los últimos 30 días y solo mostrador
+    # de Atención Abierta — ver sec. 8b más arriba.
+    falt30_cols = ['Prescripcion_norm','Cant_Demanda_Activa','Faltante_Neto',
+                   'Pacientes_Afectados','N_Recetas','Stock_AA_Total',
+                   'Stock_Farmacia_AA','Stock_Bodega_AA','Stock_Hospital_Total',
+                   'Criticidad','Accion_Sugerida'] + \
+                  [f'Stock_{b.replace(" ","_")}' for b in ORDEN_TRASPASO]
+    df_falt30_det = df_falt30[[c for c in falt30_cols if c in df_falt30.columns]].copy()
+    df_falt30_det.rename(columns={'Prescripcion_norm':'Medicamento'}, inplace=True)
+    df_falt30_det.to_excel(writer, sheet_name='Faltantes_Absolutos_30D', index=False)
+    ws4b = writer.sheets['Faltantes_Absolutos_30D']
+    style_sheet(ws4b, df_falt30_det, row_color_fn=color_falt)
 
     # ── 5. Reposicion_5D ──────────────────────────
     # Fórmula: Reposicion = max(CDL×5 − Stock_Farmacia, 0)
