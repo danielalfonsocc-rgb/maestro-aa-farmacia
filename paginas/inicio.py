@@ -98,7 +98,7 @@ st.caption(
 
 MODULOS = [
     ("app_pedidos.py", "c-teal", "💊", "Pedidos AA",
-     "Pedido a Bodega, faltantes, SGLI, diálisis y reposición por días hábiles en un dashboard.",
+     "Pedido a Bodega, faltantes, SGLI y diálisis en un dashboard.",
      _status_pedidos),
     ("paginas/pedidos_fusionados.py", "c-indigo", "🔗", "Pedidos Fusionados",
      "Pedido consolidado del día: Farm↔Bodega + Bodega↔Fármacos + diálisis en un solo Excel.",
