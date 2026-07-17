@@ -19,8 +19,8 @@ from glob import glob
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import publicar_drive as pdv
+from utils_aa import RCH_DIR  # configurable por variable de entorno MAESTRO_RCH_DIR
 
-RCH_DIR = r"C:\Users\danie\Downloads\Farmacia_AT_Abierta_RCh\Farmacia_AT_Abierta_RCh"
 PREFIJO_FORM = "Formulario-Notificacion-Recetas-Cheque"
 CARPETA_DESTINO = "7 - Recetas Cheque (CONFIDENCIAL - RUT pacientes)"
 
