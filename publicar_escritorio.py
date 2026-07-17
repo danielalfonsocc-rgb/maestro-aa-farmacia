@@ -19,9 +19,11 @@ sin entrar a la carpeta del repositorio.
     ├── 4 - Auditoria Prescripcion\  Auditoria_Prescripcion_Resumen.xlsx (legible)
     ├── 5 - Pedido Fusionado\   Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
     ├── 6 - Centinela\          Centinela_Reportes\<Sxx>\ (json + pdf) por semana
-    └── 7 - Auditoria Duplicados\  Accesos a Agente Duplicados IA + Auditoria Profunda
-                                    (corren a demanda; el Excel con nombres de pacientes
-                                    NO se copia aquí — queda solo en la carpeta local)
+    ├── 7 - Auditoria Duplicados\  Accesos a Agente Duplicados IA + Auditoria Profunda
+    │                               (corren a demanda; el Excel con nombres de pacientes
+    │                               NO se copia aquí — queda solo en la carpeta local)
+    └── 8 - Programacion AA\    Resumen_Programacion_AA.xlsx (conteo vs programación,
+                                    generado por programacion_aa.py --aplicar-conteo)
 
 IMPORTANTE: este script COPIA, no mueve. El repositorio sigue siendo la fuente de
 verdad — la app Streamlit lee el Consolidado del repo y PUBLICAR_DATOS.bat publica
@@ -36,6 +38,7 @@ Uso:
     py publicar_escritorio.py --pedido       # solo Pedido_Fusion_AA.xlsx
     py publicar_escritorio.py --centinela    # solo Centinela_Reportes\
     py publicar_escritorio.py --duplicados   # solo accesos de Agente/Auditoria Duplicados
+    py publicar_escritorio.py --programacion # solo Resumen_Programacion_AA.xlsx
     py publicar_escritorio.py --enlaces      # solo (re)crea carpetas, LEEME y accesos
 """
 import os
@@ -78,6 +81,7 @@ SUB_AUDIT  = "4 - Auditoria Prescripcion"
 SUB_PEDIDO = "5 - Pedido Fusionado"
 SUB_CENTINELA = "6 - Centinela"
 SUB_DUP    = "7 - Auditoria Duplicados"
+SUB_PROG   = "8 - Programacion AA"
 
 # Iconos para distinguir los accesos directos (shell32.dll, índices clásicos).
 _SHELL32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "shell32.dll")
@@ -331,7 +335,6 @@ def sync_pedido():
     _copiar(src, dst, nuevo_nombre="Pedido_Fusion_AA.xlsx")
     REP.say(f"[Pedido Fusionado] {os.path.basename(src)} → «{SUB_PEDIDO}»")
 
-
 _LEEME_DUPLICADOS = """\
 AUDITORIA DE DUPLICADOS — Farmacia AT Abierta
 ==============================================
@@ -373,6 +376,24 @@ Claude y cuestan tokens) — corren a demanda, cuando tú los abres.
   {work}
   Abrelo desde ahi cuando lo necesites.
 """
+
+
+def sync_programacion():
+    dst = os.path.join(BASE, SUB_PROG)
+    # El Resumen (post-conteo) es la salida final; mientras no exista, se publica
+    # igual la planilla del ciclo (pre-conteo) para poder imprimirla/consultarla
+    # desde el Escritorio aunque el conteo físico todavía no se haya hecho.
+    src = _mas_reciente(os.path.join(WORK_DIR, "Programacion_AA", "Resumen_Programacion_AA*.xlsx"))
+    if src:
+        _copiar(src, dst, nuevo_nombre="Resumen_Programacion_AA.xlsx")
+        REP.say(f"[Programacion AA] {os.path.basename(src)} → «{SUB_PROG}»")
+        return
+    src = _mas_reciente(os.path.join(WORK_DIR, "Programacion_AA", "Programacion_AA_*.xlsx"))
+    if not src:
+        REP.say("[Programacion AA] (aún no generado — corre programacion_aa.py)")
+        return
+    _copiar(src, dst, nuevo_nombre="Programacion_AA.xlsx")
+    REP.say(f"[Programacion AA] {os.path.basename(src)} → «{SUB_PROG}» (planilla del ciclo, sin conteo aplicado todavía)")
 
 
 def sync_duplicados():
@@ -510,6 +531,11 @@ cada vez que corres cada proceso.
   AUTO_SSASUR                 ← descarga de SSASUR + recalcula + publica (todo)
   Gestion Territorial         ← solo descarga y genera planillas GT
   Recetas Cheque ISP          ← solo actualiza el registro ISP del mes
+  Sincronizar Todo            ← publica lo YA generado en Escritorio+GitHub+Drive
+                                 + Recetas Cheque ISP a Drive (carpeta CONFIDENCIAL,
+                                 RUT pacientes — excepción autorizada 2026-06-30)
+                                 (no descarga de SSASUR ni recalcula — usa esto
+                                 para republicar rápido tras un cambio manual)
 
   1 - App Pedidos          Consolidado_AA_MAESTRO.xlsx y Resumen_Pedidos_AA.xlsx
   2 - Gestion Territorial  Lo del ÚLTIMO rango queda al frente; lo anterior, en Historial\\
@@ -520,6 +546,8 @@ cada vez que corres cada proceso.
   7 - Auditoria Duplicados Accesos a Agente Duplicados IA y Auditoria Profunda (a demanda,
                             con su propio LEEME.txt explicando cada uno). El Excel con
                             nombres de pacientes NO se copia aquí (Escritorio = OneDrive).
+  8 - Programacion AA      Resumen_Programacion_AA.xlsx (conteo físico vs programación
+                            SSASUR del ciclo Bodega AA, generado por programacion_aa.py)
 
 ------------------------------------------------------------------------
 Nota: estas son COPIAS para consulta. El programa original sigue en
@@ -570,12 +598,13 @@ _ACCESOS = [
     ("AUTO_SSASUR.lnk",                 "AUTO_SSASUR.bat",    "Descarga de SSASUR, recalcula todo y publica",  _ICON_REFRESH),
     ("Gestion Territorial.lnk",         "GT.bat",             "Descarga y genera las planillas de GT",         _ICON_DOC),
     ("Recetas Cheque ISP.lnk",          "RECETAS_CHEQUE.bat", "Actualiza el registro ISP del mes",             _ICON_RUN),
+    ("Sincronizar Todo.lnk",            "SINCRONIZAR_TODO.bat","Publica lo ya generado: Escritorio + GitHub + Drive + Recetas Cheque (sin SSASUR)", _ICON_REFRESH),
 ]
 
 
 def crear_estructura(forzar_lnk=False):
     """Crea carpetas, LEEME y (si faltan o forzar_lnk) los accesos directos."""
-    for sub in (SUB_APP, SUB_GT, SUB_RCH, SUB_AUDIT, SUB_PEDIDO, SUB_CENTINELA, SUB_DUP):
+    for sub in (SUB_APP, SUB_GT, SUB_RCH, SUB_AUDIT, SUB_PEDIDO, SUB_CENTINELA, SUB_DUP, SUB_PROG):
         os.makedirs(os.path.join(BASE, sub), exist_ok=True)
     try:
         with open(os.path.join(BASE, "LEEME.txt"), "w", encoding="utf-8") as fh:
@@ -624,7 +653,7 @@ def main():
         return
 
     selectivo = args & {"--app", "--gt", "--rch", "--auditoria",
-                         "--pedido", "--centinela", "--duplicados"}
+                         "--pedido", "--centinela", "--duplicados", "--programacion"}
     todo = not selectivo
 
     if todo or "--app" in args:
@@ -641,6 +670,8 @@ def main():
         sync_centinela()
     if todo or "--duplicados" in args:
         sync_duplicados()
+    if todo or "--programacion" in args:
+        sync_programacion()
 
     escribir_log()
     print(f"\nListo ({REP.ok} copiados, {REP.skip} sin cambios). "

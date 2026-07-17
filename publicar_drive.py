@@ -5,6 +5,9 @@ publicar_drive.py — Sube las salidas de Farmacia AA a Google Drive.
 Sube los mismos archivos que publicar_escritorio.py EXCEPTO los datos de
 pacientes (Recetas Cheque, que contienen RUT y están sujetos a la Ley 19.628).
 
+Todo .xlsx se sube convertido a Google Sheets nativo (no como archivo Excel
+crudo) — se abre editable en el navegador sin descargar. PDF/JSON no se tocan.
+
 Estructura en Drive:
   Farmacia AA/
     1 - App Pedidos/          Consolidado_AA_MAESTRO.xlsx + Resumen_Pedidos_AA.xlsx
@@ -17,13 +20,14 @@ Estructura en Drive:
     3 - Pedido Fusionado/     Pedido_Fusion_AA.xlsx
     4 - Auditoria Prescripcion/  Auditoria_Prescripcion_Resumen.xlsx
     6 - Centinela/<Sxx>/      centinela_Sxx.json + centinela_Sxx.pdf por semana
+    7 - Programacion AA/      Resumen_Programacion_AA.xlsx (conteo vs programación)
 
 Primera vez (requiere Google Cloud credentials.json):
   py publicar_drive.py --setup
 
 Uso normal (token ya generado):
   py publicar_drive.py           # sube todo
-  py publicar_drive.py --solo-app  --solo-gt  --solo-pedido  --solo-auditoria  --solo-centinela
+  py publicar_drive.py --solo-app  --solo-gt  --solo-pedido  --solo-auditoria  --solo-centinela  --solo-programacion
 """
 import argparse, glob, hashlib, json, os, re, sys
 from datetime import datetime
@@ -44,6 +48,7 @@ SUB_GT      = "2 - Gestion Territorial"
 SUB_PEDIDO  = "3 - Pedido Fusionado"
 SUB_AUDIT   = "4 - Auditoria Prescripcion"
 SUB_CENTINELA = "6 - Centinela"
+SUB_PROG    = "7 - Programacion AA"
 
 # IDs de carpetas ya creadas en Drive (evita duplicados en búsquedas)
 _FOLDER_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_drive_folders.json")
@@ -150,36 +155,85 @@ def _md5(path):
 def _buscar_archivo(service, nombre, parent_id):
     nombre_q = nombre.replace("'", "\\'")
     q = f"name='{nombre_q}' and '{parent_id}' in parents and trashed=false"
-    r = service.files().list(q=q, fields="files(id,md5Checksum)", pageSize=1).execute()
+    r = service.files().list(q=q, fields="files(id,md5Checksum,mimeType)", pageSize=1).execute()
     files = r.get("files", [])
-    return (files[0]["id"], files[0].get("md5Checksum")) if files else (None, None)
+    if not files:
+        return None, None, None
+    f = files[0]
+    return f["id"], f.get("md5Checksum"), f.get("mimeType")
+
+
+SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
 
 
 def _subir(service, local_path, folder_id, nuevo_nombre=None, stats=None):
-    """Sube local_path a folder_id en Drive. Salta si MD5 coincide.
+    """Sube local_path a folder_id en Drive. Los .xlsx se suben como Google Sheets
+    NATIVO (Drive los convierte al vuelo) — se abren editables en el navegador,
+    sin descargar ni necesitar Excel.
+
+    Probado en vivo (2026-07-14) — la conversión tiene dos restricciones reales
+    de la API de Drive, no documentadas con claridad:
+      1) Solo funciona en subida multipart simple, NO resumable
+         ("Invalid MIME type provided for the uploaded content" si resumable=True).
+      2) `files.update()` NO puede convertir un archivo EXISTENTE que todavía es
+         xlsx crudo a Sheets (mismo error) — solo `files.create()` puede fijar
+         el mimeType destino. Un archivo .xlsx ya subido antes de este cambio se
+         migra por única vez: se borra y se vuelve a crear como Sheet (cambia su
+         fileId esa vez). Una vez que YA es Sheet, sí se puede actualizar su
+         contenido en el mismo fileId sin volver a tocar el mimeType.
+
+    Los Sheets nativos no tienen md5Checksum, así que esos SIEMPRE se re-suben en
+    cada corrida (no hay forma barata de detectar 'sin cambios' ya convertido);
+    el resto de formatos (pdf/json/txt/png) sigue el dedup por MD5 de siempre.
+
+    IMPORTANTE: Drive QUITA la extensión ".xlsx" del nombre al convertir a Sheets
+    nativo (p.ej. "Consolidado_AA_MAESTRO.xlsx" queda guardado como
+    "Consolidado_AA_MAESTRO"). Por eso la búsqueda/creación de estos archivos usa
+    el nombre SIN extensión — si se buscara con ".xlsx" nunca encontraría el
+    archivo ya convertido y crearía un duplicado nuevo en cada corrida (bug real,
+    visto en vivo: 6 duplicados en 2 corridas antes de este fix).
+
     Captura cualquier error de subida (red, cuota, archivo bloqueado, etc.) para
     que una falla puntual no aborte el resto de la sincronización."""
     from googleapiclient.http import MediaFileUpload
 
-    nombre = nuevo_nombre or os.path.basename(local_path)
+    nombre_local = nuevo_nombre or os.path.basename(local_path)
     try:
-        md5_local = _md5(local_path)
-        fid, md5_drive = _buscar_archivo(service, nombre, folder_id)
+        mime, ext = _guess_mime(local_path)
+        a_sheets = ext == ".xlsx"
+        nombre = (nombre_local[:-len(ext)] if a_sheets and nombre_local.lower().endswith(ext)
+                  else nombre_local)
 
-        if fid and md5_drive == md5_local:
+        md5_local = _md5(local_path)
+        fid, md5_drive, mime_drive = _buscar_archivo(service, nombre, folder_id)
+        if a_sheets and fid is None and nombre_local != nombre:
+            # No estaba con el nombre sin extensión (ya convertido) — puede seguir
+            # en crudo con ".xlsx" en el nombre (subido antes de este fix).
+            fid, md5_drive, mime_drive = _buscar_archivo(service, nombre_local, folder_id)
+        ya_convertido = mime_drive == SHEETS_MIME
+
+        if fid and md5_drive and md5_drive == md5_local and (not a_sheets or ya_convertido):
             if stats:
                 stats["skip"] += 1
             return "skip"
 
-        mime, _ = _guess_mime(local_path)
-        media = MediaFileUpload(local_path, mimetype=mime, resumable=True)
+        media = MediaFileUpload(local_path, mimetype=mime, resumable=not a_sheets)
+
+        if fid and a_sheets and not ya_convertido:
+            # Migración única: no se puede convertir un xlsx crudo con update().
+            service.files().delete(fileId=fid).execute()
+            fid = None
+
         if fid:
-            service.files().update(fileId=fid, body={"name": nombre}, media_body=media).execute()
+            body = {"name": nombre}   # ya es Sheet (o no aplica conversión): sin mimeType
+            service.files().update(fileId=fid, body=body, media_body=media).execute()
             if stats:
                 stats["ok"] += 1
             return "updated"
         else:
             meta = {"name": nombre, "parents": [folder_id]}
+            if a_sheets:
+                meta["mimeType"] = SHEETS_MIME
             service.files().create(body=meta, media_body=media, fields="id").execute()
             if stats:
                 stats["ok"] += 1
@@ -265,10 +319,14 @@ def sync_gt(service, raiz_id, stats, cache):
     if not os.path.isdir(src_base):
         print("  [GT] sin out_gt todavía")
         return
+    def _clave_cronologica(d):
+        fin = _fecha_fin_rango(os.path.basename(d))
+        return datetime.strptime(fin, "%d-%m-%Y") if fin else datetime.fromtimestamp(os.path.getmtime(d))
+
     rangos = sorted(
         [d for d in glob.glob(os.path.join(src_base, "*"))
          if os.path.isdir(d) and _RANGO_RE.match(os.path.basename(d))],
-        key=lambda d: os.path.basename(d),
+        key=_clave_cronologica,
     )
     if not rangos:
         print("  [GT] sin rangos en out_gt")
@@ -341,6 +399,24 @@ def sync_centinela(service, raiz_id, stats, cache=None):
     print(f"  [Centinela] {len(semanas)} semana(s): {', '.join(os.path.basename(d) for d in semanas)}")
 
 
+def sync_programacion(service, raiz_id, stats, cache=None):
+    fid = _obtener_o_crear_carpeta(service, SUB_PROG, raiz_id, cache)
+    # El Resumen (post-conteo) es la salida final; mientras no exista, se sube
+    # igual la planilla del ciclo (pre-conteo) para tenerla disponible fuera
+    # del equipo local aunque el conteo físico todavía no se haya hecho.
+    src = _mas_reciente(os.path.join(WORK_DIR, "Programacion_AA", "Resumen_Programacion_AA*.xlsx"))
+    if src:
+        r = _subir(service, src, fid, nuevo_nombre="Resumen_Programacion_AA.xlsx", stats=stats)
+        print(f"  Resumen_Programacion_AA.xlsx: {r}")
+        return
+    src = _mas_reciente(os.path.join(WORK_DIR, "Programacion_AA", "Programacion_AA_*.xlsx"))
+    if src:
+        r = _subir(service, src, fid, nuevo_nombre="Programacion_AA.xlsx", stats=stats)
+        print(f"  Programacion_AA.xlsx: {r}  (planilla del ciclo, sin conteo aplicado todavía)")
+    else:
+        print("  Programacion_AA: no encontrado, omitido (corre programacion_aa.py)")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="Sube salidas Farmacia AA a Google Drive")
@@ -351,6 +427,7 @@ def main():
     ap.add_argument("--solo-pedido",   action="store_true")
     ap.add_argument("--solo-auditoria",action="store_true")
     ap.add_argument("--solo-centinela",action="store_true")
+    ap.add_argument("--solo-programacion", action="store_true")
     a = ap.parse_args()
 
     if a.setup and os.path.exists(TOKEN_FILE):
@@ -373,7 +450,7 @@ def main():
     if NOMBRE_RAIZ in known:
         raiz_id = known[NOMBRE_RAIZ]
         # Pre-carga sub-carpetas fijas para evitar búsquedas API
-        for sub in (SUB_APP, SUB_GT, SUB_PEDIDO, SUB_AUDIT, SUB_CENTINELA):
+        for sub in (SUB_APP, SUB_GT, SUB_PEDIDO, SUB_AUDIT, SUB_CENTINELA, SUB_PROG):
             if sub in known:
                 cache[(sub, raiz_id)] = known[sub]
         # Pre-carga carpetas de Historial + rangos si están en el JSON
@@ -391,7 +468,8 @@ def main():
 
     stats = {"ok": 0, "skip": 0, "fail": 0}
 
-    todos = not any([a.solo_app, a.solo_gt, a.solo_pedido, a.solo_auditoria, a.solo_centinela])
+    todos = not any([a.solo_app, a.solo_gt, a.solo_pedido, a.solo_auditoria,
+                     a.solo_centinela, a.solo_programacion])
 
     print(f"\n[Drive] Subiendo a «{NOMBRE_RAIZ}» (id={raiz_id[:8]}…)")
     ts = datetime.now().strftime("%H:%M:%S")
@@ -416,6 +494,10 @@ def main():
     if todos or a.solo_centinela:
         print(f"\n  ── {SUB_CENTINELA} ──")
         sync_centinela(svc, raiz_id, stats, cache)
+
+    if todos or a.solo_programacion:
+        print(f"\n  ── {SUB_PROG} ──")
+        sync_programacion(svc, raiz_id, stats, cache)
 
     total = stats["ok"] + stats["skip"] + stats["fail"]
     print(f"\n[Drive] Listo: {stats['ok']} subidos · {stats['skip']} sin cambios · "
