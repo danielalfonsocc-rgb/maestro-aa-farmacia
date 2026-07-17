@@ -137,4 +137,4 @@ with open(ruta_sel, "rb") as fh:
     st.download_button("📥 Descargar Excel", data=fh.read(), file_name=os.path.basename(ruta_sel),
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.caption("Recuerda completar a mano DV QF y Nombre QF en el formulario tras cada actualización.")
+st.caption("Recuerda completar a mano RUN QF, DV QF, Nombre QF y Posología en el formulario tras cada actualización.")
