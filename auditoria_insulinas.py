@@ -22,7 +22,9 @@ Uso:
     py auditoria_insulinas.py --salida mi_reporte.xlsx
 """
 import argparse
+import math
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -46,6 +48,117 @@ TIPOS_INSULINA = [
     "GLARGINA", "GLULISINA", "ASPARTA", "DEGLUDEC", "LISPRO",
     "HUMANA NPH", "NPH", "CRISTALINA", "REGULAR",
 ]
+
+DIAS_CICLO    = 30   # 1 mes de tratamiento = 30 días, igual que el resto del proyecto.
+MEAL_KW       = ["DESAYUNO", "ALMUERZO", "CENA", "ONCE"]
+MULTI_TOMA_KW = ["COMIDA", "PRANDIAL"]  # "COMIDA" cubre COMIDA/COMIDAS/CADA COMIDA/etc.
+
+PRIO_COLOR_LAP = {
+    "URGENTE": ("DC2626", "FEE2E2"),
+    "REVISAR": ("C2410C", "FFF3E0"),
+    "OK":      ("15803D", "F0FDF4"),
+}
+_ORDEN_PRIO_LAP = {"URGENTE": 0, "REVISAR": 1, "OK": 2}
+
+
+def _capacidad_ui_lapiz(presc: str):
+    """UI totales contenidas en 1 lápiz/frasco, según el nombre del producto."""
+    p = str(presc).upper()
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*UI\s*/\s*(\d+(?:[.,]\d+)?)\s*ML", p)
+    if m:
+        return float(m.group(1).replace(",", "."))
+    m_conc = re.search(r"(\d+(?:[.,]\d+)?)\s*UI\s*/\s*ML", p)
+    m_vol  = re.search(r"FC\s*(\d+(?:[.,]\d+)?)\s*ML", p)
+    if m_conc and m_vol:
+        return float(m_conc.group(1).replace(",", ".")) * float(m_vol.group(1).replace(",", "."))
+    return None
+
+
+def _dosis_diaria_ui(texto: str):
+    """
+    Estima la dosis diaria total (UI) desde el texto libre de posología.
+    Retorna (dosis_ui | None, confiable: bool, detalle: str).
+    Solo calcula cuando el patrón es inequívoco; en cualquier caso ambiguo
+    devuelve confiable=False para que el caso se marque URGENTE y lo revise el QF.
+    """
+    t = str(texto).upper().strip()
+    if not t:
+        return None, False, "Sin texto de posología"
+
+    # Corta notas de corrección/SOS o umbral de glicemia (ej. "SOS SUBIR 2 U SI
+    # GLICEMIAS + 300"): son dosis condicionales, no forman parte de la dosis
+    # base diaria y su número ("+ 300") no debe sumarse como si fuera otra toma.
+    m_sos = re.search(r"\bSOS\b|GLICEMIA", t)
+    t_base = t[:m_sos.start()].strip() if m_sos else t
+    if not t_base:
+        return None, False, "Posología es solo nota SOS/condicional — verificar dosis base manualmente"
+
+    # 1) Lista de tomas al inicio del texto: "8 - 12 - 4", "10 -10 -10"
+    m = re.match(r"^(\d+(?:[.,]\d+)?(?:\s*[-,]\s*\d+(?:[.,]\d+)?){1,4})(?=\s|$)", t_base)
+    if m:
+        nums = [float(x.replace(",", ".")) for x in re.findall(r"\d+(?:[.,]\d+)?", m.group(1))]
+        return sum(nums), True, f"Suma de {len(nums)} tomas ({'+'.join(f'{n:g}' for n in nums)} UI)"
+
+    # 2) Tomas separadas por "+": "10 ANTES ALMUERZO + 8 ANTES DE TOMAR ONCE"
+    #    (lenient: toma el primer número de cada segmento, aunque no repita la unidad)
+    if "+" in t_base:
+        nums = []
+        for seg in t_base.split("+"):
+            m_seg = re.search(r"(\d+(?:[.,]\d+)?)", seg)
+            if m_seg:
+                nums.append(float(m_seg.group(1).replace(",", ".")))
+        if len(nums) >= 2:
+            return sum(nums), True, f"Suma de {len(nums)} tomas (+) ({'+'.join(f'{n:g}' for n in nums)} UI)"
+
+    dose_all = re.findall(r"(\d+(?:[.,]\d+)?)\s*(?:U\b|UI\b|UNIDAD(?:ES)?)", t_base)
+
+    # 3) ≥2 menciones explícitas de dosis con unidad, sin conector "+"
+    #    (ej. "40U EN LA MAÑANA 8U EN LA NOCHE")
+    if len(dose_all) >= 2:
+        nums = [float(x.replace(",", ".")) for x in dose_all]
+        return sum(nums), True, f"Suma de {len(nums)} tomas ({'+'.join(f'{n:g}' for n in nums)} UI)"
+
+    # 4) Multiplicador explícito: "X VECES AL DIA"
+    mult_m = re.search(r"(\d+)\s*VECES", t_base)
+    if dose_all and mult_m:
+        dosis = float(dose_all[0].replace(",", "."))
+        veces = int(mult_m.group(1))
+        return dosis * veces, True, f"{dosis:g} UI × {veces} veces/día"
+
+    # 5) Un solo número — ambiguo si menciona ≥2 comidas o "cada comida"/"prandial"
+    if len(dose_all) == 1:
+        dosis = float(dose_all[0].replace(",", "."))
+        n_comidas = sum(1 for kw in MEAL_KW if kw in t_base)
+        if n_comidas >= 2 or any(kw in t_base for kw in MULTI_TOMA_KW):
+            return None, False, (f"Posología menciona {dosis:g} UI en varias comidas sin "
+                                  "detallar cada toma — verificar dosis diaria real")
+        return dosis, True, f"{dosis:g} UI, 1 vez/día"
+
+    return None, False, "No se detectó una dosis numérica en el texto"
+
+
+def _evaluar_lapices(dosis_dia, confiable: bool, detalle_dosis: str,
+                     capacidad_ui, recetados: int):
+    """Retorna (prioridad, observación) comparando lápices esperados vs. recetados."""
+    if capacidad_ui is None:
+        return "REVISAR", ("No se pudo determinar el contenido UI del envase para calcular "
+                            "lápices esperados — revisar cantidad de lápices manualmente.")
+    if not confiable or dosis_dia is None:
+        return "URGENTE", (f"{detalle_dosis}. Revisar cantidad de lápices manualmente: "
+                            "no se pudo calcular la dosis diaria con certeza.")
+
+    esperados = math.ceil(round(dosis_dia * DIAS_CICLO / capacidad_ui, 6))
+    diff = int(recetados) - esperados
+    base = (f"{detalle_dosis} → {dosis_dia:g} UI/día × {DIAS_CICLO} días ÷ "
+            f"{capacidad_ui:g} UI/lápiz = {esperados} lápiz(ces) esperado(s); "
+            f"recetados: {int(recetados)}.")
+
+    if diff == 0:
+        return "OK", base
+    if abs(diff) == 1:
+        return "REVISAR", base + " Diferencia de 1 lápiz (margen habitual) — revisar cantidad de lápices."
+    falta_o_exceso = "faltan lápices para cubrir el mes" if diff < 0 else "exceso de lápices recetados"
+    return "URGENTE", base + f" No concuerda ({falta_o_exceso}) — revisar cantidad de lápices."
 
 THIN   = Side(style="thin", color="E5E7EB")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -149,7 +262,15 @@ def construir_reportes(rec: pd.DataFrame, mes: pd.Period):
             else:
                 pos_final, fuente = "", "Sin registro"
 
+        capacidad = _capacidad_ui_lapiz(r["Prescripción"])
+        dosis_dia, confiable, detalle_dosis = _dosis_diaria_ui(pos_final)
+        prioridad, observacion = _evaluar_lapices(
+            dosis_dia, confiable, detalle_dosis, capacidad, r["_cant_r"])
+        esperados = (math.ceil(round(dosis_dia * DIAS_CICLO / capacidad, 6))
+                     if (capacidad and dosis_dia is not None) else None)
+
         filas.append({
+            "Prioridad revisión"    : prioridad,
             "RUN"                  : r["RUN"],
             "Paciente"              : r["_paciente"],
             "Medicamento"           : r["Prescripción"],
@@ -159,6 +280,10 @@ def construir_reportes(rec: pd.DataFrame, mes: pd.Period):
             "Fecha"                 : r["_fecha"],
             "Cant. recetada"        : int(r["_cant_r"]),
             "Cant. entregada"       : int(r["_cant_e"]),
+            "Dosis diaria detectada (UI)": dosis_dia if dosis_dia is not None else "—",
+            "Lápices esperados (30 días)": esperados if esperados is not None else "—",
+            "Diferencia (lápices)"  : (int(r["_cant_r"]) - esperados) if esperados is not None else "—",
+            "Observación"           : observacion,
             "Médico"                : r["_medico"],
             "Especialidad"          : r["Especialidad"] or "—",
             "Diagnóstico"           : (str(r["Cod. Diagnóstico 1"]).strip() + " · " +
@@ -168,8 +293,10 @@ def construir_reportes(rec: pd.DataFrame, mes: pd.Period):
             "Fuente posología"      : fuente,
         })
 
-    resumen = pd.DataFrame(filas).sort_values(
-        ["Estado", "Paciente", "Tipo insulina"], ascending=[False, True, True])
+    resumen = pd.DataFrame(filas)
+    resumen["_o"] = resumen["Prioridad revisión"].map(_ORDEN_PRIO_LAP)
+    resumen = resumen.sort_values(
+        ["_o", "Estado", "Paciente"], ascending=[True, False, True]).drop(columns=["_o"])
 
     # ── Histórico por paciente (para pacientes del mes) ─────────────────────
     pares = resumen[["RUN", "Tipo insulina"]].drop_duplicates()
@@ -209,7 +336,8 @@ def _encabezado_hoja(ws, texto: str, color: str, n_cols: int):
 
 def _escribir_tabla(ws, df: pd.DataFrame, fila_inicio: int,
                     anchos: dict | None = None, fechas: list | None = None,
-                    wrap_cols: tuple = (), estado_col: str | None = None):
+                    wrap_cols: tuple = (), estado_col: str | None = None,
+                    prio_col: str | None = None):
     fechas = fechas or []
     cols   = list(df.columns)
     col_ix = {c: i + 1 for i, c in enumerate(cols)}
@@ -230,7 +358,11 @@ def _escribir_tabla(ws, df: pd.DataFrame, fila_inicio: int,
             cell = ws.cell(row=r, column=c_i)
             cell.border    = BORDER
             cell.alignment = Alignment(vertical="top", wrap_text=(col in wrap_cols))
-            if estado_col and col == estado_col:
+            if prio_col and col == prio_col:
+                txt_c, bg_c = PRIO_COLOR_LAP.get(str(cell.value), ("1F2937", "FFFFFF"))
+                cell.font = Font(bold=True, color=txt_c)
+                cell.fill = PatternFill("solid", fgColor=bg_c)
+            elif estado_col and col == estado_col:
                 if str(cell.value) == "Pendiente":
                     cell.font = Font(bold=True, color=ROJO)
                 elif str(cell.value) == "Despachado":
@@ -256,8 +388,11 @@ def _escribir_tabla(ws, df: pd.DataFrame, fila_inicio: int,
 
 
 ANCHOS_RES = {
-    "Paciente": 26, "Medicamento": 42, "Tipo insulina": 14, "Estado": 12,
-    "N° Receta": 12, "Fecha": 13, "Médico": 30, "Especialidad": 20,
+    "Prioridad revisión": 14, "Paciente": 26, "Medicamento": 42, "Tipo insulina": 14,
+    "Estado": 12, "N° Receta": 12, "Fecha": 13,
+    "Dosis diaria detectada (UI)": 14, "Lápices esperados (30 días)": 16,
+    "Diferencia (lápices)": 14, "Observación": 55,
+    "Médico": 30, "Especialidad": 20,
     "Diagnóstico": 34, "Posología (este mes)": 40, "Posología detectada": 40,
     "Fuente posología": 20,
 }
@@ -275,17 +410,21 @@ def exportar_excel(resumen, historico, sin_pos, mes: pd.Period, dest: str):
     n_pend  = int((resumen["Estado"] == "Pendiente").sum()) if n_total else 0
     n_hist  = int((resumen["Fuente posología"].str.startswith("Histórico")).sum()) if n_total else 0
     n_sin   = len(sin_pos)
+    n_urg   = int((resumen["Prioridad revisión"] == "URGENTE").sum()) if n_total else 0
+    n_rev   = int((resumen["Prioridad revisión"] == "REVISAR").sum()) if n_total else 0
+    n_ok    = int((resumen["Prioridad revisión"] == "OK").sum()) if n_total else 0
 
     ws1 = wb.active
     ws1.title = "Insulinas Este Mes"
     res_disp = resumen.drop(columns=["RUN"], errors="ignore")
     _encabezado_hoja(ws1,
                      f"INSULINAS — DESPACHADAS Y PENDIENTES · {mes}  ·  "
-                     f"{n_total} prescripciones ({n_desp} despachadas, {n_pend} pendientes)",
+                     f"{n_total} prescripciones ({n_desp} despachadas, {n_pend} pendientes)  ·  "
+                     f"URGENTE: {n_urg}  ·  REVISAR: {n_rev}  ·  OK: {n_ok}",
                      TEAL, max(len(res_disp.columns), 10))
     _escribir_tabla(ws1, res_disp, fila_inicio=2, anchos=ANCHOS_RES, fechas=["Fecha"],
-                    wrap_cols=("Posología (este mes)", "Posología detectada", "Médico"),
-                    estado_col="Estado")
+                    wrap_cols=("Posología (este mes)", "Posología detectada", "Médico", "Observación"),
+                    estado_col="Estado", prio_col="Prioridad revisión")
 
     ws2 = wb.create_sheet("Histórico por Paciente")
     hist_disp = historico.drop(columns=["RUN"], errors="ignore")
@@ -304,7 +443,8 @@ def exportar_excel(resumen, historico, sin_pos, mes: pd.Period, dest: str):
                      ROJO, max(len(sp_disp.columns), 8) if len(sp_disp) else 8)
     if len(sp_disp):
         _escribir_tabla(ws3, sp_disp, fila_inicio=2, anchos=ANCHOS_RES, fechas=["Fecha"],
-                        estado_col="Estado")
+                        wrap_cols=("Observación", "Médico"),
+                        estado_col="Estado", prio_col="Prioridad revisión")
     else:
         ws3.cell(row=2, column=1, value="Todos los casos tienen posología registrada.").font = Font(
             italic=True, color="15803D")
@@ -330,12 +470,31 @@ def exportar_excel(resumen, historico, sin_pos, mes: pd.Period, dest: str):
         ("• Hoja 'Histórico por Paciente': todas las posologías registradas históricamente para", False),
         ("  cada paciente/tipo de insulina del mes, para ver la evolución de la dosis.", False),
         ("", False),
+        ("Chequeo de cantidad de lápices/frascos (columna 'Prioridad revisión')", True),
+        ("• Dosis diaria (UI): se estima desde el texto de posología solo cuando el patrón es", False),
+        ("  inequívoco (una toma diaria, suma explícita de varias tomas, o multiplicador 'X veces/día').", False),
+        ("  Si la posología menciona varias comidas sin detallar cada toma (ej. 'antes de cada comida'),", False),
+        ("  no se calcula — se marca URGENTE para que el QF confirme la dosis real.", False),
+        ("• Contenido UI del envase: se extrae del nombre del producto (ej. lápiz de 300 UI, frasco de", False),
+        ("  1000 UI).", False),
+        (f"• Lápices esperados = ceil(dosis diaria × {DIAS_CICLO} días ÷ UI por envase). Se compara contra", False),
+        ("  la Cantidad Recetada del mes:", False),
+        ("    OK       — coincide exactamente.", False),
+        ("    REVISAR  — difiere en 1 lápiz (margen habitual, igual conviene mirarlo).", False),
+        ("    URGENTE  — no se pudo calcular la dosis con certeza, o difiere en ≥2 lápices", False),
+        ("               (faltan lápices para cubrir el mes, o exceso importante).", False),
+        ("• Esto es un TAMIZAJE automático, no un cálculo clínico definitivo — siempre confirmar con", False),
+        ("  la ficha clínica y el criterio del QF antes de ajustar una receta.", False),
+        ("", False),
         ("Resultados", True),
         (f"• Prescripciones del mes    : {n_total:,}", False),
         (f"• Despachadas               : {n_desp:,}", False),
         (f"• Pendientes                : {n_pend:,}", False),
         (f"• Posología inferida del histórico: {n_hist:,}", False),
         (f"• Sin ningún registro de posología: {n_sin:,}", False),
+        (f"• URGENTE (revisar lápices) : {n_urg:,}", False),
+        (f"• REVISAR (diferencia leve) : {n_rev:,}", False),
+        (f"• OK (cantidad coincide)    : {n_ok:,}", False),
         ("", False),
         ("Privacidad", True),
         ("• Este archivo contiene datos de salud de pacientes (Ley 19.628).", False),
