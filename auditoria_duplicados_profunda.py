@@ -132,6 +132,11 @@ def _parse_cuotas(serie) -> int:
     return n
 
 
+def _recetas_unicas(s):
+    vals = sorted({v.strip() for v in s.astype(str) if v.strip()})
+    return " ; ".join(vals)
+
+
 def nivel_evento(rec: pd.DataFrame) -> pd.DataFrame:
     """Colapsa cuotas mensuales de una misma indicación crónica a 1 evento."""
     def _primero(s):
@@ -139,13 +144,14 @@ def nivel_evento(rec: pd.DataFrame) -> pd.DataFrame:
         return s2.mode().iloc[0] if not s2.empty else ""
 
     g = rec.groupby(["RUN", "_med", "_run_prof", "_fecha"]).agg(
-        paciente   = ("_paciente", _primero),
-        med_nombre = ("Prescripción", _primero),
-        cuotas     = ("Periodo",    _parse_cuotas),
-        medico     = ("_medico",    _primero),
-        esp        = ("_esp",       _primero),
-        cant_r     = ("_cant_r",    "sum"),
-        cant_e     = ("_cant_e",    "sum"),
+        paciente     = ("_paciente", _primero),
+        med_nombre   = ("Prescripción", _primero),
+        cuotas       = ("Periodo",    _parse_cuotas),
+        medico       = ("_medico",    _primero),
+        esp          = ("_esp",       _primero),
+        cant_r       = ("_cant_r",    "sum"),
+        cant_e       = ("_cant_e",    "sum"),
+        n_receta     = ("Número Receta", _recetas_unicas),
     ).reset_index().rename(columns={"_run_prof": "run_prof", "_fecha": "start"})
     g["cob_dias"] = g["cuotas"].clip(lower=1) * DIAS_POR_CUOTA
     return g
@@ -269,6 +275,7 @@ def construir_casos(rl: pd.DataFrame):
                 "Días en doble retiro" : dias_dup,
                 "Fin est. última receta": ultima_fin,
                 "N° prescripciones"    : len(cl),
+                "N° Receta(s)"         : " ; ".join(sorted({r["n_receta"] for r in cl if r["n_receta"]})),
                 "Total recetado"       : int(sum(r["cant_r"] for r in cl)),
                 "Consumo c/ dup"       : con_dup,
                 "Consumo s/ dup"       : sin_dup,
@@ -285,6 +292,7 @@ def construir_casos(rl: pd.DataFrame):
                     "RUN"               : run,
                     "Paciente"          : r["paciente"],
                     "Medicamento"       : r["med_nombre"],
+                    "N° Receta"         : r["n_receta"],
                     "Fecha prescripción": r["start"],
                     "Médico"            : r["medico"],
                     "RUN médico"        : r["run_prof"],
@@ -471,7 +479,8 @@ def _escribir_tabla(ws, df: pd.DataFrame, fila_inicio: int,
             cell = ws.cell(row=r, column=c_i)
             cell.border    = BORDER
             cell.alignment = Alignment(vertical="top",
-                                       wrap_text=(col in ("Propuesta IA", "Médico(s)", "Médico")))
+                                       wrap_text=(col in ("Propuesta IA", "Médico(s)", "Médico",
+                                                           "N° Receta(s)", "N° Receta")))
             if prio_col and col == prio_col:
                 cell.font  = Font(bold=True, color=txt_c)
                 cell.fill  = PatternFill("solid", fgColor=bg_c)
@@ -511,6 +520,7 @@ ANCHOS_RES = {
     "N° médicos": 9, "Médico(s)": 36, "Especialidad(es)": 22,
     "Inicio doble retiro": 16, "Días en doble retiro": 16,
     "Fin est. última receta": 18, "N° prescripciones": 13,
+    "N° Receta(s)": 30,
     "Consumo c/ dup": 14, "Consumo s/ dup": 14, "Exceso (uds)": 12,
     "Acción IA": 12, "Propuesta IA": 62,
 }
@@ -589,7 +599,7 @@ def exportar_excel(resumen: pd.DataFrame, detalle: pd.DataFrame,
     det_disp = detalle.drop(columns=["RUN"], errors="ignore")
     _escribir_tabla(ws3, det_disp, fila_inicio=2,
                     anchos={"Paciente": 26, "Medicamento": 40, "Médico": 30,
-                            "Especialidad": 22, "Fin est. cobertura": 18},
+                            "N° Receta": 20, "Especialidad": 22, "Fin est. cobertura": 18},
                     fechas=FECHAS_DET, vigente_col="Vigente hoy")
 
     # ── Hoja 4: Por Medicamento ────────────────────────────────────────────
