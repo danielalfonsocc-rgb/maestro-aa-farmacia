@@ -2,7 +2,7 @@
 """
 pedido_fusion_simple.py — Planilla simplificada Farm_Bodega + Faltantes_AA
 ===========================================================================
-Version reducida de Pedido_Fusion_AA pensada para Google Sheets: solo 3 hojas.
+Version reducida de Pedido_Fusion_AA pensada para Google Sheets: solo 4 hojas.
 
   1 "Farm_Bodega"   Mismo universo/cálculo que la hoja Farm_Bod de
                      pedido_fusion.py, pero solo muestra Medicamento,
@@ -11,6 +11,8 @@ Version reducida de Pedido_Fusion_AA pensada para Google Sheets: solo 3 hojas.
   2 "Faltantes_AA"  Idéntica a la hoja 4 de pedido_fusion.py.
   3 "Por_Agotarse"  Idéntica a la hoja 5 de pedido_fusion.py (Bodega AA en 0,
                      farmacia con cobertura ≤ UMBRAL_PREQUIEBRE días).
+  4 "Faltantes_60D" Idéntica a la hoja 6 de pedido_fusion.py (faltantes
+                     persistentes de los últimos 60 días, vigentes hoy).
 
 Sin llamadas a IA — solo pandas + openpyxl. Reutiliza el cálculo y estilos de
 pedido_fusion.py (no duplica lógica de negocio).
@@ -88,6 +90,7 @@ def main():
     r1 = calc_simple(data['farm'], fe_map, def_, rep_h2_map)
     r4 = pf.calc_h4(data['falt30'])
     r4b = pf.calc_h4b(data['stock'], data['bod'])
+    r4c = pf.calc_h4c(data['falt60'])
 
     wb = openpyxl.Workbook()
     ws1 = wb.active
@@ -95,6 +98,7 @@ def main():
     write_simple(ws1, r1, def_, hoy, sem)
     pf.write_h4(wb.create_sheet('Faltantes_AA'), r4, hoy)
     pf.write_h4b(wb.create_sheet('Por_Agotarse'), r4b, hoy)
+    pf.write_h4c(wb.create_sheet('Faltantes_60D'), r4c, hoy)
 
     sal = os.path.join(WORK_DIR, f'Pedido_Fusion_Simple_AA_{hoy.strftime("%Y%m%d_%H%M")}.xlsx')
     wb.save(sal)
@@ -104,6 +108,7 @@ def main():
     print(f'Faltantes AA 30d: {len(r4)} meds sin poder despachar en Atencion Abierta')
     print(f'Por agotarse    : {len(r4b)} meds con Bodega AA en 0 y cobertura '
           f'farmacia <= {pf.UMBRAL_PREQUIEBRE} dias')
+    print(f'Faltantes 60d   : {len(r4c)} meds con faltante persistente vigente')
     print(f'\nExcel: {os.path.basename(sal)}')
 
 

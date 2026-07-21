@@ -16,6 +16,9 @@ Genera  Pedido_Fusion_AA_<fecha>.xlsx  con 4 hojas:
       real de stock (Farm.AA + Bod.AA = 0) con prescripción vigente pendiente
   5 "Por_Agotarse"   Preventiva: Bodega AA en 0 con farmacia aún despachando
       pero cobertura ≤ UMBRAL_PREQUIEBRE días (aún no es quiebre, pero lo será)
+  6 "Faltantes_60D"  Retrospectiva: faltantes con demanda pendiente en los
+      últimos 60 días que siguen vigentes hoy (incluye stock fantasma que no
+      despacha, ej. Empagliflozina 25 mg)
 
 Sin llamadas a IA — solo pandas + openpyxl.
 
@@ -212,6 +215,7 @@ def _leer(maestro):
         'bod'     : 'Pedido_Repos_Bodega',
         'dialmed' : 'Dialisis_Medicamentos',
         'falt30'  : 'Faltantes_Absolutos_30D',
+        'falt60'  : 'Faltantes_60D_Persistente',
         'stock'   : 'Stock_AA',
     }.items()}
 
@@ -678,6 +682,84 @@ def write_h4b(ws, rows_pre, hoy):
     ws.page_setup.orientation = 'landscape'
 
 
+# ─────────────── Hoja 6: Faltantes Persistentes (60 días) ──────────────────
+
+HDRS4C = [
+    ('Medicamento',              44),
+    ('Días en Falta',           11),
+    ('Desde',                   12),
+    ('Pacientes Afectados',     13),
+    ('Recetas',                  9),
+    ('Pendiente (ud)',          12),
+    ('Stock AA Reportado',      14),
+    ('Stock Bod. Fármacos',     16),
+    ('Acción',                  52),
+]
+
+def calc_h4c(df_falt60):
+    """Filas de la hoja Faltantes_60D_Persistente del consolidado (calculada en
+    maestro_aa.py sec.8c): faltantes del mostrador AA con demanda pendiente en
+    los últimos 60 días que siguen vigentes hoy. Ya viene ordenada por días en
+    falta descendente."""
+    if df_falt60 is None or not len(df_falt60):
+        return []
+    rows = []
+    for _, r in df_falt60.iterrows():
+        med    = str(r.get('Medicamento', '')).strip()
+        crit   = str(r.get('Criticidad', ''))
+        dias   = int(_n(r.get('Dias_En_Falta', 0)))
+        desde  = str(r.get('Primer_Faltante', ''))
+        pax    = int(_n(r.get('Pacientes_Afectados', 0)))
+        nrec   = int(_n(r.get('N_Recetas', 0)))
+        pend   = int(_n(r.get('Cant_Demanda_Activa', 0)))
+        saa    = int(_n(r.get('Stock_AA_Total', 0)))
+        sbf    = int(_n(r.get('Stock_BODEGA_FARMACOS', 0)))
+        accion = str(r.get('Accion_Sugerida', ''))
+        rows.append(((med, dias, desde, pax, nrec, pend, saa, sbf, accion), crit))
+    return rows
+
+
+def write_h4c(ws, rows, hoy):
+    """Hoja Faltantes_60D: faltantes persistentes de los últimos 60 días."""
+    _titulo(ws,
+        f'FALTANTES PERSISTENTES AT ABIERTA — últimos 60 días  ·  {hoy.strftime("%d/%m/%Y")}',
+        len(HDRS4C))
+    _subtit(ws,
+        'Medicamentos con demanda pendiente en el mostrador de Atención Abierta durante los últimos '
+        '60 días que SIGUEN sin resolverse hoy (última receta sin cubrir dentro de los últimos 15 '
+        'días) | Días en Falta = días desde la primera receta sin cubrir | Se basa en la DEMANDA '
+        'pendiente, no en el stock reportado: "Stock AA Reportado > 0" con acción REVISAR indica '
+        'stock que no se despacha (posible fantasma) — verificar físico en mesón',
+        len(HDRS4C), height=60)
+    _hdr(ws, 3, HDRS4C)
+    for i, (vals, crit) in enumerate(rows, 4):
+        _fila_crit(ws, i, vals, crit, {2, 4, 5, 6, 7, 8})
+        ac  = str(vals[8])
+        saa = vals[6]
+        # columna Stock AA Reportado: ámbar si hay stock fantasma
+        if saa > 0:
+            cs = ws.cell(i, 7)
+            cs.fill = _pfill('FEF3C7'); cs.font = Font(name='Arial', size=10, color='92400E', bold=True)
+        c = ws.cell(i, 9)
+        if 'COMPRA URGENTE' in ac:
+            c.fill = _pfill('FFDAD6'); c.font = Font(name='Arial', size=10, color='9B1C1C', bold=True)
+        elif 'REVISAR' in ac:
+            c.fill = _pfill('FEF3C7'); c.font = Font(name='Arial', size=10, color='92400E', bold=True)
+        elif 'TRASPASAR' in ac:
+            c.fill = _pfill('F0FDF4'); c.font = Font(name='Arial', size=10, color='166534')
+    ws.freeze_panes = 'A4'
+    if rows:
+        last = 3 + len(rows)
+        ws.auto_filter.ref = f'A3:{get_column_letter(len(HDRS4C))}{last}'
+        _totals(ws, 4, last, len(HDRS4C), {4, 5, 6})
+        ws.print_area = f'A1:{get_column_letter(len(HDRS4C))}{last + 1}'
+    else:
+        ws.cell(4, 1, 'Sin faltantes persistentes en los últimos 60 días.')
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
+    ws.page_setup.orientation = 'landscape'
+
+
 # ─────────────── main ────────────────────────────────────────────────────────
 
 def main():
@@ -725,6 +807,7 @@ def main():
     r3 = calc_h3(data['dialmed'], fe_map, rep_h2_map)
     r4 = calc_h4(data['falt30'])
     r4b = calc_h4b(data['stock'], data['bod'])
+    r4c = calc_h4c(data['falt60'])
 
     wb = openpyxl.Workbook()
     ws1 = wb.active; ws1.title = 'Farm_Bod'
@@ -733,6 +816,7 @@ def main():
     write_h3(wb.create_sheet('Dialisis'),     r3, hoy, sem, es_semana_pedido)
     write_h4(wb.create_sheet('Faltantes_AA'), r4, hoy)
     write_h4b(wb.create_sheet('Por_Agotarse'), r4b, hoy)
+    write_h4c(wb.create_sheet('Faltantes_60D'), r4c, hoy)
 
     sal = os.path.join(WORK_DIR,
         f'Pedido_Fusion_AA_{hoy.strftime("%Y%m%d_%H%M")}.xlsx')
@@ -751,6 +835,7 @@ def main():
     print(f'Faltantes AA 30d: {len(r4)} meds sin poder despachar en Atencion Abierta')
     print(f'Por agotarse    : {len(r4b)} meds con Bodega AA en 0 y cobertura '
           f'farmacia <= {UMBRAL_PREQUIEBRE} dias')
+    print(f'Faltantes 60d   : {len(r4c)} meds con faltante persistente vigente')
     print(f'\nExcel: {os.path.basename(sal)}')
 
 

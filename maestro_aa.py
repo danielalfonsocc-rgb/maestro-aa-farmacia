@@ -834,6 +834,84 @@ df_falt30.drop(columns=['_nivel_orden'], inplace=True)
 print(f"  Faltantes absolutos AA (30d, Atencion Abierta): {len(df_falt30):,}")
 
 # ═══════════════════════════════════════════════
+# 8c. FALTANTES PERSISTENTES (60 días, se mantienen hasta hoy)
+# ═══════════════════════════════════════════════
+# Faltantes que llevan tiempo sin poder despacharse en el mostrador de Atención
+# Abierta: demanda no cubierta (PENDIENTE/SOLICITADO, Cantidad_Pendiente > 0) en
+# los últimos 60 días cuyo faltante SIGUE VIGENTE hoy — última prescripción sin
+# cubrir dentro de los últimos RECIENTE_FALT_DIAS días. Se basa en la DEMANDA
+# pendiente, NO en el stock reportado: casos como Empagliflozina 25 mg muestran
+# stock "fantasma" en el reporte (>0) pero acumulan recetas sin entregar por
+# semanas — el reporte de stock no refleja lo que hay físicamente en mesón.
+VENTANA_FALT_60   = 60
+RECIENTE_FALT_DIAS = 15
+# Con stock reportado > 0 solo se considera faltante si la demanda pendiente es
+# alta respecto de ese stock (fantasma / stock insuficiente que no despacha, como
+# Empagliflozina 25 mg). Si el stock reportado cubre de sobra la demanda, los
+# pendientes son de tránsito (paciente aún no retira) y NO se listan como quiebre.
+FANTASMA_RATIO    = 0.4
+cutoff_60       = HOY - pd.Timedelta(days=VENTANA_FALT_60)
+cutoff_reciente = HOY - pd.Timedelta(days=RECIENTE_FALT_DIAS)
+mask_falt60 = (
+    df_aa_univ['Estado_Prescripcion'].isin(['PENDIENTE', 'SOLICITADO']) &
+    (df_aa_univ['Cantidad_Pendiente'] > 0) &
+    (df_aa_univ['Fecha_Atencion'] >= cutoff_60) &
+    (df_aa_univ['Bodega_Despacha'] == 'FARMACIA AT ABIERTA')
+)
+df_pend60 = df_aa_univ[mask_falt60].copy()
+
+dem_agg60 = df_pend60.groupby('Prescripcion_norm').agg(
+    Cant_Demanda_Activa=('Cantidad_Pendiente', 'sum'),
+    Pacientes_Afectados=('RUN',               'nunique'),
+    N_Recetas           =('Numero_Receta',     'nunique'),
+    Primer_Faltante     =('Fecha_Atencion',    'min'),
+    Ultimo_Faltante     =('Fecha_Atencion',    'max'),
+).reset_index()
+
+# "Se mantiene hasta ahora": el último pendiente cae dentro de la ventana reciente
+df_falt60 = dem_agg60[dem_agg60['Ultimo_Faltante'] >= cutoff_reciente].copy()
+df_falt60['Dias_En_Falta'] = (HOY - df_falt60['Primer_Faltante']).dt.days
+
+df_falt60 = df_falt60.merge(
+    df_master[['Medicamento','Stock_Farmacia_AA','Stock_Bodega_AA','Stock_AA_Total',
+               'Stock_Hospital_Total'] +
+              [f'Stock_{b.replace(" ","_")}' for b in ORDEN_TRASPASO]],
+    left_on='Prescripcion_norm', right_on='Medicamento', how='left'
+).fillna(0)
+
+# Filtro fantasma: stock 0 (quiebre real) o demanda pendiente ≥ FANTASMA_RATIO
+# del stock reportado (stock que no despacha). Excluye meds bien abastecidos
+# cuyos pendientes son solo pacientes que no han retirado.
+df_falt60 = df_falt60[
+    (df_falt60['Stock_AA_Total'] == 0) |
+    (df_falt60['Cant_Demanda_Activa'] >= FANTASMA_RATIO * df_falt60['Stock_AA_Total'])
+].copy()
+
+df_falt60['Faltante_Neto'] = np.maximum(
+    df_falt60['Cant_Demanda_Activa'] - df_falt60['Stock_AA_Total'], 0
+)
+df_falt60['Criticidad'] = df_falt60.apply(criticidad, axis=1)
+
+def accion_60(row):
+    stk_bf = row.get('Stock_BODEGA_FARMACOS', 0)
+    stk_aa = row.get('Stock_AA_Total', 0)
+    if stk_aa > 0:
+        return ('REVISAR: stock reportado NO se despacha '
+                '(posible fantasma) — verificar físico en mesón')
+    if stk_bf > 0:
+        return f'TRASPASAR DESDE BODEGA FARMACOS ({int(stk_bf)} ud. disponibles)'
+    return 'COMPRA URGENTE — SIN RESPALDO EN BODEGA FARMACOS'
+
+df_falt60['Accion_Sugerida'] = df_falt60.apply(accion_60, axis=1)
+# Orden: primero los que llevan más días en falta, luego por pacientes afectados
+df_falt60.sort_values(['Dias_En_Falta','Pacientes_Afectados'],
+                      ascending=[False, False], inplace=True)
+df_falt60['Primer_Faltante'] = df_falt60['Primer_Faltante'].dt.strftime('%Y-%m-%d')
+df_falt60['Ultimo_Faltante'] = df_falt60['Ultimo_Faltante'].dt.strftime('%Y-%m-%d')
+
+print(f"  Faltantes persistentes AA (60d, vigentes): {len(df_falt60):,}")
+
+# ═══════════════════════════════════════════════
 # 9. PENDIENTES 15D
 # ═══════════════════════════════════════════════
 cutoff_15 = HOY - pd.Timedelta(days=15)
@@ -1594,6 +1672,8 @@ kpis = {
     'Pacientes Afectados (falt.)': int(df_falt['Pacientes_Afectados'].sum()),
     'Faltantes Absolutos AA 30d':  len(df_falt30),
     'Pacientes Afectados (30d)':   int(df_falt30['Pacientes_Afectados'].sum()),
+    'Faltantes Persistentes 60d':  len(df_falt60),
+    'Pacientes Afectados (60d)':   int(df_falt60['Pacientes_Afectados'].sum()),
     'Pendientes 15d':              len(df_p15),
     'Cobertura Objetivo (días)':   COB_OBJETIVO,
     'Medicamentos a Reponer':      len(df_repos),
@@ -1826,6 +1906,21 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
     df_falt30_det.to_excel(writer, sheet_name='Faltantes_Absolutos_30D', index=False)
     ws4b = writer.sheets['Faltantes_Absolutos_30D']
     style_sheet(ws4b, df_falt30_det, row_color_fn=color_falt)
+
+    # ── 4c. Faltantes_60D_Persistente ─────────────
+    # Faltantes del mostrador AA con demanda pendiente en los últimos 60 días
+    # que siguen vigentes hoy — ver sec. 8c. Basado en demanda, no en el stock
+    # reportado (que puede ser fantasma). Dias_En_Falta = días desde la primera
+    # prescripción sin cubrir en la ventana.
+    falt60_cols = ['Prescripcion_norm','Dias_En_Falta','Primer_Faltante',
+                   'Ultimo_Faltante','Pacientes_Afectados','N_Recetas',
+                   'Cant_Demanda_Activa','Faltante_Neto','Stock_AA_Total',
+                   'Stock_BODEGA_FARMACOS','Criticidad','Accion_Sugerida']
+    df_falt60_det = df_falt60[[c for c in falt60_cols if c in df_falt60.columns]].copy()
+    df_falt60_det.rename(columns={'Prescripcion_norm':'Medicamento'}, inplace=True)
+    df_falt60_det.to_excel(writer, sheet_name='Faltantes_60D_Persistente', index=False)
+    ws4c = writer.sheets['Faltantes_60D_Persistente']
+    style_sheet(ws4c, df_falt60_det, row_color_fn=color_falt)
 
     # ── 5. Reposicion_5D ──────────────────────────
     # Fórmula: Reposicion = max(CDL×5 − Stock_Farmacia, 0)
