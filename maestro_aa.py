@@ -849,7 +849,7 @@ RECIENTE_FALT_DIAS = 15
 # alta respecto de ese stock (fantasma / stock insuficiente que no despacha, como
 # Empagliflozina 25 mg). Si el stock reportado cubre de sobra la demanda, los
 # pendientes son de tránsito (paciente aún no retira) y NO se listan como quiebre.
-FANTASMA_RATIO    = 0.4
+FANTASMA_RATIO    = 0.25
 cutoff_60       = HOY - pd.Timedelta(days=VENTANA_FALT_60)
 cutoff_reciente = HOY - pd.Timedelta(days=RECIENTE_FALT_DIAS)
 mask_falt60 = (
