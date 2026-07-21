@@ -1032,22 +1032,72 @@ async def main():
     else:
         print("  [ERROR] maestro_aa.py falló — revisa los mensajes arriba")
 
-    # ── CENTINELA — REPORTE SEMANAL (solo lunes, independiente del maestro) ────
-    # Auto-detecta los CSV + XLSX ya descargados en este mismo flujo y
-    # genera el PDF semanal para el MINSAL. Se ejecuta UNA VEZ a la semana
-    # (los lunes) para coincidir con el ciclo epidemiológico MINSAL.
+    # ── CENTINELA — REPORTE SEMANAL con catch-up (una vez por semana) ─────────
+    # Genera el PDF semanal para el MINSAL con los CSV+XLSX recién descargados
+    # y lo sincroniza a Drive en la MISMA corrida.
+    #
+    # Antes: sólo corría si hoy==lunes, acoplado a que AUTO_SSASUR llegara
+    # completo hasta aquí ESE lunes. Si el lunes la tarea no disparaba (PC
+    # apagado), el login SSASUR no se completaba, o un paso previo caía
+    # (TargetClosedError / token Drive invalid_grant), el reporte se perdía en
+    # silencio toda la semana: martes-viernes lo omitían por "no ser lunes".
+    # Peor aún, el PDF se generaba DESPUÉS del SINCRONIZAR_TODO, así que ni
+    # siquiera se subía a Drive ese mismo día. (Incidente lunes 20-07-2026.)
+    #
+    # Ahora: se ejecuta en la PRIMERA corrida hábil (lun-vie) de cada semana
+    # ISO en que aún no se haya generado — normalmente el lunes, y si el lunes
+    # se perdió, el primer día siguiente que AUTO_SSASUR corra hace el
+    # catch-up. Un marcador por semana ISO evita duplicados, y tras generarlo
+    # se publica a Drive con --solo-centinela sin esperar a la corrida del día
+    # siguiente. Sigue siendo UN reporte por semana epidemiológica.
     centinela_py = MAESTRO_DIR / "centinela_reporte.py"
     if centinela_py.exists():
-        if today.weekday() == 0:   # 0 = lunes
-            print(f"\n[CENTINELA] Reporte Centinela — Campaña Invierno 2026...")
+        import json
+        anio_iso, sem_iso, _ = today.isocalendar()
+        marcador = MAESTRO_DIR / "Centinela_Reportes" / "_ultima_semana.json"
+        ya_generado = False
+        if marcador.exists():
+            try:
+                prev = json.loads(marcador.read_text(encoding="utf-8"))
+                ya_generado = (prev.get("anio_iso") == anio_iso
+                               and prev.get("sem_iso") == sem_iso)
+            except Exception:
+                ya_generado = False
+
+        if today.weekday() >= 5:
+            print(f"\n[CENTINELA] Fin de semana ({today.strftime('%A')}) — se generará el lunes.")
+        elif ya_generado:
+            print(f"\n[CENTINELA] Ya generado esta semana (ISO {anio_iso}-S{sem_iso}) — omitido.")
+        else:
+            es_catchup = today.weekday() != 0
+            motivo = "catch-up: el lunes no se generó" if es_catchup else "lunes (ciclo normal)"
+            print(f"\n[CENTINELA] Reporte Centinela — {motivo}...")
             cret = subprocess.run(
                 [sys.executable, str(centinela_py), "--no-pause"],
                 cwd=str(MAESTRO_DIR), env=env_utf8,
             )
-            if cret.returncode != 0:
+            if cret.returncode == 0:
+                # Marca la semana ISO como hecha para no duplicar en corridas siguientes.
+                try:
+                    marcador.parent.mkdir(parents=True, exist_ok=True)
+                    marcador.write_text(json.dumps(
+                        {"anio_iso": anio_iso, "sem_iso": sem_iso, "fecha": today.isoformat()},
+                        ensure_ascii=False, indent=2), encoding="utf-8")
+                except Exception as e:
+                    print(f"  [aviso] no se pudo escribir el marcador semanal: {e}")
+                # Sube el PDF a Drive en ESTA corrida (antes nacía tras el sync
+                # y quedaba para el día siguiente).
+                pub_py = MAESTRO_DIR / "publicar_drive.py"
+                if pub_py.exists() and (MAESTRO_DIR / "token_drive.json").exists():
+                    print("  [CENTINELA] Sincronizando reporte a Drive...")
+                    pret = subprocess.run(
+                        [sys.executable, str(pub_py), "--solo-centinela"],
+                        cwd=str(MAESTRO_DIR), env=env_utf8,
+                    )
+                    if pret.returncode != 0:
+                        print(f"  [aviso] publicar_drive.py --solo-centinela terminó con código {pret.returncode}")
+            else:
                 print(f"  [aviso] centinela_reporte.py terminó con código {cret.returncode} — revisa el reporte centinela")
-        else:
-            print(f"\n[CENTINELA] Solo se ejecuta los lunes — omitido hoy ({today.strftime('%A')}).")
 
     if not no_pause:
         try:
