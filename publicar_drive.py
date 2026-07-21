@@ -12,11 +12,11 @@ Estructura en Drive:
   Farmacia AA/
     1 - App Pedidos/          Consolidado_AA_MAESTRO.xlsx + Resumen_Pedidos_AA.xlsx
     2 - Gestion Territorial/
-        <ESTAB DESTINO>/      últimas planillas + letrero por establecimiento
-        Historial/
-            <fecha>/
-                <ESTAB DESTINO>/  planillas + letrero históricos
-                Cruce_GT_Clasificacion.xlsx
+        <ESTAB DESTINO>/
+            Revisión de Solicitudes/   feedback + recetas solicitadas
+            Nóminas de Envío/
+                <DD-MM-YYYY>/          planillas + letrero de cada envío (historial completo;
+                                       sin carpetas Historial/Acumulados desde el 21-07-2026)
     3 - Pedido Fusionado/     Pedido_Fusion_AA.xlsx + Pedido_Fusion_Simple_AA.xlsx
     4 - Auditoria Prescripcion/  Auditoria_Prescripcion_Resumen.xlsx
     6 - Centinela/<Sxx>/      centinela_Sxx.json + centinela_Sxx.pdf por semana
@@ -299,42 +299,48 @@ def _fecha_fin_rango(nombre_carpeta):
 NOMINAS_ENVIO = "Nóminas de Envío"
 
 
-def _subir_gt_rango(service, rango_dir, parent_fid, stats, cache, prefijo_log):
-    """Sube todos los archivos de un rango GT a parent_fid, organizados por establecimiento.
-    Archivos con destino conocido van a <parent>/<ESTAB>/Nóminas de Envío/ (son planillas
-    y letreros de despacho — separados de "Revisión de Solicitudes", ver
-    sync_gt_solicitudes). Archivos generales van directo."""
-    archivos = sorted(
-        glob.glob(os.path.join(rango_dir, "*.xlsx")) +
-        glob.glob(os.path.join(rango_dir, "*.pdf"))
-    )
-    estabs_vistos = set()
-    for f in archivos:
+def _depositar_arbol_local(rango_dir):
+    """Copia las planillas por establecimiento de un rango out_gt/ al árbol local
+    ordenado: 04_Farmacia_Gestion_Territorial/<ESTAB>/Nóminas de Envío/<fecha>/,
+    donde <fecha> es el día en que se generó el archivo (= día del envío).
+    Dedup por MD5; si existe un archivo distinto con el mismo nombre, se agrega
+    el rango como sufijo. Devuelve cuántos archivos copió."""
+    import shutil
+    if not os.path.isdir(GT_SOLICITUDES_DIR):
+        return 0
+    local_de_drive = {v: k for k, v in _SOLICITUDES_A_DRIVE.items()}
+    depositados = 0
+    for f in sorted(glob.glob(os.path.join(rango_dir, "*.xlsx")) +
+                    glob.glob(os.path.join(rango_dir, "*.pdf"))):
         nb = os.path.basename(f)
         if nb.startswith("~$"):
             continue
         destino = _destino_de_archivo(nb)
-        if destino:
-            estabs_vistos.add(destino)
-            fid_estab = _obtener_o_crear_carpeta(service, destino, parent_fid, cache)
-            fid_nominas = _obtener_o_crear_carpeta(service, NOMINAS_ENVIO, fid_estab, cache)
-            r = _subir(service, f, fid_nominas, stats=stats)
-            if r != "skip":
-                print(f"  {prefijo_log}/{destino}/{NOMINAS_ENVIO}/{nb}: {r}")
-        else:
-            # Archivo general (Cruce_GT_Clasificacion, etc.) — al nivel del rango
-            r = _subir(service, f, parent_fid, stats=stats)
-            if r != "skip":
-                print(f"  {prefijo_log}/{nb}: {r}")
-    return sorted(estabs_vistos)
+        carpeta_local = local_de_drive.get(destino) if destino else None
+        if not carpeta_local:
+            continue
+        fecha = datetime.fromtimestamp(os.path.getmtime(f)).strftime("%d-%m-%Y")
+        ddir = os.path.join(GT_SOLICITUDES_DIR, carpeta_local, NOMINAS_ENVIO, fecha)
+        os.makedirs(ddir, exist_ok=True)
+        dest = os.path.join(ddir, nb)
+        if os.path.exists(dest):
+            if _md5(dest) == _md5(f):
+                continue
+            base, ext = os.path.splitext(nb)
+            dest = os.path.join(ddir, f"{base} (rango {os.path.basename(rango_dir)}){ext}")
+            if os.path.exists(dest) and _md5(dest) == _md5(f):
+                continue
+        shutil.copy2(f, dest)
+        depositados += 1
+    return depositados
 
 
 _GT_SYNC_STATE_FILE = os.path.join(WORK_DIR, "_gt_historial_sync.json")
 
 
 def _cargar_gt_sincronizados():
-    """Nombres de carpetas out_gt/<rango> que YA quedaron completas en Drive
-    Historial en una corrida anterior. Un rango es inmutable una vez que su
+    """Nombres de carpetas out_gt/<rango> ya depositadas en el árbol local
+    ordenado en una corrida anterior. Un rango es inmutable una vez que su
     ventana de fechas dejó de ser la más nueva (AUTO_SSASUR no vuelve a
     generar el mismo rango dos veces en uso normal), así que no hace falta
     volver a listarlo ni re-subir sus archivos nunca más."""
@@ -370,18 +376,14 @@ def sync_gt(service, raiz_id, stats, cache):
         print("  [GT] sin rangos en out_gt")
         return
 
-    fid_gt   = _obtener_o_crear_carpeta(service, SUB_GT,      raiz_id, cache)
-    fid_hist = _obtener_o_crear_carpeta(service, "Historial", fid_gt,  cache)
+    fid_gt = _obtener_o_crear_carpeta(service, SUB_GT, raiz_id, cache)
 
-    # ── Historial: un subfolder por rango. Los rangos ANTERIORES al último ya
-    # quedaron con su ventana de fechas fija — si ya se subieron completos en
-    # una corrida previa, se SALTAN enteros (ni se listan sus archivos) en vez
-    # de re-subirlos. Antes esto no pasaba: como los .xlsx se convierten a
-    # Google Sheets nativo (sin md5Checksum), el dedup por hash no aplicaba y
-    # CADA corrida de AUTO_SSASUR volvía a re-subir TODO el histórico
-    # acumulado (9 rangos y creciendo, cada uno traslapando ~13 de sus 14 días
-    # con el anterior). El último rango (ventana viva, todavía puede cambiar)
-    # se sigue subiendo siempre.
+    # Desde el 21-07-2026 Drive ya NO tiene carpeta Historial ni Acumulados (el
+    # usuario las disolvió): las planillas de cada rango out_gt/ se depositan en
+    # el árbol local ordenado (<ESTAB>/Nóminas de Envío/<fecha>) y llegan a
+    # Drive vía sync_gt_solicitudes. Los Cruce_GT_Clasificacion quedan solo en
+    # out_gt/ local. _gt_historial_sync.json marca los rangos ya depositados
+    # (los rangos anteriores al último son inmutables — no se vuelven a tocar).
     sincronizados = _cargar_gt_sincronizados()
     nuevos_sincronizados = set(sincronizados)
     anteriores, ultimo = rangos[:-1], rangos[-1]
@@ -391,30 +393,27 @@ def sync_gt(service, raiz_id, stats, cache):
         if nombre_rango in sincronizados:
             saltados += 1
             continue
-        fecha_rango = _fecha_fin_rango(nombre_rango) or \
-                      datetime.fromtimestamp(os.path.getmtime(d)).strftime("%d-%m-%Y")
-        fid_r = _obtener_o_crear_carpeta(service, fecha_rango, fid_hist, cache)
-        fails_antes = stats["fail"]
-        _subir_gt_rango(service, d, fid_r, stats, cache,
-                        prefijo_log=f"Historial/{fecha_rango}")
-        if stats["fail"] == fails_antes:
-            nuevos_sincronizados.add(nombre_rango)
+        _depositar_arbol_local(d)
+        nuevos_sincronizados.add(nombre_rango)
     if saltados:
-        print(f"  [GT] {saltados} rango(s) histórico(s) ya sincronizados — omitidos")
+        print(f"  [GT] {saltados} rango(s) histórico(s) ya depositados — omitidos")
 
-    fecha_ultimo = _fecha_fin_rango(os.path.basename(ultimo)) or \
-                   datetime.fromtimestamp(os.path.getmtime(ultimo)).strftime("%d-%m-%Y")
-    fid_r_ultimo = _obtener_o_crear_carpeta(service, fecha_ultimo, fid_hist, cache)
-    _subir_gt_rango(service, ultimo, fid_r_ultimo, stats, cache,
-                    prefijo_log=f"Historial/{fecha_ultimo}")
+    nombre_ultimo = os.path.basename(ultimo)
+    depositados = _depositar_arbol_local(ultimo)
+    if depositados:
+        print(f"  [GT] {depositados} planilla(s) del rango «{nombre_ultimo}» "
+              f"depositadas en el árbol local por establecimiento")
 
     _guardar_gt_sincronizados(nuevos_sincronizados)
 
-    # ── Frente: último rango organizado por establecimiento bajo GT raíz ──
-    estabs = _subir_gt_rango(service, ultimo, fid_gt, stats, cache,
-                             prefijo_log="frente")
+    # (El antiguo paso "frente" — últimas planillas sueltas bajo
+    #  <ESTAB>/Nóminas de Envío/ — se eliminó el 21-07-2026: dejaba archivos
+    #  sueltos que duplicaban la subcarpeta de fecha del mismo envío. El envío
+    #  vigente ahora se encuentra en la subcarpeta de fecha más reciente.)
+    estabs = sorted({_destino_de_archivo(os.path.basename(f)) or ""
+                     for f in glob.glob(os.path.join(ultimo, "*"))} - {""})
     estabs_str = ", ".join(estabs) if estabs else "(ninguno)"
-    print(f"  [GT] {len(rangos)} rango(s) · último «{fecha_ultimo}» · "
+    print(f"  [GT] {len(rangos)} rango(s) · último «{nombre_ultimo}» · "
           f"establecimientos: {estabs_str}")
 
     sync_gt_solicitudes(service, fid_gt, stats, cache)
@@ -637,16 +636,6 @@ def main():
         for sub in (SUB_APP, SUB_GT, SUB_PEDIDO, SUB_AUDIT, SUB_CENTINELA, SUB_PROG):
             if sub in known:
                 cache[(sub, raiz_id)] = known[sub]
-        # Pre-carga carpetas de Historial + rangos si están en el JSON
-        gt_id = known.get(SUB_GT)
-        hist_key = f"{SUB_GT}/Historial"
-        hist_id = known.get(hist_key)
-        if gt_id and hist_id:
-            cache[("Historial", gt_id)] = hist_id
-            for full_key, fid in known.items():
-                if full_key.startswith(f"{hist_key}/"):
-                    rango = full_key[len(hist_key) + 1:]
-                    cache[(rango, hist_id)] = fid
     else:
         raiz_id = _obtener_o_crear_carpeta(svc, NOMBRE_RAIZ, cache=cache)
 
@@ -690,16 +679,6 @@ def main():
     # Persiste IDs de carpetas nuevas descubiertas en esta corrida
     nuevos = {nombre: fid for (nombre, pid), fid in cache.items() if pid == raiz_id}
     nuevos[NOMBRE_RAIZ] = raiz_id
-    # También persiste la jerarquía SUB_GT/Historial/<rango> (no son hijos directos
-    # de la raíz, así que el filtro por pid==raiz_id de arriba no las captura — sin
-    # esto, esas carpetas se re-buscan vía API en cada ejecución para siempre).
-    gt_folder_id = nuevos.get(SUB_GT)
-    hist_folder_id = cache.get(("Historial", gt_folder_id)) if gt_folder_id else None
-    if hist_folder_id:
-        nuevos[f"{SUB_GT}/Historial"] = hist_folder_id
-        for (nombre, pid), fid in cache.items():
-            if pid == hist_folder_id:
-                nuevos[f"{SUB_GT}/Historial/{nombre}"] = fid
     if os.path.exists(_FOLDER_CACHE_FILE):
         try:
             with open(_FOLDER_CACHE_FILE, encoding="utf-8") as _f:
