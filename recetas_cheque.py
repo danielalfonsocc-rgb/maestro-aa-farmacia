@@ -80,6 +80,7 @@ FILA_DATOS  = 12   # los registros empiezan en la fila 12
 MAPEO_HHHA = {
     "212-0009": ("F-1373",  "FENOBARBITAL COMPRIMIDOS 100 mg",                                                                    "COMPRIMIDOS"),
     "212-0052": ("F-24748", "FENTADUR PARCHE TRANSDERMICO 25 mcg/hora (FENTANILO)",                                              "PARCHES"),
+    "212-0062": ("F-24749", "FENTADUR PARCHE TRANSDERMICO 50 mcg/hora (FENTANILO)",                                              "PARCHES"),
     "212-0073": ("F-19539", "PALEXIS RETARD COMPRIMIDOS RECUBIERTOS DE LIBERACION PROLONGADA 50 mg (TAPENTADOL CLORHIDRATO)",    "COMPRIMIDOS"),
     "212-0031": ("F-22274", "VENDAL RETARD COMPRIMIDOS RECUBIERTOS DE LIBERACION PROLONGADA 30 mg (MORFINA CLORHIDRATO TRIHIDRATO)", "CAPSULAS"),
     "214-0597": ("F-7553",  "ARADIX RETARD COMPRIMIDOS DE LIBERACION PROLONGADA 10 mg",                                          "COMPRIMIDOS"),
@@ -414,7 +415,14 @@ def actualizar_formulario(form_path, rch, sin_filtro_mes, no_backup):
     for idx, (_, row) in enumerate(nuevos.iterrows()):
         er = primera + idx
         cant = int(row["Cantidad Entregada"]) if pd.notna(row["Cantidad Entregada"]) else None
-        if not row["F_COD"]:
+        # F_COD/PRESENTACION llegan como NaN (float), no None, cuando el HHHA no
+        # está mapeado: pd.Series(get_producto(...)) las castea al concatenarlas
+        # con columnas de texto. "if row['PRESENTACION']" no lo detecta (bool(nan)
+        # es True), lo que reventaba en .upper() y abortaba TODO el lote de folios
+        # nuevos de la corrida (incl. folios sí mapeados) antes de llegar a wb.save().
+        f_cod        = row["F_COD"]        if pd.notna(row["F_COD"])        else None
+        presentacion = row["PRESENTACION"] if pd.notna(row["PRESENTACION"]) else None
+        if not f_cod:
             sin_fcod += 1
         direccion = str(row["Direccion"]).strip().upper() if pd.notna(row["Direccion"]) else None
         comuna    = str(row["Comuna"]).strip().upper()    if pd.notna(row["Comuna"])    else None
@@ -424,9 +432,9 @@ def actualizar_formulario(form_path, rch, sin_filtro_mes, no_backup):
             row["RUT_PAC"], row["DV_PAC"],
             direccion,
             comuna,
-            row["F_COD"],
+            f_cod,
             "=UPPER(VLOOKUP(H" + str(er) + ",OCULTA!A:B,2,0))",
-            row["PRESENTACION"].upper() if row["PRESENTACION"] else row["PRESENTACION"],
+            presentacion,
             cant,
             None,                           # Posología: llenado manual QF
             row["FECHA_PRESC_N"],
@@ -434,7 +442,7 @@ def actualizar_formulario(form_path, rch, sin_filtro_mes, no_backup):
             row["FECHA_DISP_N"],
             None, None, None,               # RUN QF, DV QF, Nombre QF: llenado manual
             cant,
-            row["PRESENTACION"].upper() if row["PRESENTACION"] else row["PRESENTACION"],
+            presentacion,
             1,
         ]
         for ci, val in enumerate(valores):
