@@ -17,11 +17,11 @@ Reglas:
     se quiera sobre la misma hoja sin duplicar la banda de título.
 
 Uso como script:
-  py gt_maestro.py --registrar --receta 46212285 --paciente "NOMBRE APELLIDO PATERNO MATERNO" \
+  py gt_maestro.py --registrar --receta 12345678 --paciente "NOMBRE APELLIDO PATERNO MATERNO" \
       --rut 11111111-1 --destino "Hospital Tolten" --periodo 3/6 --especialidad "MEDICINA INTERNA" \
       --estado "En revisión"
 
-  py gt_maestro.py --estado --receta 46212285 --nuevo-estado "En preparación"
+  py gt_maestro.py --estado --receta 12345678 --nuevo-estado "En preparación"
 
 Uso como módulo:
   from gt_maestro import cargar_maestro, obtener_hoja_mes, upsert_receta, aplicar_formato_maestro, guardar
@@ -288,9 +288,9 @@ def detectar_alertas_mismo_rut(recetas):
          — probable error de clasificación, no un tratamiento nuevo.
       3. 'duplicado_informatico': mismo período Y misma Fecha Digitación pero Nº
          de receta DISTINTO — SSASUR a veces digita dos veces la misma cuota por
-         un problema del sistema (caso real: Paciente Anonimo, cuotas 1/6 y 2/6
-         de una serie completa duplicadas con Nº de receta distintos, ambas con
-         Fecha Ingreso 18/06/2026). Solo se detecta si 'fecha_digitacion' viene
+         un problema del sistema (caso real verificado 18-07-2026: cuotas 1/6
+         y 2/6 de una serie completa duplicadas con Nº de receta distintos,
+         ambas con Fecha Ingreso 18/06/2026). Solo se detecta si 'fecha_digitacion' viene
          informada en ambos registros — si no se tiene ese dato, esta regla no
          dispara (no es un falso negativo, es información que falta).
 
@@ -309,8 +309,8 @@ def detectar_alertas_mismo_rut(recetas):
         if len(grupo) < 2:
             continue
 
-        # OJO — falso positivo real detectado y corregido (18-07-2026, Paciente
-        # Anonimo RUT 11111111-1): un mismo médico puede escribir DOS recetas
+        # OJO — falso positivo real detectado y corregido (18-07-2026, caso
+        # verificado en SSASUR): un mismo médico puede escribir DOS recetas
         # crónicas de medicamentos distintos en la misma consulta, con el mismo
         # período y la misma especialidad (ej. Fenitoína y Dabigatrán+Calcio,
         # ambas "MEDICINA GENERAL" 1/6). Eso NO es ambiguo, son dos tratamientos
@@ -371,16 +371,16 @@ def detectar_alertas_mismo_rut(recetas):
 
                 # Regla 3: duplicado informático — mismo período + misma Fecha
                 # Digitación, Nº de receta distinto. Independiente de la
-                # especialidad (el duplicado real de Paciente Anonimo tenía la
+                # especialidad (el duplicado real verificado tenía la
                 # MISMA especialidad en ambas copias). Solo dispara si el dato de
                 # fecha_digitacion viene informado en ambos lados.
                 #
                 # OJO — falso positivo real detectado y corregido (18-07-2026,
-                # Paciente Anonimo RUT 11111111-1): un mismo médico puede escribir
+                # caso verificado en SSASUR): un mismo médico puede escribir
                 # DOS recetas crónicas de medicamentos distintos en la misma
                 # consulta (misma Cuenta Corriente, mismo período, misma Fecha
-                # Digitación) — ej. serie Fenitoína (46840564/565) y serie
-                # Dabigatrán+Calcio (46840522/523), ambas 1/6→2/6 el 18/06/2026.
+                # Digitación) — ej. una serie de un medicamento y otra serie
+                # de otro medicamento distinto, ambas 1/6→2/6 el 18/06/2026.
                 # Eso NO es un duplicado, son dos tratamientos paralelos legítimos.
                 # Por eso esta regla exige que los medicamentos TAMBIÉN coincidan
                 # cuando el dato está disponible — si difieren, no se alerta.
