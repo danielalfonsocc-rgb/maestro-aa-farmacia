@@ -13,9 +13,9 @@ Genera  Pedido_Fusion_AA_<fecha>.xlsx  con 4 hojas:
       El pedido MENSUAL real solo se ejecuta en S3 (--forzar-dialisis marca
       la nota de "semana de pedido" fuera de S3, ya no oculta la hoja)
   4 "Faltantes_AA"   Faltantes absolutos AT Abierta (últimos 30 días) — quiebre
-      real de stock (Farm.AA + Bod.AA = 0) con prescripción vigente pendiente,
-      más bloque preventivo POR AGOTARSE: Bodega AA en 0 con cobertura de
-      farmacia ≤ UMBRAL_PREQUIEBRE días (aún no es quiebre, pero lo será)
+      real de stock (Farm.AA + Bod.AA = 0) con prescripción vigente pendiente
+  5 "Por_Agotarse"   Preventiva: Bodega AA en 0 con farmacia aún despachando
+      pero cobertura ≤ UMBRAL_PREQUIEBRE días (aún no es quiebre, pero lo será)
 
 Sin llamadas a IA — solo pandas + openpyxl.
 
@@ -608,7 +608,7 @@ def calc_h4b(df_stock, df_bod):
     return rows
 
 
-def write_h4(ws, rows, hoy, rows_pre=None):
+def write_h4(ws, rows, hoy):
     _titulo(ws,
         f'FALTANTES ABSOLUTOS AT ABIERTA — últimos 30 días  ·  {hoy.strftime("%d/%m/%Y")}',
         len(HDRS4))
@@ -636,35 +636,43 @@ def write_h4(ws, rows, hoy, rows_pre=None):
         last = 3 + len(rows)
         ws.auto_filter.ref = f'A3:{get_column_letter(len(HDRS4))}{last}'
         _totals(ws, 4, last, len(HDRS4), {3, 4, 5})
-        fin = last + 1
+        ws.print_area = f'A1:{get_column_letter(len(HDRS4))}{last + 1}'
     else:
         ws.cell(4, 1, 'Sin faltantes absolutos en los últimos 30 días.')
-        fin = 4
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
+    ws.page_setup.orientation = 'landscape'
 
-    # ── bloque 2: POR AGOTARSE — Bodega AA en 0, farmacia con días contados ──
+
+def write_h4b(ws, rows_pre, hoy):
+    """Hoja Por_Agotarse: Bodega AA en 0 con farmacia aún despachando."""
+    _titulo(ws,
+        f'POR AGOTARSE — BODEGA AA EN 0  ·  {hoy.strftime("%d/%m/%Y")}',
+        len(HDRS4B))
+    _subtit(ws,
+        f'Medicamentos SIN stock en Bodega AA cuya Farmacia AA aún despacha pero con cobertura '
+        f'≤ {UMBRAL_PREQUIEBRE} días (aún NO es quiebre: anticipar reposición o compra antes de que '
+        f'caigan a Faltantes_AA) | Orden: cobertura ascendente | Acción verde = hay respaldo en '
+        f'Bodega Fármacos para traspaso, roja = requiere gestión de compra',
+        len(HDRS4B), height=48)
+    _hdr(ws, 3, HDRS4B)
+    for i, (vals, crit) in enumerate(rows_pre, 4):
+        _fila_crit(ws, i, vals, crit, {2, 3, 4, 5, 6}, cols_fmt1d={2, 5})
+        ac = str(vals[6])
+        c = ws.cell(i, 7)
+        if 'GESTIONAR COMPRA' in ac:
+            c.fill = _pfill('FFDAD6')
+            c.font = Font(name='Arial', size=10, color='9B1C1C', bold=True)
+        elif 'REPONER' in ac:
+            c.fill = _pfill('F0FDF4')
+            c.font = Font(name='Arial', size=10, color='166534')
+    ws.freeze_panes = 'A4'
     if rows_pre:
-        r0 = fin + 2
-        ws.merge_cells(start_row=r0, start_column=1,
-                       end_row=r0, end_column=len(HDRS4B))
-        t = ws.cell(r0, 1,
-            f'POR AGOTARSE — BODEGA AA EN 0 · cobertura de farmacia '
-            f'≤ {UMBRAL_PREQUIEBRE} días (aún NO es quiebre: anticipar reposición/compra)')
-        t.font = Font(bold=True, size=11, color='B45309', name='Arial')
-        ws.row_dimensions[r0].height = 20
-        _hdr(ws, r0 + 1, HDRS4B)
-        for i, (vals, crit) in enumerate(rows_pre, r0 + 2):
-            _fila_crit(ws, i, vals, crit, {2, 3, 4, 5, 6}, cols_fmt1d={2, 5})
-            ac = str(vals[6])
-            c = ws.cell(i, 7)
-            if 'GESTIONAR COMPRA' in ac:
-                c.fill = _pfill('FFDAD6')
-                c.font = Font(name='Arial', size=10, color='9B1C1C', bold=True)
-            elif 'REPONER' in ac:
-                c.fill = _pfill('F0FDF4')
-                c.font = Font(name='Arial', size=10, color='166534')
-        fin = r0 + 1 + len(rows_pre)
-
-    ws.print_area = f'A1:{get_column_letter(len(HDRS4))}{fin}'
+        last = 3 + len(rows_pre)
+        ws.auto_filter.ref = f'A3:{get_column_letter(len(HDRS4B))}{last}'
+        ws.print_area = f'A1:{get_column_letter(len(HDRS4B))}{last}'
+    else:
+        ws.cell(4, 1, 'Sin medicamentos por agotarse (Bodega AA en 0) hoy.')
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
     ws.page_setup.orientation = 'landscape'
@@ -723,7 +731,8 @@ def main():
     write_h1(ws1,                             r1, def_, hoy, sem)
     write_h2(wb.create_sheet('Bod_Farmacos'), r2, hoy, sem, dc)
     write_h3(wb.create_sheet('Dialisis'),     r3, hoy, sem, es_semana_pedido)
-    write_h4(wb.create_sheet('Faltantes_AA'), r4, hoy, rows_pre=r4b)
+    write_h4(wb.create_sheet('Faltantes_AA'), r4, hoy)
+    write_h4b(wb.create_sheet('Por_Agotarse'), r4b, hoy)
 
     sal = os.path.join(WORK_DIR,
         f'Pedido_Fusion_AA_{hoy.strftime("%Y%m%d_%H%M")}.xlsx')

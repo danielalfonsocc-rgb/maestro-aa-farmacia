@@ -2,13 +2,15 @@
 """
 pedido_fusion_simple.py — Planilla simplificada Farm_Bodega + Faltantes_AA
 ===========================================================================
-Version reducida de Pedido_Fusion_AA pensada para Google Sheets: solo 2 hojas.
+Version reducida de Pedido_Fusion_AA pensada para Google Sheets: solo 3 hojas.
 
   1 "Farm_Bodega"   Mismo universo/cálculo que la hoja Farm_Bod de
                      pedido_fusion.py, pero solo muestra Medicamento,
                      Criticidad, Stock Bodega A, Stock Farmacia y
                      Cantidad a Reponer (el resto de columnas/estilo igual).
   2 "Faltantes_AA"  Idéntica a la hoja 4 de pedido_fusion.py.
+  3 "Por_Agotarse"  Idéntica a la hoja 5 de pedido_fusion.py (Bodega AA en 0,
+                     farmacia con cobertura ≤ UMBRAL_PREQUIEBRE días).
 
 Sin llamadas a IA — solo pandas + openpyxl. Reutiliza el cálculo y estilos de
 pedido_fusion.py (no duplica lógica de negocio).
@@ -91,7 +93,8 @@ def main():
     ws1 = wb.active
     ws1.title = 'Farm_Bodega'
     write_simple(ws1, r1, def_, hoy, sem)
-    pf.write_h4(wb.create_sheet('Faltantes_AA'), r4, hoy, rows_pre=r4b)
+    pf.write_h4(wb.create_sheet('Faltantes_AA'), r4, hoy)
+    pf.write_h4b(wb.create_sheet('Por_Agotarse'), r4b, hoy)
 
     sal = os.path.join(WORK_DIR, f'Pedido_Fusion_Simple_AA_{hoy.strftime("%Y%m%d_%H%M")}.xlsx')
     wb.save(sal)

@@ -106,6 +106,10 @@ HOMOLOGACION_RAW: dict[str, str] = {
     "ACENOCUMAROL  CM 4 MG":                                   "ACENOCUMAROL 4 MG CM",
     "CINTA PARA DETERMINACION GLICEMIA  USO PACIENTE UD.":     "CINTA PARA DETERMINACION GLUCOSA USO PACIENTE UD.",
     "SALMETEROL Y FLUTICASONA 250 MG/25 MG INH UD":            "SALMETEROL /FLUTICASONA 250 MG/25 MG INH UD",
+    # Ferranim = nombre comercial del mismo compuesto (fumarato ferroso 330 mg
+    # + cianocobalamina + ac. ascorbico + ac. folico); aparece asi en el
+    # reporte de stock de Bodega Farmacos (detectado 21-07-2026)
+    "FERRANIM FUMARATO FERROSO 330 MG":                        "FUMARATO FERROSO + CIANOCOBALAMINA + ACIDO ASCORBICO + ACIDO FOLICO 330/1/100/2 MG CP",
 }
 HOMOLOGACION: dict[str, str] = {norm_erp(k): norm_erp(v) for k, v in HOMOLOGACION_RAW.items()}
 
