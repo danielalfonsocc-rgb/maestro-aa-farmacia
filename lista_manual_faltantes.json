@@ -1,0 +1,17 @@
+{
+  "_descripcion": "Faltantes detectados manualmente por la QF en la pantalla Solicitud de Producto de SSASUR (medicamentos con stock bodega en 0). La hoja Faltantes_60D marca con 'SI' los que coinciden con esta lista. Editar 'medicamentos' con los nombres canonicos (mismos que aparecen en la columna Medicamento del consolidado); el cruce ignora may/min y acentos.",
+  "fecha_deteccion": "2026-07-21",
+  "medicamentos": [
+    "EMPAGLIFLOZINA 25 MG CM UD",
+    "ESOMEPRAZOL 20 MG CM",
+    "EZETIMIBE 10 MG CM UNIDAD",
+    "INSULINA GLULISINA 300 UI/3 ML (100 UI/ML) INYECTABLE EN LAPIZ PRELLENADO",
+    "ISOSORBIDA DINITRATO 10 MG COMPRIMIDO",
+    "LATANOPROST 0,005% COLIRIO",
+    "LIRAGLUTIDA 6 MG/ML SOL.INY UD",
+    "MICOFENOLATO 500 MG CR",
+    "NISTATINA 100.000 UI/G UNGUENTO",
+    "UREA 10% CREMA 20 GR",
+    "FUMARATO FERROSO + CIANOCOBALAMINA + ACIDO ASCORBICO + ACIDO FOLICO 330/1/100/2 MG CP"
+  ]
+}

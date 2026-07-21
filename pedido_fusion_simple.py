@@ -90,7 +90,7 @@ def main():
     r1 = calc_simple(data['farm'], fe_map, def_, rep_h2_map)
     r4 = pf.calc_h4(data['falt30'])
     r4b = pf.calc_h4b(data['stock'], data['bod'])
-    r4c = pf.calc_h4c(data['falt60'])
+    r4c = pf.calc_h4c(data['falt60'], pf._lista_manual())
 
     wb = openpyxl.Workbook()
     ws1 = wb.active

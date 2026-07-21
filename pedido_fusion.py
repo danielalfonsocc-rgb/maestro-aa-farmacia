@@ -27,14 +27,17 @@ Uso:
     py pedido_fusion.py --forzar-dialisis
     py pedido_fusion.py --todos
 """
-import os, math, datetime as dt, argparse, glob
+import os, math, datetime as dt, argparse, glob, json
 import pandas as pd
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+from utils_aa import norm_erp
+
 WORK_DIR     = os.path.dirname(os.path.abspath(__file__))
 FERIADOS_CSV = os.path.join(WORK_DIR, 'feriados_chile.csv')
+LISTA_MANUAL_JSON = os.path.join(WORK_DIR, 'lista_manual_faltantes.json')
 BUFFER_SS    = 1    # días de safety stock (blindaje reapertura lunes)
 EXTRA_CRIT   = 1    # días extra SS para criticidad ≤ 2
 UMBRAL_PREQUIEBRE = 10   # días de cobertura farmacia bajo los cuales una bodega
@@ -686,6 +689,7 @@ def write_h4b(ws, rows_pre, hoy):
 
 HDRS4C = [
     ('Medicamento',              44),
+    ('Lista Manual',            11),
     ('Días en Falta',           11),
     ('Desde',                   12),
     ('Pacientes Afectados',     13),
@@ -696,13 +700,26 @@ HDRS4C = [
     ('Acción',                  52),
 ]
 
-def calc_h4c(df_falt60):
+def _lista_manual():
+    """Set de nombres normalizados de la lista de faltantes detectados a mano
+    por la QF (lista_manual_faltantes.json). Vacío si el archivo no existe."""
+    try:
+        with open(LISTA_MANUAL_JSON, encoding='utf-8') as fh:
+            data = json.load(fh)
+        return {norm_erp(m) for m in data.get('medicamentos', [])}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+
+
+def calc_h4c(df_falt60, manual=None):
     """Filas de la hoja Faltantes_60D_Persistente del consolidado (calculada en
     maestro_aa.py sec.8c): faltantes del mostrador AA con demanda pendiente en
     los últimos 60 días que siguen vigentes hoy. Ya viene ordenada por días en
-    falta descendente."""
+    falta descendente. `manual` = set de nombres normalizados de la lista manual
+    para marcar la columna 'Lista Manual'."""
     if df_falt60 is None or not len(df_falt60):
         return []
+    manual = manual or set()
     rows = []
     for _, r in df_falt60.iterrows():
         med    = str(r.get('Medicamento', '')).strip()
@@ -715,7 +732,8 @@ def calc_h4c(df_falt60):
         saa    = int(_n(r.get('Stock_AA_Total', 0)))
         sbf    = int(_n(r.get('Stock_BODEGA_FARMACOS', 0)))
         accion = str(r.get('Accion_Sugerida', ''))
-        rows.append(((med, dias, desde, pax, nrec, pend, saa, sbf, accion), crit))
+        en_lista = 'SI' if norm_erp(med) in manual else '—'
+        rows.append(((med, en_lista, dias, desde, pax, nrec, pend, saa, sbf, accion), crit))
     return rows
 
 
@@ -727,20 +745,25 @@ def write_h4c(ws, rows, hoy):
     _subtit(ws,
         'Medicamentos con demanda pendiente en el mostrador de Atención Abierta durante los últimos '
         '60 días que SIGUEN sin resolverse hoy (última receta sin cubrir dentro de los últimos 15 '
-        'días) | Días en Falta = días desde la primera receta sin cubrir | Se basa en la DEMANDA '
-        'pendiente, no en el stock reportado: "Stock AA Reportado > 0" con acción REVISAR indica '
-        'stock que no se despacha (posible fantasma) — verificar físico en mesón',
+        'días) | Lista Manual = SI si estaba en la detección manual de la QF | Días en Falta = días '
+        'desde la primera receta sin cubrir | Se basa en la DEMANDA pendiente, no en el stock '
+        'reportado: "Stock AA Reportado > 0" con acción REVISAR indica stock que no se despacha '
+        '(posible fantasma) — verificar físico en mesón',
         len(HDRS4C), height=60)
     _hdr(ws, 3, HDRS4C)
     for i, (vals, crit) in enumerate(rows, 4):
-        _fila_crit(ws, i, vals, crit, {2, 4, 5, 6, 7, 8})
-        ac  = str(vals[8])
-        saa = vals[6]
+        _fila_crit(ws, i, vals, crit, {2, 3, 5, 6, 7, 8, 9})
+        # columna Lista Manual: azul/negrita si SI
+        if str(vals[1]) == 'SI':
+            cm = ws.cell(i, 2)
+            cm.fill = _pfill('DBEAFE'); cm.font = Font(name='Arial', size=10, color='1E40AF', bold=True)
+        ac  = str(vals[9])
+        saa = vals[7]
         # columna Stock AA Reportado: ámbar si hay stock fantasma
         if saa > 0:
-            cs = ws.cell(i, 7)
+            cs = ws.cell(i, 8)
             cs.fill = _pfill('FEF3C7'); cs.font = Font(name='Arial', size=10, color='92400E', bold=True)
-        c = ws.cell(i, 9)
+        c = ws.cell(i, 10)
         if 'COMPRA URGENTE' in ac:
             c.fill = _pfill('FFDAD6'); c.font = Font(name='Arial', size=10, color='9B1C1C', bold=True)
         elif 'REVISAR' in ac:
@@ -751,7 +774,7 @@ def write_h4c(ws, rows, hoy):
     if rows:
         last = 3 + len(rows)
         ws.auto_filter.ref = f'A3:{get_column_letter(len(HDRS4C))}{last}'
-        _totals(ws, 4, last, len(HDRS4C), {4, 5, 6})
+        _totals(ws, 4, last, len(HDRS4C), {5, 6, 7})
         ws.print_area = f'A1:{get_column_letter(len(HDRS4C))}{last + 1}'
     else:
         ws.cell(4, 1, 'Sin faltantes persistentes en los últimos 60 días.')
@@ -807,7 +830,7 @@ def main():
     r3 = calc_h3(data['dialmed'], fe_map, rep_h2_map)
     r4 = calc_h4(data['falt30'])
     r4b = calc_h4b(data['stock'], data['bod'])
-    r4c = calc_h4c(data['falt60'])
+    r4c = calc_h4c(data['falt60'], _lista_manual())
 
     wb = openpyxl.Workbook()
     ws1 = wb.active; ws1.title = 'Farm_Bod'
