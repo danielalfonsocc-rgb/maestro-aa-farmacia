@@ -6,6 +6,10 @@ cantidad_de_productos_consumidos_en_centro_de_costo_farmacia*.xlsx
 # ── Sesión SSASUR (contiene cookies/credenciales — NUNCA subir) ──────────────
 .ssasur_session.json
 
+# ── Estado de sync del árbol GT: sus claves son rutas de PDFs individuales
+# con NOMBRES DE PACIENTES (Ley 19.628) — NUNCA subir a este repo público ────
+_gt_arbol_sync.json
+
 # ── Debug y temporales ────────────────────────────────────────────────────────
 debug_*.png
 _tmp_*.png
