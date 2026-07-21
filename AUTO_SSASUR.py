@@ -617,16 +617,30 @@ async def main():
         await page.goto(DASHBOARD_URL)
 
         async def _esperar_abastecimiento(pg):
-            try:
-                await pg.wait_for_selector(
-                    'button:has-text("ABASTECIMIENTO"), div:has-text("ABASTECIMIENTO")',
-                    timeout=TIMEOUT_LOGIN,
-                )
-            except Exception:
-                await pg.wait_for_function(
-                    "document.body.innerText.includes('ABASTECIMIENTO')",
-                    timeout=TIMEOUT_LOGIN,
-                )
+            # Antes esto era una sola espera bloqueante de hasta 5 min sin
+            # imprimir nada — si el dashboard tardaba en cargar era
+            # indistinguible de un freeze real. Se poll-ea en tramos cortos
+            # con heartbeat para que la consola muestre que sigue vivo.
+            LATIDO = 20_000  # ms entre heartbeats
+            transcurrido = 0
+            while transcurrido < TIMEOUT_LOGIN:
+                try:
+                    await pg.wait_for_selector(
+                        'button:has-text("ABASTECIMIENTO"), div:has-text("ABASTECIMIENTO")',
+                        timeout=LATIDO,
+                    )
+                    return
+                except Exception:
+                    pass
+                try:
+                    if await pg.evaluate("document.body.innerText.includes('ABASTECIMIENTO')"):
+                        return
+                except Exception:
+                    pass  # página navegando/cerrada momentáneamente — reintenta
+                transcurrido += LATIDO
+                restante = max(TIMEOUT_LOGIN - transcurrido, 0) // 1000
+                print(f"  … esperando login/dashboard ({restante}s restantes)")
+            raise TimeoutError(f"No se detectó ABASTECIMIENTO tras {TIMEOUT_LOGIN // 1000}s")
 
         try:
             await _esperar_abastecimiento(page)
