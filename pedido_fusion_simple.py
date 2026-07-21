@@ -85,12 +85,13 @@ def main():
     rep_h2_map = {v[0]: v[7] for v in r2}
     r1 = calc_simple(data['farm'], fe_map, def_, rep_h2_map)
     r4 = pf.calc_h4(data['falt30'])
+    r4b = pf.calc_h4b(data['stock'], data['bod'])
 
     wb = openpyxl.Workbook()
     ws1 = wb.active
     ws1.title = 'Farm_Bodega'
     write_simple(ws1, r1, def_, hoy, sem)
-    pf.write_h4(wb.create_sheet('Faltantes_AA'), r4, hoy)
+    pf.write_h4(wb.create_sheet('Faltantes_AA'), r4, hoy, rows_pre=r4b)
 
     sal = os.path.join(WORK_DIR, f'Pedido_Fusion_Simple_AA_{hoy.strftime("%Y%m%d_%H%M")}.xlsx')
     wb.save(sal)
@@ -98,6 +99,8 @@ def main():
     n1 = len(r1)
     print(f'Farm_Bodega     : {n1} meds con cantidad a reponer')
     print(f'Faltantes AA 30d: {len(r4)} meds sin poder despachar en Atencion Abierta')
+    print(f'Por agotarse    : {len(r4b)} meds con Bodega AA en 0 y cobertura '
+          f'farmacia <= {pf.UMBRAL_PREQUIEBRE} dias')
     print(f'\nExcel: {os.path.basename(sal)}')
 
 
