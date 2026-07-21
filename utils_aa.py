@@ -34,6 +34,12 @@ PLANTILLA_BLANCO_RCH = os.environ.get(
     "MAESTRO_PLANTILLA_RCH",
     r"C:\Users\danie\Downloads\02_Farmacia_Recetas_e_Informes_CSV\Formulario-Notificacion-Recetas-Cheque_v11.xlsx",
 )
+# Planilla maestra de Gestión Territorial (histórico por mes, uso de gt_maestro.py):
+#   set MAESTRO_GT_MAESTRO_XLSX=D:\OtraCarpeta\GT PITRUFQUEN 2026.xlsx
+GT_MAESTRO_XLSX = os.environ.get(
+    "MAESTRO_GT_MAESTRO_XLSX",
+    r"C:\Users\danie\Downloads\GT PITRUFQUEN 2026 (2).xlsx",
+)
 
 
 # Blindaje contra datos auto-detectados desactualizados (incidente 2026-07-13:

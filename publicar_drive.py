@@ -287,9 +287,14 @@ def _fecha_fin_rango(nombre_carpeta):
     return m.group(2) if m else None
 
 
+NOMINAS_ENVIO = "Nóminas de Envío"
+
+
 def _subir_gt_rango(service, rango_dir, parent_fid, stats, cache, prefijo_log):
     """Sube todos los archivos de un rango GT a parent_fid, organizados por establecimiento.
-    Archivos con destino conocido van a <parent>/<ESTAB>/. Archivos generales van directo."""
+    Archivos con destino conocido van a <parent>/<ESTAB>/Nóminas de Envío/ (son planillas
+    y letreros de despacho — separados de "Revisión de Solicitudes", ver
+    sync_gt_solicitudes). Archivos generales van directo."""
     archivos = sorted(
         glob.glob(os.path.join(rango_dir, "*.xlsx")) +
         glob.glob(os.path.join(rango_dir, "*.pdf"))
@@ -303,9 +308,10 @@ def _subir_gt_rango(service, rango_dir, parent_fid, stats, cache, prefijo_log):
         if destino:
             estabs_vistos.add(destino)
             fid_estab = _obtener_o_crear_carpeta(service, destino, parent_fid, cache)
-            r = _subir(service, f, fid_estab, stats=stats)
+            fid_nominas = _obtener_o_crear_carpeta(service, NOMINAS_ENVIO, fid_estab, cache)
+            r = _subir(service, f, fid_nominas, stats=stats)
             if r != "skip":
-                print(f"  {prefijo_log}/{destino}/{nb}: {r}")
+                print(f"  {prefijo_log}/{destino}/{NOMINAS_ENVIO}/{nb}: {r}")
         else:
             # Archivo general (Cruce_GT_Clasificacion, etc.) — al nivel del rango
             r = _subir(service, f, parent_fid, stats=stats)
@@ -401,6 +407,84 @@ def sync_gt(service, raiz_id, stats, cache):
     estabs_str = ", ".join(estabs) if estabs else "(ninguno)"
     print(f"  [GT] {len(rangos)} rango(s) · último «{fecha_ultimo}» · "
           f"establecimientos: {estabs_str}")
+
+    sync_gt_solicitudes(service, fid_gt, stats, cache)
+
+
+# Carpeta hermana del repo (ver CLAUDE.md) donde viven las solicitudes GT ya
+# analizadas: PDFs de recetas individuales/combinadas + feedback, organizados
+# por establecimiento (subcarpetas creadas 19-07-2026).
+GT_SOLICITUDES_DIR = os.path.join(os.path.dirname(WORK_DIR), "04_Farmacia_Gestion_Territorial")
+
+# Mapea el nombre de la subcarpeta LOCAL (convención "TIPO_LUGAR" de
+# gt_maestro, ej. HOSPITAL_TOLTEN) al nombre de carpeta que YA existe en
+# Drive bajo "2 - Gestion Territorial" (convención "LUGAR TIPO" heredada de
+# SSASUR/skill_gt, ej. "TOLTEN HOSP") — para reusar la carpeta existente en
+# vez de crear una duplicada con un nombre ligeramente distinto.
+_SOLICITUDES_A_DRIVE = {
+    "CESFAM_FREIRE": "CESFAM FREIRE",
+    "CESFAM_HUALPIN": "CESFAM HUALPIN",
+    "CESFAM_QUEPE": "CESFAM QUEPE",
+    "CESFAM_TEODORO_SCHMIDT": "CESFAM TEODORO SCHMIDT",
+    "DSM_GORBEA": "GORBEA DSM",
+    "DSM_LONCOCHE": "LONCOCHE DSM",
+    "DSM_TOLTEN": "TOLTEN DSM",
+    "HOSPITAL_GORBEA": "GORBEA HOSP",
+    "HOSPITAL_LONCOCHE": "LONCOCHE HOSP",
+    "HOSPITAL_TOLTEN": "TOLTEN HOSP",
+    "PSR_COMUY": "PSR COMUY",
+    "PSR_QUEULE": "PSR QUEULE",
+}
+
+
+def sync_gt_solicitudes(service, fid_gt, stats, cache):
+    """Refleja en Drive las dos carpetas locales por establecimiento
+    (04_Farmacia_Gestion_Territorial/<carpeta local>/):
+      · "Revisión de Solicitudes" (el PDF combinado con TODAS las recetas
+        solicitadas + feedback; los PDF individuales por paciente quedan
+        aparte en la subcarpeta "PDFs individuales" para no tapar el
+        combinado)
+      · "Nóminas de Envío" (planillas/letreros de despacho más antiguos que
+        no vinieron de out_gt/, movidos acá el 19-07-2026)
+    Reusa el mismo nombre de carpeta que ya existe en Drive (ver
+    _SOLICITUDES_A_DRIVE) en vez de crear una carpeta duplicada."""
+    if not os.path.isdir(GT_SOLICITUDES_DIR):
+        return
+    subidos = 0
+    for carpeta_local, estab_drive in _SOLICITUDES_A_DRIVE.items():
+        local_dir = os.path.join(GT_SOLICITUDES_DIR, carpeta_local)
+        if not os.path.isdir(local_dir):
+            continue
+        fid_estab = _obtener_o_crear_carpeta(service, estab_drive, fid_gt, cache)
+        for nombre_carpeta in ("Revisión de Solicitudes", NOMINAS_ENVIO):
+            local_sub = os.path.join(local_dir, nombre_carpeta)
+            if not os.path.isdir(local_sub):
+                continue
+            fid_sub = _obtener_o_crear_carpeta(service, nombre_carpeta, fid_estab, cache)
+            subidos += _subir_arbol(service, local_sub, fid_sub, stats, cache,
+                                    prefijo_log=f"{estab_drive}/{nombre_carpeta}")
+    if subidos == 0:
+        print("  [GT] Revisión de Solicitudes / Nóminas de Envío: nada nuevo que subir")
+
+
+def _subir_arbol(service, local_dir, fid_padre, stats, cache, prefijo_log):
+    """Sube todos los .pdf/.xlsx de local_dir a fid_padre en Drive, y baja
+    recursivamente por sus subcarpetas preservando la estructura. Devuelve
+    cuántos archivos subió/actualizó (no cuenta los "skip")."""
+    subidos = 0
+    for nombre in sorted(os.listdir(local_dir)):
+        ruta = os.path.join(local_dir, nombre)
+        if os.path.isdir(ruta):
+            fid_sub = _obtener_o_crear_carpeta(service, nombre, fid_padre, cache)
+            subidos += _subir_arbol(service, ruta, fid_sub, stats, cache, f"{prefijo_log}/{nombre}")
+            continue
+        if nombre.startswith("~$") or os.path.splitext(nombre)[1].lower() not in (".pdf", ".xlsx"):
+            continue
+        r = _subir(service, ruta, fid_padre, stats=stats)
+        if r != "skip":
+            print(f"  {prefijo_log}/{nombre}: {r}")
+            subidos += 1
+    return subidos
 
 
 def sync_auditoria(service, raiz_id, stats, cache=None):
