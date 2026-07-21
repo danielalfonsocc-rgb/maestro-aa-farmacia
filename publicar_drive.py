@@ -88,8 +88,17 @@ def _get_service():
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                # invalid_grant: refresh token vencido o revocado (apps OAuth en
+                # modo "Testing" caducan el grant a los 7 días; también pasa al
+                # re-consentir el mismo client para otro scope). Antes esto
+                # reventaba TODA la sincronización con un traceback — ahora se
+                # relanza el flujo OAuth en el navegador para re-autorizar.
+                print(f"  [aviso] Token de Drive vencido/revocado ({e}) — re-autorizando en el navegador...")
+                creds = None
+        if not creds or not creds.valid:
             if not os.path.exists(CREDS_FILE):
                 print(f"[ERROR] No se encontró credentials.json en:\n  {WORK_DIR}")
                 print("\nPasos para obtenerlo:")
@@ -437,6 +446,25 @@ _SOLICITUDES_A_DRIVE = {
 }
 
 
+# Estado local del espejo del árbol GT (relpath → md5 ya subido). Sin esto,
+# los .xlsx del árbol (convertidos a Sheets nativo, sin md5Checksum en Drive)
+# se re-subirían TODOS en cada corrida — mismo bug que ya se arregló para
+# Historial con _gt_historial_sync.json. El árbol ordenado por establecimiento/
+# fecha (21-07-2026) tiene ~178 archivos y crece, así que acá el dedup se hace
+# contra este JSON local en vez de contra Drive.
+_GT_ARBOL_STATE_FILE = os.path.join(WORK_DIR, "_gt_arbol_sync.json")
+
+
+def _cargar_arbol_sincronizado():
+    if os.path.exists(_GT_ARBOL_STATE_FILE):
+        try:
+            with open(_GT_ARBOL_STATE_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
 def sync_gt_solicitudes(service, fid_gt, stats, cache):
     """Refleja en Drive las dos carpetas locales por establecimiento
     (04_Farmacia_Gestion_Territorial/<carpeta local>/):
@@ -444,12 +472,13 @@ def sync_gt_solicitudes(service, fid_gt, stats, cache):
         solicitadas + feedback; los PDF individuales por paciente quedan
         aparte en la subcarpeta "PDFs individuales" para no tapar el
         combinado)
-      · "Nóminas de Envío" (planillas/letreros de despacho más antiguos que
-        no vinieron de out_gt/, movidos acá el 19-07-2026)
+      · "Nóminas de Envío" (una subcarpeta DD-MM-YYYY por cada envío hecho;
+        historial completo ordenado el 21-07-2026)
     Reusa el mismo nombre de carpeta que ya existe en Drive (ver
     _SOLICITUDES_A_DRIVE) en vez de crear una carpeta duplicada."""
     if not os.path.isdir(GT_SOLICITUDES_DIR):
         return
+    estado = _cargar_arbol_sincronizado()
     subidos = 0
     for carpeta_local, estab_drive in _SOLICITUDES_A_DRIVE.items():
         local_dir = os.path.join(GT_SOLICITUDES_DIR, carpeta_local)
@@ -462,25 +491,40 @@ def sync_gt_solicitudes(service, fid_gt, stats, cache):
                 continue
             fid_sub = _obtener_o_crear_carpeta(service, nombre_carpeta, fid_estab, cache)
             subidos += _subir_arbol(service, local_sub, fid_sub, stats, cache,
-                                    prefijo_log=f"{estab_drive}/{nombre_carpeta}")
+                                    prefijo_log=f"{estab_drive}/{nombre_carpeta}",
+                                    estado=estado)
+    with open(_GT_ARBOL_STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(estado, f, ensure_ascii=False, indent=2, sort_keys=True)
     if subidos == 0:
         print("  [GT] Revisión de Solicitudes / Nóminas de Envío: nada nuevo que subir")
 
 
-def _subir_arbol(service, local_dir, fid_padre, stats, cache, prefijo_log):
+def _subir_arbol(service, local_dir, fid_padre, stats, cache, prefijo_log, estado=None):
     """Sube todos los .pdf/.xlsx de local_dir a fid_padre en Drive, y baja
     recursivamente por sus subcarpetas preservando la estructura. Devuelve
-    cuántos archivos subió/actualizó (no cuenta los "skip")."""
+    cuántos archivos subió/actualizó (no cuenta los "skip").
+
+    `estado` (relpath→md5) evita hasta la llamada a la API para archivos ya
+    subidos sin cambios; si el md5 local coincide con el registrado, ni se
+    lista ni se sube."""
     subidos = 0
     for nombre in sorted(os.listdir(local_dir)):
         ruta = os.path.join(local_dir, nombre)
         if os.path.isdir(ruta):
             fid_sub = _obtener_o_crear_carpeta(service, nombre, fid_padre, cache)
-            subidos += _subir_arbol(service, ruta, fid_sub, stats, cache, f"{prefijo_log}/{nombre}")
+            subidos += _subir_arbol(service, ruta, fid_sub, stats, cache,
+                                    f"{prefijo_log}/{nombre}", estado=estado)
             continue
         if nombre.startswith("~$") or os.path.splitext(nombre)[1].lower() not in (".pdf", ".xlsx"):
             continue
+        clave = f"{prefijo_log}/{nombre}"
+        md5_local = _md5(ruta)
+        if estado is not None and estado.get(clave) == md5_local:
+            stats["skip"] += 1
+            continue
         r = _subir(service, ruta, fid_padre, stats=stats)
+        if r != "fail" and estado is not None:
+            estado[clave] = md5_local
         if r != "skip":
             print(f"  {prefijo_log}/{nombre}: {r}")
             subidos += 1
