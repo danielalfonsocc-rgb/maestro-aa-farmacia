@@ -39,7 +39,10 @@ echo.
 echo  Iniciando automatizacion...
 echo.
 
-py AUTO_SSASUR.py %* 2>> auto_ssasur_error.log
+rem stdout se guarda en auto_ssasur_stdout.log (ademas de mostrarse en pantalla)
+rem porque los [ERROR]/[AVISO] del paso GT son print() normales, no excepciones,
+rem y antes se perdian sin quedar en ningun lado si la corrida "fallaba en silencio".
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& { py AUTO_SSASUR.py %* 2>> 'auto_ssasur_error.log' | Tee-Object -FilePath 'auto_ssasur_stdout.log'; exit $LASTEXITCODE }"
 
 echo.
 echo  ============================================================
