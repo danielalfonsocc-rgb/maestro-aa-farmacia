@@ -46,6 +46,14 @@ Documentos_Generados/
 Centinela_Reportes/
 Programacion_AA/
 _archivo/
+
+# ── Clozapina: hemogramas PDF (Ley 19.628) + reportes mensuales con RUT/nombre ─
+_hemogramas_clozapina/
+Clozapina_Reportes/
+_clozapina_retiros_detalle.csv
+_debug_busqueda_*
+_debug_*_*.png
+_debug_*_*.txt
 Auditoria_Duplicados_Profunda*.xlsx
 Auditoria_Insulinas_*.xlsx
 Auditoria_Cantidad_Posologia_*.xlsx

@@ -497,6 +497,12 @@ async def paso_gt(page, desde=None, hasta=None, debug=False):
     print("\n[GT] Módulo RECETA — Reporte de gestión territorial (modalidad de despacho)")
     await entrar_receta(page)
     if not await _abrir_reporte_gt(page):
+        # Justo tras un login recién restaurado el SPA puede no haber terminado
+        # de hidratar — un solo reintento con más espera basta en ese caso
+        # (mismo patrón que el retry de sesión expirada del paso 1).
+        print("  [AVISO] Formulario GT no cargó al primer intento — reintento en 3s...")
+        await page.wait_for_timeout(3_000)
+    if not await _hay_form_gt(page) and not await _abrir_reporte_gt(page):
         print("  [ERROR] No cargó el formulario de gestión territorial.")
         await _dump_formulario(page, "gt-fallo")
         await page.screenshot(path=str(MAESTRO_DIR / "debug_gt.png"))
@@ -574,6 +580,10 @@ async def main():
     no_gt    = "--no-gt" in sys.argv or solo_stock
     # Saltar el registro ISP de recetas cheque con --no-rch.
     no_rch   = "--no-rch" in sys.argv
+    # Consolidado de hemogramas Clozapina: OPT-IN (--clozapina) hasta hacer un
+    # ensayo supervisado de clozapina_hce_hemogramas.py en vivo — no corre por
+    # defecto todavía.
+    con_clozapina = "--clozapina" in sys.argv
     # Saltar la descarga del reporte de Programación AA con --no-programacion.
     no_programacion = "--no-programacion" in sys.argv
     debug_gt = "--debug-gt" in sys.argv        # volcados [DESCUBRIR …] + screenshots
@@ -962,6 +972,60 @@ async def main():
             )
             if dret.returncode != 0:
                 print(f"  [aviso] recetas_cheque.py terminó con código {dret.returncode}")
+
+        # ── PASO 5d-bis — CONSOLIDADO HEMOGRAMAS CLOZAPINA (OPT-IN, --clozapina) ─
+        # Busca en HCE el hemograma más reciente de cada paciente con Clozapina
+        # despachada (Atención Abierta) y arma el Excel de ingreso a MINSAL.
+        # Reutiliza esta MISMA sesión/pestaña de Playwright — por eso corre acá
+        # y no como subprocess.run() aparte (necesita el 'page' ya logeado).
+        if con_clozapina:
+            cloz_py = MAESTRO_DIR / "clozapina_hce_hemogramas.py"
+            if cloz_py.exists():
+                print(f"\n[5d-bis/9] Consolidado de hemogramas Clozapina...")
+                try:
+                    from clozapina_hce_hemogramas import (
+                        entrar_hce, esperar_firma_electronica, buscar_paciente,
+                        descargar_hemograma_mas_reciente, limpiar_busqueda, _run_a_partes,
+                    )
+                    from clozapina_consolidar import (
+                        cargar_despachos_clozapina, extraer_hemograma_pdf,
+                        construir_fila, guardar_excel, FilaConsolidada, ruta_archivo_mes,
+                    )
+                    despachos_cloz = cargar_despachos_clozapina(str(MAESTRO_DIR), desde=date(today.year, today.month, 1))
+                    por_paciente_cloz = despachos_cloz.sort_values("fecha_despacho").groupby("run_normalizado").last()
+                    por_paciente_cloz = por_paciente_cloz.reset_index().sort_values("fecha_despacho")
+                    print(f"  {len(por_paciente_cloz)} paciente(s) con Clozapina este mes.")
+                    await entrar_hce(page)
+                    await esperar_firma_electronica(page)
+                    filas_minsal_cloz, filas_obs_cloz = [], []
+                    for _, prow in por_paciente_cloz.iterrows():
+                        run = prow["run_normalizado"]
+                        run_sin_guion = run.replace("-", "").replace(".", "")
+                        run_num, dv = _run_a_partes(run)
+                        nombre = f"{prow['Nombre']} {prow['Apellido Paterno']} {prow['Apellido Materno']}"
+                        hemograma = None
+                        if await buscar_paciente(page, run_num, dv):
+                            pdf_path = await descargar_hemograma_mas_reciente(context, page, run_sin_guion)
+                            if pdf_path:
+                                try:
+                                    hemograma = extraer_hemograma_pdf(pdf_path)
+                                except Exception as e:
+                                    print(f"    [aviso] no se pudo leer PDF de {run_sin_guion}: {e}")
+                        await limpiar_busqueda(page)
+                        fc = FilaConsolidada(
+                            run=run, nombre=nombre,
+                            fecha_despacho=prow["fecha_despacho"].date() if prow["fecha_despacho"] == prow["fecha_despacho"] else None,
+                            dosis_mg_dia=prow["dosis_mg_dia"], cuota_receta=prow["cuota_receta"] or "",
+                            posologia_texto=prow["posologia_texto"] or "", hemograma=hemograma,
+                        )
+                        fm, fo = construir_fila(fc, today)
+                        filas_minsal_cloz.append(fm)
+                        filas_obs_cloz.append(fo)
+                    _ruta_cloz = ruta_archivo_mes(today)
+                    guardar_excel(filas_minsal_cloz, filas_obs_cloz, str(_ruta_cloz))
+                    print(f"  ✓ {_ruta_cloz.name} ({len(por_paciente_cloz)} pacientes)")
+                except Exception as e:
+                    print(f"  [aviso] Consolidado Clozapina falló: {e}")
 
         # ── PASO 5e — PEDIDO FUSIONADO ───────────────────────────────────────
         pedido_py = MAESTRO_DIR / "pedido_fusion.py"
