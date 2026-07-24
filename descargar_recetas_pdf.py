@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
 """
-descargar_recetas_pdf.py — Descarga de SSASUR el PDF individual de cada
-receta (por Nº) para completar una Revisión de Solicitudes con los
-documentos reales, no solo la lista de números que arma
-revision_solicitudes.py --xlsx.
+descargar_recetas_pdf.py — Descarga de SSASUR el PDF OFICIAL de cada receta
+(por Nº) — "RECETA MÉDICA N°..." con firma del médico y checklist de
+retiro, el mismo formato que produce el sitio al hacer clic en "Imprimir" —
+para completar una Revisión de Solicitudes con los documentos reales, no
+solo la lista de números que arma revision_solicitudes.py --xlsx.
 
-ADVERTENCIA — a diferencia de GT y la sábana (ver memoria del proyecto
-ssasur-navegacion.md, ambos verificados con corridas reales), la búsqueda de
-UNA receta por número NO tiene un flujo verificado todavía en este proyecto.
-Este script hace lo mismo que se hizo para descubrir GT: entra al módulo
-RECETA, intenta ubicar la pantalla de consulta con varios candidatos
-razonables, y si no encuentra el formulario esperado, vuelca la página real
-con --debug para poder terminar de ajustar los selectores con datos reales
-en vez de adivinar a ciegas.
-
-Primera corrida (obligatoria): usar --debug con 1-2 recetas nomás. Revisa la
-salida [DESCUBRIR ...] y los screenshots (debug_consulta_receta_*.png) — con
-eso se ajustan los selectores de búsqueda/descarga antes de correr el lote
-completo.
+Confirmado en vivo 23-07-2026, contrastado byte a byte contra el PDF de
+referencia de Toltén (18-07-2026): el botón "Imprimir" del sitio abre el
+diálogo de impresión NATIVO del sistema operativo (window.print()), que
+Playwright no puede controlar — pero ese botón en realidad pide, por debajo,
+el endpoint https://www.ssasur.cl/receta/impresion/pdf/<receta>/undefined,
+que devuelve el PDF oficial directo. Se pide ese endpoint con la sesión ya
+autenticada, sin necesidad de navegar ni clicar nada del formulario.
 
 Uso:
   py descargar_recetas_pdf.py --estab "CESFAM FREIRE" --recetas 45858462,46045176 --debug
   py descargar_recetas_pdf.py --estab "CESFAM FREIRE" --feedback "C:/ruta/Feedback_Solicitud_CESFAM_FREIRE_2026-07-23.xlsx"
+  py descargar_recetas_pdf.py --estab "CESFAM FREIRE" --rut "6.385.207-4"
+      (busca en vivo las recetas vigentes de ese RUT — para cuando la receta
+      es tan nueva que ni siquiera aparece en el CSV local; confirmado en
+      vivo 23-07-2026 vía Consultar Receta -> pestaña Run, filtrando Estado
+      distinto de ENTREGADA/CERRADA-INCOMPLETA/ANULADA)
 """
 import argparse
 import asyncio
+import datetime
 import os
 import re
 import sys
@@ -35,28 +36,11 @@ import openpyxl
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import AUTO_SSASUR as AS
 from agregar_gt_manual import _CARPETA_LOCAL, GT_SOLICITUDES_DIR
+from revision_solicitudes import _carpeta_salida
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 MAESTRO_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Candidatos razonables — NINGUNO verificado en vivo todavía (ver advertencia
-# arriba). Se prueban en orden; si ninguno funciona, --debug vuelca la página
-# real para terminar de ajustar esto con datos ciertos.
-CANDIDATOS_URL = [
-    "https://www.ssasur.cl/receta/consulta",
-    "https://www.ssasur.cl/receta/informes/consultaReceta",
-    "https://www.ssasur.cl/receta/consultarReceta",
-]
-CANDIDATOS_MENU = [
-    'a:has-text("Consultar Receta")', 'button:has-text("Consultar Receta")',
-    'a:has-text("Buscar Receta")', 'button:has-text("Buscar Receta")',
-    'a:has-text("Historial")', 'button:has-text("Historial")',
-]
-CANDIDATOS_INPUT_RECETA = [
-    "#numero_receta",  # confirmado en vivo 23-07-2026 (Consultar Receta -> Reportes)
-    'input[name="numeroReceta"]', 'input[id*="receta" i]', 'input[placeholder*="receta" i]',
-]
 
 
 def _leer_recetas_de_feedback(path):
@@ -82,103 +66,96 @@ def _leer_recetas_de_feedback(path):
     return out
 
 
-async def _abrir_consulta_receta(page, debug):
-    # Confirmado en vivo (23-07-2026): "Consultar Receta" existe pero está
-    # anidado bajo el menú "Reportes" (mismo patrón que GT en
-    # _abrir_reporte_gt) — hay que abrir "Reportes" primero.
-    for sel in ('a:has-text("Reportes")', 'button:has-text("Reportes")',
-                'li:has-text("Reportes")', 'span:has-text("Reportes")'):
-        try:
-            await page.click(sel, timeout=3_000)
-            await page.wait_for_timeout(700)
-            break
-        except Exception:
-            continue
-    for sel in ('a:has-text("Consultar Receta")', 'button:has-text("Consultar Receta")',
-                ':text("Consultar Receta")'):
-        try:
-            await page.click(sel, timeout=3_000)
-            await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(1_000)
-            break
-        except Exception:
-            continue
+ESTADOS_NO_VIGENTES = {"ENTREGADA", "CERRADA / INCOMPLETA", "ANULADA"}
 
-    for isel in CANDIDATOS_INPUT_RECETA:
-        if await page.query_selector(isel):
-            print(f"  Formulario de consulta encontrado (input: {isel})")
-            return True
 
-    print("  [ERROR] No encontré la pantalla de consulta de receta con los candidatos actuales.")
-    if debug:
-        await AS._dump_formulario(page, "consulta-receta-no-encontrada")
-        await page.screenshot(path=str(AS.MAESTRO_DIR / "debug_consulta_receta_no_encontrada.png"))
-    return False
+def _split_rut(rut):
+    """'6.385.207-4' / '6385207-4' -> ('6385207', '4')."""
+    limpio = re.sub(r"[.\s]", "", str(rut)).upper()
+    numero, dv = limpio.rsplit("-", 1) if "-" in limpio else (limpio, "")
+    return numero, dv
+
+
+async def _buscar_vigentes_por_rut(page, rut, origen_filtro="PITRUFQUEN HOSP."):
+    """Busca por RUN o ID Único de Paciente (pestaña activa por defecto en
+    Consultar Receta — confirmado en vivo 23-07-2026) y devuelve las
+    recetas NO entregadas del establecimiento de origen indicado — el caso
+    de uso real: encontrar la receta más nueva de un RUT que SSASUR aún no
+    despachó, cuando ni siquiera aparece todavía en el CSV local. La tabla
+    de resultados viene ordenada por Nº de receta descendente (las más
+    nuevas primero), por eso basta con mirar la primera página."""
+    numero, dv = _split_rut(rut)
+    await page.fill("#rut", numero)
+    await page.fill("#dv", dv)
+    await AS._click_primero(page, ('button:has-text("Buscar"):visible', 'a:has-text("Buscar"):visible'), "Buscar")
+    await page.wait_for_load_state("networkidle")
+    try:
+        await page.wait_for_function(
+            "() => { const t = document.querySelector('#tablaResultados'); "
+            "return t && t.querySelectorAll('tbody tr').length >= 1 && !document.body.innerText.includes('Cargando'); }",
+            timeout=20_000,
+        )
+    except Exception:
+        print(f"  [AVISO] RUT {rut}: no cargó la tabla de resultados a tiempo.")
+        return []
+    await page.wait_for_timeout(500)
+
+    filas = await page.evaluate(r"""() => {
+      const t = document.querySelector('#tablaResultados');
+      return [...t.querySelectorAll('tbody tr')].map(tr =>
+        [...tr.querySelectorAll('td')].map(td => td.innerText.trim()));
+    }""")
+    vigentes = []
+    for r in filas:
+        if len(r) <= 9:
+            continue
+        n_receta, origen, estado = r[0], r[1], r[9]
+        if not n_receta or not n_receta.isdigit():
+            continue
+        if estado.upper() in ESTADOS_NO_VIGENTES:
+            continue
+        if origen_filtro and origen_filtro.upper() not in origen.upper():
+            continue
+        vigentes.append((n_receta, estado))
+    return vigentes
+
+
+PDF_ENDPOINT = "https://www.ssasur.cl/receta/impresion/pdf/{n_receta}/undefined"
 
 
 async def _descargar_una(page, n_receta, dest_path, debug):
-    input_sel = None
-    for sel in CANDIDATOS_INPUT_RECETA:
-        if await page.query_selector(sel):
-            input_sel = sel
-            break
-    if not input_sel:
-        print(f"  [ERROR] {n_receta}: no encontré el campo de búsqueda.")
+    """Confirmado en vivo 23-07-2026 (contrastado byte a byte contra el
+    formato de referencia de Toltén 18-07-2026): los botones "Imprimir*" del
+    sitio abren el diálogo de impresión NATIVO del sistema operativo
+    (window.print()), que Playwright no puede controlar. Pero ese botón
+    dispara internamente una petición a un endpoint que SÍ devuelve el PDF
+    oficial directo — "RECETA MÉDICA N°..." con firma del médico y checklist
+    de retiro, no la vista web de consulta. Se pide ese endpoint directo con
+    la sesión ya autenticada, sin necesidad de navegar el formulario."""
+    resp = await page.context.request.get(PDF_ENDPOINT.format(n_receta=n_receta))
+    if resp.status != 200 or "pdf" not in (resp.headers.get("content-type") or "").lower():
+        print(f"  [ERROR] {n_receta}: el endpoint no devolvió un PDF (status {resp.status}).")
+        if debug:
+            body = await resp.body()
+            (AS.MAESTRO_DIR / f"debug_receta_{n_receta}_respuesta.bin").write_bytes(body)
         return False
-
-    # Confirmado en vivo 23-07-2026: el formulario tiene pestañas (Run / Nº de
-    # Receta / Cta. Cte. / DAU / Mis Recetas Emitidas) y por defecto viene
-    # activa la de Run — el campo #numero_receta existe en el DOM pero está
-    # oculto hasta clickear la pestaña "Nº de Receta".
-    for sel in ('a:has-text("Nº de Receta")', 'button:has-text("Nº de Receta")',
-                'li:has-text("Nº de Receta")', ':text("Nº de Receta")'):
-        try:
-            await page.click(sel, timeout=3_000)
-            break
-        except Exception:
-            continue
-    try:
-        await page.wait_for_selector(input_sel, state="visible", timeout=8_000)
-    except Exception:
-        print(f"  [AVISO] {n_receta}: el campo sigue sin ser visible tras clickear la pestaña. "
-              f"Volcando estado para diagnosticar.")
-        await AS._dump_formulario(page, f"receta-{n_receta}-input-no-visible")
-        await page.screenshot(path=str(AS.MAESTRO_DIR / f"debug_receta_{n_receta}_no_visible.png"))
-        return False
-    await page.fill(input_sel, str(n_receta))
-    # Varias pestañas comparten el texto "Buscar" — se acota al botón visible.
-    await AS._click_primero(page, ('button:has-text("Buscar"):visible', 'a:has-text("Buscar"):visible'), "Buscar")
-    await page.wait_for_load_state("networkidle")
-    await page.wait_for_timeout(1_500)
-
-    if debug:
-        await AS._dump_formulario(page, f"consulta-receta-{n_receta}")
-        await page.screenshot(path=str(AS.MAESTRO_DIR / f"debug_receta_{n_receta}.png"))
-
-    # Confirmado en vivo 23-07-2026: los botones "Imprimir*" del sitio abren
-    # el diálogo de impresión NATIVO del sistema operativo (window.print()),
-    # que Playwright no puede controlar ni capturar. En vez de pelear con
-    # eso, se usa page.pdf() (motor de Chromium vía CDP) directo sobre la
-    # página ya cargada — funciona en modo headed y trae exactamente lo que
-    # se ve en pantalla (paciente + tabla de prescripción), sin depender de
-    # ningún botón del sitio.
-    texto = await page.evaluate("() => document.body.innerText")
-    if "Información Receta Número" not in texto:
-        print(f"  [ERROR] {n_receta}: la búsqueda no devolvió una receta válida.")
+    body = await resp.body()
+    if not body.startswith(b"%PDF"):
+        print(f"  [ERROR] {n_receta}: la respuesta no es un PDF válido.")
         return False
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    await page.pdf(path=str(dest_path))
+    dest_path.write_bytes(body)
     print(f"  ✓ {dest_path.name}  ({dest_path.stat().st_size // 1024:,} KB)")
     return True
 
 
-async def _main_async(estab, recetas, debug):
+async def _main_async(estab, recetas, debug, rut=None):
     carpeta_local = _CARPETA_LOCAL.get(estab.upper())
     if not carpeta_local:
         print(f"[ERROR] '{estab}' no está en el mapeo de establecimientos.")
         return
     base_dir = os.path.join(GT_SOLICITUDES_DIR, carpeta_local, "Revisión de Solicitudes")
-    os.makedirs(base_dir, exist_ok=True)
+    salida_dir = _carpeta_salida(base_dir, datetime.date.today())
 
     from playwright.async_api import async_playwright
     async with async_playwright() as p:
@@ -198,23 +175,44 @@ async def _main_async(estab, recetas, debug):
         print("✓ Sesión detectada")
 
         await AS.entrar_receta(page)
-        if not await _abrir_consulta_receta(page, debug):
-            print("\nNo se pudo ubicar la pantalla de consulta. Revisa el volcado/screenshot"
-                  " (si corriste con --debug) y avisa para ajustar los candidatos de URL/selectores.")
+
+        if rut:
+            for sel in ('a:has-text("Reportes")', 'button:has-text("Reportes")'):
+                try:
+                    await page.click(sel, timeout=3_000)
+                    await page.wait_for_timeout(700)
+                    break
+                except Exception:
+                    continue
+            for sel in ('a:has-text("Consultar Receta")', 'button:has-text("Consultar Receta")'):
+                try:
+                    await page.click(sel, timeout=3_000)
+                    await page.wait_for_load_state("networkidle")
+                    break
+                except Exception:
+                    continue
+            print(f"\nBuscando recetas vigentes del RUT {rut} (origen PITRUFQUEN HOSP.)...")
+            vigentes = await _buscar_vigentes_por_rut(page, rut)
+            if not vigentes:
+                print("  No se encontraron recetas vigentes (no ENTREGADA/CERRADA/ANULADA) para ese RUT.")
+                await browser.close()
+                return
+            for n_receta, estado in vigentes:
+                print(f"  Encontrada: receta {n_receta} — Estado: {estado}")
+            recetas = list(recetas) + [(n, "") for n, _ in vigentes]
+
+        if not recetas:
+            print("No hay recetas para descargar.")
             await browser.close()
             return
 
+        # _descargar_una pide el endpoint PDF directo — no navega el
+        # formulario, así que no hace falta "volver a la pantalla de
+        # consulta" entre una receta y otra como antes.
         ok, fallidos = 0, []
-        for i, (n_receta, paciente) in enumerate(recetas):
-            if i > 0:
-                # Cada búsqueda navega a la página de impresión — hay que
-                # volver a la pantalla de consulta antes de la siguiente.
-                if not await _abrir_consulta_receta(page, debug):
-                    print(f"  [ERROR] {n_receta}: no pude volver a la pantalla de consulta.")
-                    fallidos.append(n_receta)
-                    continue
+        for n_receta, paciente in recetas:
             nombre_archivo = re.sub(r"\s+", "", paciente) or "Paciente"
-            dest = Path(os.path.join(base_dir, f"Receta_{n_receta}_{nombre_archivo}.pdf"))
+            dest = Path(os.path.join(salida_dir, f"Receta_{n_receta}_{nombre_archivo}.pdf"))
             print(f"\nReceta {n_receta} ({paciente})...")
             if await _descargar_una(page, n_receta, dest, debug):
                 ok += 1
@@ -230,6 +228,8 @@ def main():
     ap.add_argument("--estab", required=True)
     ap.add_argument("--feedback", help="Ruta a un Feedback_Solicitud_*.xlsx generado por revision_solicitudes.py")
     ap.add_argument("--recetas", help="Lista de N° de receta separados por coma (alternativa a --feedback)")
+    ap.add_argument("--rut", help="Busca las recetas VIGENTES (no entregadas) de este RUT en vivo en SSASUR — "
+                                   "para cuando la receta es tan nueva que todavía no está en el CSV local")
     ap.add_argument("--debug", action="store_true", help="Vuelca formularios y screenshots para ajustar selectores")
     a = ap.parse_args()
 
@@ -237,14 +237,17 @@ def main():
         recetas = _leer_recetas_de_feedback(a.feedback)
     elif a.recetas:
         recetas = [(n.strip(), "") for n in a.recetas.split(",") if n.strip()]
+    elif a.rut:
+        recetas = []
     else:
-        print("[ERROR] Pasa --feedback o --recetas.")
+        print("[ERROR] Pasa --feedback, --recetas o --rut.")
         return
-    if not recetas:
+    if not recetas and not a.rut:
         print("No hay recetas para procesar.")
         return
-    print(f"{len(recetas)} receta(s) a descargar.")
-    asyncio.run(_main_async(a.estab, recetas, a.debug))
+    if recetas:
+        print(f"{len(recetas)} receta(s) a descargar.")
+    asyncio.run(_main_async(a.estab, recetas, a.debug, rut=a.rut))
 
 
 if __name__ == "__main__":

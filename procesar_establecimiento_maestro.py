@@ -120,10 +120,10 @@ def main():
     print(f"\n  Descargando {len(recetas)} PDF de recetas desde SSASUR (necesitas loguearte)...")
     asyncio.run(DRP._main_async(a.estab, recetas, debug=False))
 
-    # descargar_recetas_pdf.py guarda cada PDF individual directo en base_dir
-    # (la raíz de "Revisión de Solicitudes") — se mueven al mismo
-    # subdirectorio MES/FECHA que el resto de la salida de esta corrida.
-    individuales = [os.path.join(base_dir, f"Receta_{r}_{re.sub(r'\s+', '', p) or 'Paciente'}.pdf")
+    # descargar_recetas_pdf.py también resuelve su propio salida_dir vía
+    # _carpeta_salida(base_dir, hoy) — mismo día, misma carpeta, así que los
+    # PDF individuales ya quedan en el subdirectorio MES/FECHA correcto.
+    individuales = [os.path.join(salida_dir, f"Receta_{r}_{re.sub(r'\s+', '', p) or 'Paciente'}.pdf")
                     for r, p in recetas]
     individuales = [p for p in individuales if os.path.isfile(p)]
     if individuales:
