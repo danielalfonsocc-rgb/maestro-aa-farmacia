@@ -696,6 +696,11 @@ function renderConteo() {
           <input type="file" accept=".xlsx" style="display:none"
                  onchange="cargarStockSistema(this)">
         </label>` : ''}
+        <label class="btn btn-primary" style="cursor:pointer">
+          🔗 Cargar stock del sistema (JSON)
+          <input type="file" accept=".json" style="display:none"
+                 onchange="cargarStockJSON(this)">
+        </label>
         <button class="btn btn-success" onclick="guardarConteo()">💾 Guardar en historial</button>
         <button class="btn btn-outline" onclick="exportarJSON()">📤 Exportar JSON</button>
         <button class="btn btn-primary" onclick="exportarExcel()">📊 Exportar Excel</button>
@@ -1071,6 +1076,54 @@ function cargarStockSistema(input) {
   reader.readAsArrayBuffer(file);
   input.value = '';
 }
+
+// ─────────────────────────────────────────────────────────────────
+// CARGAR STOCK DEL SISTEMA DESDE stock_sistema.json (el que genera AUTO_SSASUR)
+// Sirve cuando el HTML se abre suelto (doble clic) y no hay inyección de
+// Streamlit: la QF elige el archivo Conteo_Controlados/stock_sistema.json y se
+// llena la columna Sistema de cada bodega. Fuerza la carga (ignora el candado
+// "una vez por fecha") porque es una acción explícita. NO toca Acta/Vencimiento.
+// ─────────────────────────────────────────────────────────────────
+function cargarStockJSON(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      const pf = data.porFarmacia || data;   // acepta {porFarmacia:{...}} o el mapa directo
+      if (!pf || typeof pf !== 'object') throw new Error('El JSON no tiene "porFarmacia".');
+      let farmOk = 0; const detalle = [];
+      FARMACIAS.forEach(f => {
+        const entry = pf[f.id];
+        if (!entry) return;
+        const stockFarm = entry.stock || entry;          // formato {fecha,stock} o plano
+        const fecha = entry.fecha || data.fecha || '';
+        const c = conteos[f.id];
+        if (!c) return;
+        let n = 0;
+        c.filas.forEach(fila => {
+          const key = `${fila.nombre}|${fila.presentacion}`;
+          if (stockFarm[key] !== undefined) { fila.sistema = stockFarm[key]; n++; }
+          // NO se toca fila.actaVencimiento — ese lo maneja la QF a mano.
+        });
+        c.meta.stockSistemaFecha = fecha;
+        farmOk++;
+        detalle.push(`${f.emoji} ${f.nombre}: ${n} ítems${fecha ? ' (' + formatFecha(fecha) + ')' : ''}`);
+      });
+      guardar();
+      renderMain();
+      alert(farmOk
+        ? `✅ Stock del sistema cargado.\n\n${detalle.join('\n')}`
+        : '⚠️ El JSON no traía datos por farmacia reconocibles.');
+    } catch(err) {
+      alert('❌ No se pudo leer el JSON de stock: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+  input.value = '';
+}
+
 // ─────────────────────────────────────────────────────────────────
 function exportarJSON() {
   const c = conteos[farmaciaActiva];
