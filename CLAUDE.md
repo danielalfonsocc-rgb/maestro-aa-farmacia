@@ -28,6 +28,10 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 | `publicar_escritorio.py` | Copia salidas al Escritorio\Farmacia AA\ (acceso rápido local) |
 | `aa_colors.py` | Paleta de colores compartida (impresión económica) |
 | `_generar_glosario.py` | Genera Glosario_Maestro_AA.pdf |
+| `conteo_controlados_app.py` | App Streamlit (puerto 8503) del conteo de controlados: sirve `conteo_controlados.html` vía `components.html`, inyecta config + stock del día anterior |
+| `conteo_controlados.html` | Formulario de conteo (3 farmacias: AT Cerrada/Abierta/Urgencia; historial en localStorage; exportar JSON/Excel/PDF). Corre suelto o vía la app |
+| `stock_controlados.py` | Baja el "Reporte Stock en Fecha" (día anterior) de AT Abierta/Cerrada → `Conteo_Controlados/stock_sistema.json` (pre-llena columna Sistema). Lo llama AUTO_SSASUR (PASO 4d) |
+| `controlados_config.json` | Fuente única del conteo de controlados: lista de medicamentos + mapeo a nombres SSASUR (lo leen la app y `stock_controlados.py`) |
 | `skill_gt/scripts/generar.py` | Generador de planillas + letreros GT por establecimiento destino |
 
 ## Reglas de arquitectura

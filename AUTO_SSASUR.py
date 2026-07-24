@@ -47,6 +47,8 @@ Modos (CLI):
   · --no-rch           no actualiza el registro ISP de recetas cheque
   · --no-programacion  no baja el reporte de Programación AA (PASO 4b)
   · --no-controlados   no baja el informe de medicamentos controlados (PASO 3b)
+  · --no-stock-controlados  no baja el stock del día anterior para el conteo de
+                       controlados (PASO 4d → Conteo_Controlados/stock_sistema.json)
   · --no-publicar      no publica en GitHub (debug)
 
 El registro ISP de recetas cheque (recetas_cheque.py) corre como PASO 5d: usa
@@ -712,6 +714,9 @@ async def main():
     no_programacion = "--no-programacion" in sys.argv
     # Saltar el informe de medicamentos controlados con --no-controlados.
     no_controlados = "--no-controlados" in sys.argv or solo_stock
+    # Saltar el stock de controlados (Reporte Stock en Fecha del día anterior)
+    # que alimenta conteo_controlados_app.py, con --no-stock-controlados.
+    no_stock_controlados = "--no-stock-controlados" in sys.argv
     debug_gt = "--debug-gt" in sys.argv        # volcados [DESCUBRIR …] + screenshots
     _fecha   = _arg_val("--fecha")             # atajo: mismo día en desde/hasta
     today = date.today()
@@ -1068,6 +1073,24 @@ async def main():
                 print(f"  [ERROR] Descarga Programación AA falló: {e}")
                 await page.screenshot(path=str(MAESTRO_DIR / "debug_programacion.png"))
                 print("  Screenshot guardado: debug_programacion.png")
+
+        # ════════════════════════════════════════════════════════════════════
+        #  PASO 4d — STOCK CONTROLADOS (día anterior) → conteo_controlados_app
+        # ════════════════════════════════════════════════════════════════════
+        # Baja el "Reporte Stock en Fecha" del DÍA ANTERIOR para FARMACIA AT
+        # ABIERTA y AT CERRADA, lo mapea a los controlados (controlados_config.json)
+        # y escribe Conteo_Controlados/stock_sistema.json — que la app de conteo
+        # (conteo_controlados_app.py) inyecta para PRE-LLENAR la columna "Sistema".
+        # Corre acá porque es el mismo módulo ABASTECIMIENTO (sesión ya acuñada).
+        # No se sube a Drive/GitHub (solo alimenta el conteo local). Se salta con
+        # --no-stock-controlados. La columna Acta/Vencimiento la maneja la QF.
+        if not no_stock_controlados:
+            print(f"\n[4d/9] Stock de controlados del día anterior ({fmt(ayer)})...")
+            try:
+                from stock_controlados import descargar_stock_controlados
+                await descargar_stock_controlados(page, ayer)
+            except Exception as e:
+                print(f"  [AVISO] Stock de controlados falló: {e} — continúo con el resto.")
 
         # ── PASO 4c — CONSOLIDADO HEMOGRAMAS CLOZAPINA (OPT-IN, --clozapina) ─────
         # Busca en HCE el hemograma más reciente de cada paciente con Clozapina
