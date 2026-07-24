@@ -308,10 +308,23 @@ def _procesar_estab_xlsx(estab, xlsx_path, dry_run):
             }, "No se encontraron recetas vigentes en el sistema para este RUT — revisar manualmente"))
             continue
         set_completo.extend(todas)
+        # El combinado a imprimir/despachar lleva SOLO UNA receta por
+        # paciente (la de N° más alto = la más nueva/vigente) — no todas
+        # las vigentes. Las demás se revisan igual (arriba, para alertas de
+        # duplicado/ambigüedad) pero no se imprimen todas, para no inflar el
+        # combinado con recetas que no corresponden a esta solicitud
+        # puntual (corregido 23-07-2026 tras detectarlo en Freire: 26
+        # pacientes -> 47 páginas por incluir todas las vigentes).
+        a_imprimir = max(todas, key=lambda r: int(r["receta"]) if r["receta"].isdigit() else -1)
         if len(todas) > 1:
-            print(f"  [{todas[0]['paciente']}] {len(todas)} recetas vigentes en el hospital — se revisan todas juntas.")
-        for receta in todas:
-            filas_feedback.append((receta, "Solicitud recibida (planilla establecimiento)"))
+            otras = [r["receta"] for r in todas if r is not a_imprimir]
+            print(f"  [{todas[0]['paciente']}] {len(todas)} recetas vigentes — se revisan todas, "
+                  f"se imprime solo la más nueva ({a_imprimir['receta']}; otras: {', '.join(otras)}).")
+            nota_extra = f"Paciente tiene otra(s) receta(s) vigente(s) no incluida(s) en el combinado: {', '.join(otras)}"
+        else:
+            nota_extra = None
+        filas_feedback.append((a_imprimir, "Solicitud recibida (planilla establecimiento)"
+                                + (f" — {nota_extra}" if nota_extra else "")))
 
     alertas = GM.detectar_alertas_mismo_rut(set_completo)
     alerta_por_receta = {}
