@@ -1336,21 +1336,24 @@ function exportarConsolidadoExcel() {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// STOCK DEL SISTEMA INYECTADO (stock del DÍA ANTERIOR, vía Streamlit)
-// conteo_controlados_app.py lee stock_sistema.json (lo genera AUTO_SSASUR
-// desde el Reporte Stock en Fecha) y lo deja en window.STOCK_SISTEMA_INYECTADO.
-// Estructura: { fecha:'YYYY-MM-DD', porFarmacia:{ cerrada:{'nombre|pres':cant}, abierta:{...} } }
+// STOCK DEL SISTEMA INYECTADO (vía Streamlit) — la FECHA depende de la bodega:
+// AT Cerrada = día ACTUAL, AT Abierta = día ANTERIOR (para contar).
+// conteo_controlados_app.py lee stock_sistema.json (lo genera AUTO_SSASUR desde
+// el Reporte Stock en Fecha) y lo deja en window.STOCK_SISTEMA_INYECTADO.
+// Estructura: { generadoEn, porFarmacia:{ cerrada:{fecha,dia,stock:{'nombre|pres':cant}}, abierta:{...} } }
+// (compat: si porFarmacia[id] es un objeto plano clave→cant, también se acepta.)
 // Solo se aplica UNA vez por fecha nueva (no pisa ediciones manuales en cada
 // recarga) y SOLO toca la columna Sistema — nunca Acta/Vencimiento.
 // ─────────────────────────────────────────────────────────────────
 function aplicarStockInyectado() {
   const inj = (typeof window !== 'undefined' && window.STOCK_SISTEMA_INYECTADO) || null;
   if (!inj || !inj.porFarmacia) return;
-  const fecha = inj.fecha || '';
   let algo = false;
   FARMACIAS.forEach(f => {
-    const stockFarm = inj.porFarmacia[f.id];
-    if (!stockFarm) return;                          // sin bodega (ej. Urgencia) → queda manual
+    const entry = inj.porFarmacia[f.id];
+    if (!entry) return;                              // sin bodega (ej. Urgencia) → queda manual
+    const stockFarm = entry.stock || entry;          // formato nuevo {fecha,stock} o plano
+    const fecha = entry.fecha || inj.fecha || '';
     const c = conteos[f.id];
     if (!c) return;
     if (fecha && c.meta.stockSistemaFecha === fecha) return;  // ya aplicado este día

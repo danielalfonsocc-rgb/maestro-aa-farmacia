@@ -151,22 +151,51 @@ async def _set_fecha(page, fecha_str: str):
         return False
 
 
-async def _click_generar_xls(page):
-    """Clic en 'Generar XLS' (o equivalente). Prueba id conocido del otro reporte
-    de stock y, si no, por texto."""
-    selectores = (
-        "#generarXLS_stock", "#generarXLS", "#generarXLS_salida",
-        'button:has-text("Generar XLS")', 'a:has-text("Generar XLS")',
-        'button:has-text("Generar XLS")', 'input[value*="XLS" i]',
-        'button:has-text("XLS")', 'a:has-text("XLS")',
-    )
-    for sel in selectores:
+SELS_XLS = (
+    "#generarXLS_stock", "#generarXLS", "#generarXLS_salida",
+    'button:has-text("Generar XLS")', 'a:has-text("Generar XLS")',
+    'input[value*="XLS" i]', 'button:has-text("XLS")', 'a:has-text("XLS")',
+)
+
+
+async def _descartar_modal(page):
+    """La 1ª selección de bodega puede disparar un modal 'Selección Proyecto'
+    cuyo backdrop tapa el botón Generar XLS (visto en vivo 2026-07-24: la 1ª
+    bodega fallaba y la 2ª ya funcionaba, porque el proyecto quedaba fijado).
+    Acepta el modal si aparece; ignora si no hay ninguno."""
+    for sel in ('button:has-text("Aceptar e ingresar")',
+                'a:has-text("Aceptar e ingresar")',
+                'button:has-text("Aceptar")', 'a:has-text("Aceptar")',
+                '.modal.show button.btn-primary', '.swal2-confirm'):
         try:
-            await page.click(sel, timeout=4_000, force=True)
-            return sel
+            await page.click(sel, timeout=1_500)
+            await page.wait_for_timeout(600)
+            return True
         except Exception:
             continue
-    raise RuntimeError(f"No encontré el botón 'Generar XLS' (probé: {selectores})")
+    # Backdrop residual sin botón claro → forzar cierre por Escape.
+    try:
+        await page.keyboard.press("Escape")
+    except Exception:
+        pass
+    return False
+
+
+async def _click_generar_xls(page):
+    """Clic en 'Generar XLS'. Espera primero a que el botón esté visible (la 1ª
+    carga del form puede tardar) y descarta cualquier modal que lo tape."""
+    # Espera a que aparezca alguno de los selectores (hasta ~12s).
+    for _ in range(12):
+        for sel in SELS_XLS:
+            try:
+                if await page.is_visible(sel):
+                    await _descartar_modal(page)
+                    await page.click(sel, timeout=4_000, force=True)
+                    return sel
+            except Exception:
+                continue
+        await page.wait_for_timeout(1_000)
+    raise RuntimeError(f"No encontré el botón 'Generar XLS' (probé: {SELS_XLS})")
 
 
 def _parse_stock_xlsx(path: Path) -> dict:
@@ -235,21 +264,60 @@ def _mapear(stock_ssasur: dict, mapeo: dict) -> dict:
     return out
 
 
-async def descargar_stock_controlados(page, fecha: date, config: dict | None = None):
-    """Descarga el stock en `fecha` para cada bodega de controlados y escribe
-    Conteo_Controlados/stock_sistema.json. Reutiliza `page` YA dentro del módulo
-    ABASTECIMIENTO (el llamador debe haber hecho entrar_modulo(page,'ABASTECIMIENTO')).
-    Devuelve el Path del JSON, o None si no se pudo generar."""
+async def _bajar_bodega(page, bodega: str, fecha_str: str, fid: str, mapeo: dict) -> dict:
+    """Baja el stock de UNA bodega en `fecha_str` y devuelve {'nombre|pres': cant}.
+    Lanza excepción si algo falla (el llamador reintenta)."""
+    await page.goto(STOCKFECHA_URL)
+    await page.wait_for_load_state("networkidle")
+    await page.wait_for_timeout(1_800)
+
+    sel = await _seleccionar_bodega(page, bodega)
+    if not sel:
+        await _dump_formulario(page, f"stockFecha-{fid}")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_stock_controlados.png"))
+        raise RuntimeError(f"no encontré la bodega '{bodega}' en el select")
+    print(f"    Bodega → {sel['label']}")
+    await _descartar_modal(page)   # 1ª selección puede abrir modal Selección Proyecto
+
+    ok_fecha = await _set_fecha(page, fecha_str)
+    if not ok_fecha:
+        print(f"    [AVISO] no pude fijar la fecha {fecha_str} — uso la del formulario.")
+    await page.wait_for_timeout(400)
+
+    tmp = SALIDA_DIR / f"_stock_{fid}_{fecha_str.replace('/', '-')}.xlsx"
+    async with page.expect_download(timeout=TIMEOUT_DESCARGA) as dl_info:
+        await _click_generar_xls(page)
+    dl = await dl_info.value
+    await dl.save_as(tmp)
+    print(f"    ✓ {tmp.name} ({tmp.stat().st_size // 1024:,} KB)")
+
+    crudo = _parse_stock_xlsx(tmp)
+    mapeado = _mapear(crudo, mapeo)
+    print(f"    → {len(mapeado)}/{len(mapeo)} controlados mapeados (de {len(crudo)} filas)")
+    try:
+        tmp.unlink()   # el xlsx crudo no se versiona
+    except Exception:
+        pass
+    return mapeado
+
+
+async def descargar_stock_controlados(page, hoy: "date | None" = None, config: dict | None = None):
+    """Descarga el stock de cada bodega de controlados y escribe
+    Conteo_Controlados/stock_sistema.json. La FECHA depende de la bodega
+    (config → dia_stock): AT Cerrada = día actual, AT Abierta = día anterior.
+    Reutiliza `page` YA dentro del módulo ABASTECIMIENTO (el llamador hizo
+    entrar_modulo(page,'ABASTECIMIENTO')). Devuelve el Path del JSON, o None."""
     config = config or cargar_config()
+    hoy = hoy or date.today()
     farmacias = config.get("farmacias", [])
     bodega_ssasur = config.get("bodega_ssasur", {})
+    dia_stock = config.get("dia_stock", {})
     mapeo = config.get("mapeo_ssasur", {})
     if not mapeo:
         print("  [ERROR] controlados_config.json sin mapeo_ssasur — abortando.")
         return None
 
     SALIDA_DIR.mkdir(parents=True, exist_ok=True)
-    fecha_str = _fmt(fecha)
     por_farmacia = {}
 
     for f in farmacias:
@@ -257,43 +325,22 @@ async def descargar_stock_controlados(page, fecha: date, config: dict | None = N
         bodega = bodega_ssasur.get(fid)
         if not bodega:
             continue  # Urgencia u otra sin bodega → se ingresa a mano en la app
-        print(f"  [{bodega}] stock al {fecha_str} ...")
-        try:
-            await page.goto(STOCKFECHA_URL)
-            await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(1_500)
-
-            sel = await _seleccionar_bodega(page, bodega)
-            if not sel:
-                print(f"    [AVISO] no encontré la bodega '{bodega}' en el select.")
-                await _dump_formulario(page, f"stockFecha-{fid}")
-                await page.screenshot(path=str(MAESTRO_DIR / "debug_stock_controlados.png"))
-                continue
-            print(f"    Bodega → {sel['label']}")
-
-            ok_fecha = await _set_fecha(page, fecha_str)
-            if not ok_fecha:
-                print(f"    [AVISO] no pude fijar la fecha {fecha_str} — sigo con la del formulario.")
-            await page.wait_for_timeout(400)
-
-            tmp = SALIDA_DIR / f"_stock_{fid}_{fecha.isoformat()}.xlsx"
-            async with page.expect_download(timeout=TIMEOUT_DESCARGA) as dl_info:
-                await _click_generar_xls(page)
-            dl = await dl_info.value
-            await dl.save_as(tmp)
-            print(f"    ✓ {tmp.name} ({tmp.stat().st_size // 1024:,} KB)")
-
-            crudo = _parse_stock_xlsx(tmp)
-            mapeado = _mapear(crudo, mapeo)
-            por_farmacia[fid] = mapeado
-            print(f"    → {len(mapeado)}/{len(mapeo)} controlados mapeados "
-                  f"(de {len(crudo)} filas del reporte)")
+        dia = (dia_stock.get(fid) or "anterior").lower()
+        fecha = hoy if dia == "actual" else hoy - timedelta(days=1)
+        fecha_str = _fmt(fecha)
+        print(f"  [{bodega}] stock al {fecha_str} "
+              f"({'día actual' if dia == 'actual' else 'día anterior'}) ...")
+        mapeado = None
+        for intento in (1, 2):   # la 1ª bodega puede fallar por el modal → 1 reintento
             try:
-                tmp.unlink()  # el xlsx crudo trae RUTs de otras bodegas? no; igual no se versiona
-            except Exception:
-                pass
-        except Exception as e:
-            print(f"    [ERROR] {bodega}: {e}")
+                mapeado = await _bajar_bodega(page, bodega, fecha_str, fid, mapeo)
+                break
+            except Exception as e:
+                print(f"    [intento {intento}/2] {bodega}: {e}")
+                await page.wait_for_timeout(1_500)
+        if mapeado is not None:
+            por_farmacia[fid] = {"fecha": fecha.isoformat(), "dia": dia, "stock": mapeado}
+        else:
             await page.screenshot(path=str(MAESTRO_DIR / "debug_stock_controlados.png"))
 
     if not por_farmacia:
@@ -301,18 +348,18 @@ async def descargar_stock_controlados(page, fecha: date, config: dict | None = N
         return None
 
     payload = {
-        "fecha": fecha.isoformat(),
         "generadoEn": datetime.now().isoformat(timespec="seconds"),
         "porFarmacia": por_farmacia,
     }
     SALIDA_JSON.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    total = sum(len(v) for v in por_farmacia.values())
-    print(f"  ✓ {SALIDA_JSON.name} — {total} valores, bodegas: {', '.join(por_farmacia)}")
+    total = sum(len(v["stock"]) for v in por_farmacia.values())
+    resumen = ", ".join(f"{k} ({v['fecha']})" for k, v in por_farmacia.items())
+    print(f"  ✓ {SALIDA_JSON.name} — {total} valores · {resumen}")
     return SALIDA_JSON
 
 
 # ── Runner suelto (para probar/backfill sin AUTO_SSASUR) ────────────────────────
-async def _standalone(fecha: date):
+async def _standalone(hoy: date):
     try:
         from playwright.async_api import async_playwright
     except ImportError:
@@ -343,16 +390,17 @@ async def _standalone(fecha: date):
             return
         await context.storage_state(path=str(SESSION_FILE))
         await entrar_modulo(page, "ABASTECIMIENTO")
-        await descargar_stock_controlados(page, fecha)
+        await descargar_stock_controlados(page, hoy)
         await browser.close()
 
 
 if __name__ == "__main__":
     arg = next((a for a in sys.argv[1:] if not a.startswith("--")), None)
-    if arg:
+    if arg:   # override de "hoy" para backfill: dd/mm/aaaa
         d, m, y = arg.split("/")
-        fecha = date(int(y), int(m), int(d))
+        hoy = date(int(y), int(m), int(d))
     else:
-        fecha = date.today() - timedelta(days=1)   # día anterior
-    print(f"Stock de controlados — fecha consultada: {_fmt(fecha)}")
-    asyncio.run(_standalone(fecha))
+        hoy = date.today()
+    print(f"Stock de controlados — hoy = {_fmt(hoy)}  "
+          f"(Cerrada = día actual, Abierta = día anterior)")
+    asyncio.run(_standalone(hoy))

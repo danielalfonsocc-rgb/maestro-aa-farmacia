@@ -1085,10 +1085,10 @@ async def main():
         # No se sube a Drive/GitHub (solo alimenta el conteo local). Se salta con
         # --no-stock-controlados. La columna Acta/Vencimiento la maneja la QF.
         if not no_stock_controlados:
-            print(f"\n[4d/9] Stock de controlados del día anterior ({fmt(ayer)})...")
+            print(f"\n[4d/9] Stock de controlados (Cerrada={fmt(today)}, Abierta={fmt(ayer)})...")
             try:
                 from stock_controlados import descargar_stock_controlados
-                await descargar_stock_controlados(page, ayer)
+                await descargar_stock_controlados(page, today)
             except Exception as e:
                 print(f"  [AVISO] Stock de controlados falló: {e} — continúo con el resto.")
 

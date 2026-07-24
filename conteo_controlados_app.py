@@ -66,11 +66,17 @@ with st.sidebar:
     st.markdown("### 💊 Conteo de Controlados")
     st.caption("Hospital Pitrufquén — pauta de supervisión")
     st.divider()
-    st.markdown("**Stock del sistema (día anterior)**")
-    if stock and stock.get("fecha"):
-        bodegas = ", ".join(sorted(stock.get("porFarmacia", {}).keys())) or "—"
-        st.success(f"Cargado del **{stock['fecha']}**")
-        st.caption(f"Farmacias con stock: {bodegas}")
+    st.markdown("**Stock del sistema**")
+    if stock and stock.get("porFarmacia"):
+        st.success("Stock cargado")
+        nombres = {f["id"]: f["nombre"] for f in config.get("farmacias", [])}
+        for fid, entry in stock["porFarmacia"].items():
+            if isinstance(entry, dict) and "stock" in entry:
+                fecha, n, dia = entry.get("fecha", "?"), len(entry["stock"]), entry.get("dia")
+            else:  # formato plano (compat)
+                fecha, n, dia = "?", len(entry or {}), None
+            etq = " · día actual" if dia == "actual" else " · día anterior" if dia == "anterior" else ""
+            st.caption(f"**{nombres.get(fid, fid)}**: {fecha}{etq} — {n} ítems")
         gen = stock.get("generadoEn")
         if gen:
             st.caption(f"Descargado: {str(gen)[:16].replace('T', ' ')}")
@@ -82,7 +88,7 @@ with st.sidebar:
         st.warning(
             "Aún no hay stock del sistema.\n\n"
             "Se genera solo cuando corras **AUTO_SSASUR** "
-            "(baja el *Reporte Stock en Fecha* del día anterior)."
+            "(baja el *Reporte Stock en Fecha*: Cerrada = día actual, Abierta = día anterior)."
         )
     st.divider()
     st.caption(

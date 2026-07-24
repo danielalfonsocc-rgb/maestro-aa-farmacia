@@ -11,6 +11,12 @@
     "abierta": "FARMACIA AT ABIERTA",
     "urgencia": null
   },
+  "_comentario_dia_stock": "Qué fecha consulta cada bodega en el Reporte Stock en Fecha: 'actual' = hoy, 'anterior' = día anterior. AT Cerrada se cuenta con el stock del día actual; AT Abierta con el del día anterior.",
+  "dia_stock": {
+    "cerrada": "actual",
+    "abierta": "anterior",
+    "urgencia": null
+  },
   "medicamentos": [
     { "nombre": "Alprazolam",       "presentacion": "0,5 mg cm" },
     { "nombre": "Buprenorfina",     "presentacion": "10 mcg parche" },
