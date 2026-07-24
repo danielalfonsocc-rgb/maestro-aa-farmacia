@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 import openpyxl
+from pypdf import PdfWriter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import AUTO_SSASUR as AS
@@ -209,18 +210,35 @@ async def _main_async(estab, recetas, debug, rut=None):
         # _descargar_una pide el endpoint PDF directo — no navega el
         # formulario, así que no hace falta "volver a la pantalla de
         # consulta" entre una receta y otra como antes.
-        ok, fallidos = 0, []
+        ok, fallidos, descargados = 0, [], []
         for n_receta, paciente in recetas:
             nombre_archivo = re.sub(r"\s+", "", paciente) or "Paciente"
             dest = Path(os.path.join(salida_dir, f"Receta_{n_receta}_{nombre_archivo}.pdf"))
             print(f"\nReceta {n_receta} ({paciente})...")
             if await _descargar_una(page, n_receta, dest, debug):
                 ok += 1
+                descargados.append(dest)
             else:
                 fallidos.append(n_receta)
 
         print(f"\n{ok}/{len(recetas)} PDF descargados. Fallidos: {fallidos or 'ninguno'}")
         await browser.close()
+
+    if descargados:
+        fecha_str = datetime.date.today().strftime("%Y-%m-%d")
+        combinado = os.path.join(salida_dir, f"Recetas_Combinadas_{carpeta_local}_{fecha_str}.pdf")
+        writer = PdfWriter()
+        for p in descargados:
+            writer.append(str(p))
+        with open(combinado, "wb") as fh:
+            writer.write(fh)
+        print(f"Guardado: {combinado}  ({len(descargados)} receta(s))")
+
+        pdfs_dir = os.path.join(salida_dir, "PDFs individuales")
+        os.makedirs(pdfs_dir, exist_ok=True)
+        for p in descargados:
+            os.replace(str(p), os.path.join(pdfs_dir, p.name))
+        print(f"{len(descargados)} PDF individual(es) movido(s) a 'PDFs individuales'.")
 
 
 def main():

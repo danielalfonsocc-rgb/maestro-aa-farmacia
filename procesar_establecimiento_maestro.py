@@ -15,10 +15,7 @@ import argparse
 import asyncio
 import datetime
 import os
-import re
 import sys
-
-from pypdf import PdfWriter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -118,30 +115,10 @@ def main():
 
     recetas = [(f["receta"], f["paciente"]) for f in filas]
     print(f"\n  Descargando {len(recetas)} PDF de recetas desde SSASUR (necesitas loguearte)...")
+    # descargar_recetas_pdf._main_async ya arma el combinado y mueve los
+    # individuales a "PDFs individuales" dentro de su propio salida_dir
+    # (mismo cálculo _carpeta_salida(base_dir, hoy) — mismo día, misma carpeta).
     asyncio.run(DRP._main_async(a.estab, recetas, debug=False))
-
-    # descargar_recetas_pdf.py también resuelve su propio salida_dir vía
-    # _carpeta_salida(base_dir, hoy) — mismo día, misma carpeta, así que los
-    # PDF individuales ya quedan en el subdirectorio MES/FECHA correcto.
-    individuales = [os.path.join(salida_dir, f"Receta_{r}_{re.sub(r'\s+', '', p) or 'Paciente'}.pdf")
-                    for r, p in recetas]
-    individuales = [p for p in individuales if os.path.isfile(p)]
-    if individuales:
-        combinado = os.path.join(salida_dir, f"Recetas_Combinadas_{carpeta_local}_{fecha_str}.pdf")
-        writer = PdfWriter()
-        for p in individuales:
-            writer.append(p)
-        with open(combinado, "wb") as fh:
-            writer.write(fh)
-        print(f"  Guardado: {combinado}  ({len(individuales)} receta(s))")
-
-        pdfs_dir = os.path.join(salida_dir, "PDFs individuales")
-        os.makedirs(pdfs_dir, exist_ok=True)
-        for p in individuales:
-            os.replace(p, os.path.join(pdfs_dir, os.path.basename(p)))
-        print(f"  {len(individuales)} PDF individual(es) movido(s) a 'PDFs individuales'.")
-    else:
-        print("  [AVISO] No se descargó ningún PDF — no se generó el combinado.")
 
 
 if __name__ == "__main__":
