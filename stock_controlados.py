@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""stock_controlados.py — Stock del DÍA ANTERIOR para el conteo de controlados.
+"""stock_controlados.py — Stock del sistema para el conteo de controlados.
 
-Baja el "Reporte Stock en Fecha" de SSASUR
-(https://www.ssasur.cl/abastecimiento/reportes/stockFecha) del día anterior para
-las bodegas de controlados (FARMACIA AT ABIERTA y FARMACIA AT CERRADA), lo cruza
-con el mapeo de controlados_config.json y escribe:
+Cada bodega usa el reporte que le corresponde (controlados_config.json → fuente_stock):
+  · AT Cerrada → "Informe Stock" (stock_en_momento_bodega): existencia ACTUAL, con
+    el check "Solo controlados". Se registra con la fecha de HOY (día actual).
+  · AT Abierta → "Reporte Stock en Fecha" (stockFecha): stock del DÍA ANTERIOR
+    (para contar en la mañana contra el cierre del día previo).
+Cruza el resultado con el mapeo de controlados_config.json y escribe:
 
     Conteo_Controlados/stock_sistema.json
 
@@ -53,6 +55,10 @@ CONFIG_FILE = MAESTRO_DIR / "controlados_config.json"
 SALIDA_DIR  = MAESTRO_DIR / "Conteo_Controlados"
 SALIDA_JSON = SALIDA_DIR / "stock_sistema.json"
 STOCKFECHA_URL = "https://www.ssasur.cl/abastecimiento/reportes/stockFecha"
+# Informe Stock (existencia actual). AT Cerrada usa ESTE reporte (stock del día
+# actual, con el check "Solo controlados"); es el mismo que AUTO_SSASUR baja con
+# bodega=TODAS para el maestro. AT Abierta usa STOCKFECHA_URL (día anterior).
+STOCK_MOMENTO_URL = "https://www.ssasur.cl/abastecimiento/reportes/stock_en_momento_bodega"
 TIMEOUT_DESCARGA = 600_000
 
 
@@ -117,6 +123,22 @@ async def _seleccionar_bodega(page, texto_bodega: str):
         }""",
         texto_bodega,
     )
+
+
+async def _marcar_solo_controlados(page):
+    """Marca el check 'Solo controlados' del Informe Stock (existencia). Busca por
+    el texto de la etiqueta / id / name que mencione 'controlado'."""
+    return await page.evaluate(r"""() => {
+      for (const cb of document.querySelectorAll('input[type=checkbox]')) {
+        const lbl  = (cb.labels && cb.labels[0]) ? cb.labels[0].textContent : '';
+        const meta = `${lbl} ${cb.id || ''} ${cb.name || ''}`;
+        if (/controlado/i.test(meta)) {
+          if (!cb.checked) { cb.click(); cb.dispatchEvent(new Event('change', {bubbles: true})); }
+          return cb.id || cb.name || 'controlados';
+        }
+      }
+      return null;
+    }""")
 
 
 async def _set_fecha(page, fecha_str: str):
@@ -264,8 +286,21 @@ def _mapear(stock_ssasur: dict, mapeo: dict) -> dict:
     return out
 
 
-async def _bajar_bodega(page, bodega: str, fecha_str: str, fid: str, mapeo: dict) -> dict:
-    """Baja el stock de UNA bodega en `fecha_str` y devuelve {'nombre|pres': cant}.
+def _finalizar_descarga(tmp: Path, mapeo: dict) -> dict:
+    """Parsea el xlsx descargado, lo mapea a los controlados y borra el crudo."""
+    print(f"    ✓ {tmp.name} ({tmp.stat().st_size // 1024:,} KB)")
+    crudo = _parse_stock_xlsx(tmp)
+    mapeado = _mapear(crudo, mapeo)
+    print(f"    → {len(mapeado)}/{len(mapeo)} controlados mapeados (de {len(crudo)} filas)")
+    try:
+        tmp.unlink()   # el xlsx crudo no se versiona
+    except Exception:
+        pass
+    return mapeado
+
+
+async def _bajar_stockfecha(page, bodega: str, fecha_str: str, fid: str, mapeo: dict) -> dict:
+    """AT Abierta: Reporte Stock en Fecha (stockFecha) de `fecha_str` (día anterior).
     Lanza excepción si algo falla (el llamador reintenta)."""
     await page.goto(STOCKFECHA_URL)
     await page.wait_for_load_state("networkidle")
@@ -289,16 +324,35 @@ async def _bajar_bodega(page, bodega: str, fecha_str: str, fid: str, mapeo: dict
         await _click_generar_xls(page)
     dl = await dl_info.value
     await dl.save_as(tmp)
-    print(f"    ✓ {tmp.name} ({tmp.stat().st_size // 1024:,} KB)")
+    return _finalizar_descarga(tmp, mapeo)
 
-    crudo = _parse_stock_xlsx(tmp)
-    mapeado = _mapear(crudo, mapeo)
-    print(f"    → {len(mapeado)}/{len(mapeo)} controlados mapeados (de {len(crudo)} filas)")
-    try:
-        tmp.unlink()   # el xlsx crudo no se versiona
-    except Exception:
-        pass
-    return mapeado
+
+async def _bajar_momento(page, bodega: str, fid: str, mapeo: dict) -> dict:
+    """AT Cerrada: Informe Stock (stock_en_momento_bodega) — existencia ACTUAL,
+    con el check 'Solo controlados'. Lanza excepción si algo falla."""
+    await page.goto(STOCK_MOMENTO_URL)
+    await page.wait_for_load_state("networkidle")
+    await page.wait_for_timeout(1_800)
+
+    sel = await _seleccionar_bodega(page, bodega)
+    if not sel:
+        await _dump_formulario(page, f"momento-{fid}")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_stock_controlados.png"))
+        raise RuntimeError(f"no encontré la bodega '{bodega}' en el select")
+    print(f"    Bodega → {sel['label']}")
+    await _descartar_modal(page)
+
+    chk = await _marcar_solo_controlados(page)
+    print(f"    Solo controlados → {chk}" if chk
+          else "    [AVISO] no encontré el check 'Solo controlados' — sigo (el mapeo igual filtra).")
+    await page.wait_for_timeout(400)
+
+    tmp = SALIDA_DIR / f"_stock_{fid}_momento.xlsx"
+    async with page.expect_download(timeout=TIMEOUT_DESCARGA) as dl_info:
+        await _click_generar_xls(page)
+    dl = await dl_info.value
+    await dl.save_as(tmp)
+    return _finalizar_descarga(tmp, mapeo)
 
 
 async def descargar_stock_controlados(page, hoy: "date | None" = None, config: dict | None = None):
@@ -312,6 +366,7 @@ async def descargar_stock_controlados(page, hoy: "date | None" = None, config: d
     farmacias = config.get("farmacias", [])
     bodega_ssasur = config.get("bodega_ssasur", {})
     dia_stock = config.get("dia_stock", {})
+    fuente_stock = config.get("fuente_stock", {})
     mapeo = config.get("mapeo_ssasur", {})
     if not mapeo:
         print("  [ERROR] controlados_config.json sin mapeo_ssasur — abortando.")
@@ -326,20 +381,25 @@ async def descargar_stock_controlados(page, hoy: "date | None" = None, config: d
         if not bodega:
             continue  # Urgencia u otra sin bodega → se ingresa a mano en la app
         dia = (dia_stock.get(fid) or "anterior").lower()
+        fuente = (fuente_stock.get(fid) or "fecha").lower()
         fecha = hoy if dia == "actual" else hoy - timedelta(days=1)
         fecha_str = _fmt(fecha)
-        print(f"  [{bodega}] stock al {fecha_str} "
+        etq_fuente = "Informe Stock (existencia actual)" if fuente == "momento" else "Reporte Stock en Fecha"
+        print(f"  [{bodega}] {etq_fuente} — {fecha_str} "
               f"({'día actual' if dia == 'actual' else 'día anterior'}) ...")
         mapeado = None
         for intento in (1, 2):   # la 1ª bodega puede fallar por el modal → 1 reintento
             try:
-                mapeado = await _bajar_bodega(page, bodega, fecha_str, fid, mapeo)
+                if fuente == "momento":
+                    mapeado = await _bajar_momento(page, bodega, fid, mapeo)
+                else:
+                    mapeado = await _bajar_stockfecha(page, bodega, fecha_str, fid, mapeo)
                 break
             except Exception as e:
                 print(f"    [intento {intento}/2] {bodega}: {e}")
                 await page.wait_for_timeout(1_500)
         if mapeado is not None:
-            por_farmacia[fid] = {"fecha": fecha.isoformat(), "dia": dia, "stock": mapeado}
+            por_farmacia[fid] = {"fecha": fecha.isoformat(), "dia": dia, "fuente": fuente, "stock": mapeado}
         else:
             await page.screenshot(path=str(MAESTRO_DIR / "debug_stock_controlados.png"))
 

@@ -11,10 +11,16 @@
     "abierta": "FARMACIA AT ABIERTA",
     "urgencia": null
   },
-  "_comentario_dia_stock": "Qué fecha consulta cada bodega en el Reporte Stock en Fecha: 'actual' = hoy, 'anterior' = día anterior. AT Cerrada se cuenta con el stock del día actual; AT Abierta con el del día anterior.",
+  "_comentario_dia_stock": "Qué fecha registra cada bodega: 'actual' = hoy, 'anterior' = día anterior. AT Cerrada se cuenta con el stock del día actual; AT Abierta con el del día anterior.",
   "dia_stock": {
     "cerrada": "actual",
     "abierta": "anterior",
+    "urgencia": null
+  },
+  "_comentario_fuente_stock": "Qué reporte de SSASUR usa cada bodega. 'momento' = Informe Stock (stock_en_momento_bodega, existencia actual, con check 'Solo controlados'). 'fecha' = Reporte Stock en Fecha (stockFecha, stock de una fecha pasada).",
+  "fuente_stock": {
+    "cerrada": "momento",
+    "abierta": "fecha",
     "urgencia": null
   },
   "medicamentos": [
