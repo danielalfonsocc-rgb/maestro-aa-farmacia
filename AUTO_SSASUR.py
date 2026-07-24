@@ -46,6 +46,7 @@ Modos (CLI):
                        vuelca el formulario [DESCUBRIR …] y guarda screenshots.
   · --no-rch           no actualiza el registro ISP de recetas cheque
   · --no-programacion  no baja el reporte de Programación AA (PASO 4b)
+  · --no-controlados   no baja el informe de medicamentos controlados (PASO 3b)
   · --no-publicar      no publica en GitHub (debug)
 
 El registro ISP de recetas cheque (recetas_cheque.py) corre como PASO 5d: usa
@@ -57,6 +58,14 @@ stock), baja el reporte "Consumos por centro de costo" del MES EN CURSO
 (FARMACOS/LOCAL/FARMACIA) — lo consume programacion_aa.py para Cantidad
 Programada / Cantidad Solicitada del ciclo Bodega AA. No se adelanta a meses
 futuros: la Cantidad Solicitada de un mes que no ha empezado siempre viene en 0.
+
+PASO 3b — Informe Medicamentos Controlados: dentro del módulo RECETA
+(Receta → Reportes → Informe Medicamentos Controlados, misma sesión proyecto
+629 que la sábana), baja el listado de despacho de controlados de Farmacia AT
+Abierta del DÍA HÁBIL ANTERIOR (sin filtrar por medicamento → trae todos los
+productos controlados). Solo se guarda localmente en Informes_Controlados_AA/
+(no se publica a Drive/GitHub por defecto — no se confirmó si trae RUT de
+pacientes; ver regla de privacidad de CLAUDE.md antes de agregarlo al publish).
 
 (sgli_historico.py → SGLI_Historico_<fecha>.xlsx NO se agrega aquí: maestro_aa.py
 YA lo corre solo, al final de su propio main() — agregarlo lo duplicaba.)
@@ -124,9 +133,47 @@ SELS_EXCEL  = ('button:has-text("Excel")', 'a:has-text("Excel")',
                '[id*="xls" i]', '[id*="excel" i]', '[class*="excel" i]',
                'img[src*="excel" i]', 'i.fa-file-excel')
 
+# ── RECETA · Informe Medicamentos Controlados (Farmacia AT Abierta) ────────────
+# Vive DENTRO del módulo RECETA (Reportes → Informe Medicamentos Controlados),
+# misma sesión proyecto 629 que la sábana. Formulario: Medicamento (se deja
+# vacío a propósito — el propio formulario indica que así trae TODOS los
+# productos controlados que pasaron por la bodega), Bodega (elegir "FARMACIA AT
+# ABIERTA"), Fecha Inicio/Término (mismo id fechaInicio/fechaTermino que GT,
+# confirmado por inspección visual del formulario 23-07-2026) y botón Buscar.
+CONTROLADOS_URL = "https://www.ssasur.cl/receta/informes/controlados"
+CONTROLADOS_DIR = MAESTRO_DIR / "Informes_Controlados_AA"
+
 
 def fmt(d: date) -> str:
     return d.strftime("%d/%m/%Y")
+
+
+def _feriados_chile() -> set:
+    """Lee feriados_chile.csv (mismo archivo/formato 'fecha;nombre;confianza'
+    que ya usa pedido_fusion.py — una sola fuente de feriados para todo el
+    proyecto)."""
+    fer = set()
+    ruta = MAESTRO_DIR / "feriados_chile.csv"
+    try:
+        with open(ruta, encoding="utf-8") as fh:
+            next(fh)
+            for ln in fh:
+                p = ln.rstrip().split(";")
+                if p[0].strip():
+                    fer.add(date.fromisoformat(p[0].strip()))
+    except FileNotFoundError:
+        pass
+    return fer
+
+
+def dia_habil_anterior(d: date) -> date:
+    """Retrocede desde d hasta el primer día hábil anterior (lunes-viernes,
+    sin feriado chileno)."""
+    fer = _feriados_chile()
+    ant = d - timedelta(days=1)
+    while ant.weekday() >= 5 or ant in fer:
+        ant -= timedelta(days=1)
+    return ant
 
 
 def gt_salida(dest: Path) -> Path:
@@ -553,6 +600,83 @@ async def paso_gt(page, desde=None, hasta=None, debug=False):
     return (dest, _contar_filas_xlsx(dest))
 
 
+async def _seleccionar_bodega_at_abierta(page):
+    """Selecciona 'FARMACIA AT ABIERTA' en el <select> Bodega del informe de
+    controlados. Busca por TEXTO de la opción (no por id/value fijo, porque no
+    se conoce de antemano) — mismo patrón que _marcar_origen()."""
+    return await page.evaluate(r"""() => {
+      for (const s of document.querySelectorAll('select')) {
+        const o = [...s.options].find(o => /farmacia\s*at\s*abierta/i.test(o.textContent || ''));
+        if (o) {
+          if (s.value !== o.value) {
+            s.value = o.value;
+            s.dispatchEvent(new Event('change', {bubbles: true}));
+          }
+          return {sel: s.id || s.name || 'bodega', val: o.value, label: (o.textContent || '').trim()};
+        }
+      }
+      return null;
+    }""")
+
+
+async def paso_controlados(page, fecha: str, debug=False):
+    """RECETA → Reportes → Informe Medicamentos Controlados. Bodega = FARMACIA
+    AT ABIERTA, Medicamento vacío (trae todos los controlados), misma fecha en
+    Inicio/Término (día hábil anterior). Devuelve (archivo|None, n_filas):
+    n = 0 → sin despachos ese día (no descarga); n = -1 → error."""
+    CONTROLADOS_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"\n[Controlados] Informe Medicamentos Controlados — Farmacia AT Abierta ({fecha})")
+    await entrar_receta(page)
+    await page.goto(CONTROLADOS_URL)
+    await page.wait_for_load_state("networkidle")
+    await page.wait_for_timeout(1_500)
+
+    if not await page.evaluate("() => !!document.querySelector('select')"):
+        print("  [ERROR] No cargó el formulario de controlados.")
+        await _dump_formulario(page, "controlados-fallo")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_controlados.png"))
+        return (None, -1)
+    if debug:
+        await _dump_formulario(page, "controlados")
+
+    bodega = await _seleccionar_bodega_at_abierta(page)
+    print(f"  Bodega → FARMACIA AT ABIERTA ({bodega})" if bodega
+          else "  [AVISO] No encontré el select de Bodega — sigo con el default del formulario.")
+    await page.wait_for_timeout(500)
+
+    await _set_fechas(page, fecha, fecha)
+    print(f"  Fecha: {fecha} (día hábil anterior)")
+    await page.wait_for_timeout(500)
+
+    try:
+        await _click_primero(page, SELS_BUSCAR, "Buscar")
+    except Exception as e:
+        print(f"  [ERROR] No encontré el botón Buscar: {e}")
+        await _dump_formulario(page, "controlados-sin-buscar")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_controlados.png"))
+        return (None, -1)
+    await page.wait_for_load_state("networkidle")
+    await page.wait_for_timeout(2_000)
+    if debug:
+        await _dump_formulario(page, "controlados-post-buscar")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_controlados.png"))
+
+    n = await _filas_resultado(page)
+    if n == 0:
+        print("  (sin despachos de controlados ese día — no hay Excel que bajar)")
+        return (None, 0)
+
+    dest = CONTROLADOS_DIR / f"Informe_Controlados_AT_Abierta_{fecha.replace('/', '-')}.xlsx"
+    try:
+        await descargar_como(page, dest,
+                             lambda: _click_primero(page, SELS_EXCEL, "Excel", force=True))
+    except Exception as e:
+        print(f"  [ERROR] No se pudo bajar el Excel: {e}")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_controlados.png"))
+        return (None, -1)
+    return (dest, _contar_filas_xlsx(dest))
+
+
 async def main():
     no_pause = "--no-pause" in sys.argv
     # ── Verificar Playwright ───────────────────────────────────────────────────
@@ -586,10 +710,16 @@ async def main():
     con_clozapina = "--clozapina" in sys.argv
     # Saltar la descarga del reporte de Programación AA con --no-programacion.
     no_programacion = "--no-programacion" in sys.argv
+    # Saltar el informe de medicamentos controlados con --no-controlados.
+    no_controlados = "--no-controlados" in sys.argv or solo_stock
     debug_gt = "--debug-gt" in sys.argv        # volcados [DESCUBRIR …] + screenshots
     _fecha   = _arg_val("--fecha")             # atajo: mismo día en desde/hasta
     today = date.today()
     ayer  = today - timedelta(days=1)
+    # Informe Medicamentos Controlados: día hábil anterior a HOY (no a "ayer"
+    # calendario) — si hoy es lunes, cae en viernes; si hubo feriado, lo salta.
+    # Override para reintentos/backfill: --fecha-controlados dd/mm/yyyy.
+    fecha_controlados = _arg_val("--fecha-controlados", fmt(dia_habil_anterior(today)))
     # Default GT: ayer → +13 días (2 semanas hacia adelante). Captura despachos
     # próximos programados (el reporte muestra pendientes, no histórico entregado).
     # Los despachos pasados desaparecen del listado al ser procesados, por eso se
@@ -804,6 +934,27 @@ async def main():
             else:
                 print("  [AVISO] No se generó el Excel GT — continúo con el resto.")
                 print(f"    Revisa debug_gt.png en {MAESTRO_DIR}")
+
+        # ════════════════════════════════════════════════════════════════════
+        #  PASO 3b — INFORME MEDICAMENTOS CONTROLADOS (Farmacia AT Abierta)
+        # ════════════════════════════════════════════════════════════════════
+        if no_controlados:
+            print("\n[3b/9] Informe Medicamentos Controlados — omitido (--no-controlados).")
+        else:
+            print(f"\n[3b/9] Informe Medicamentos Controlados (AT Abierta, {fecha_controlados})...")
+            try:
+                ctrl_dest, n_ctrl = await paso_controlados(page, fecha_controlados, debug_gt)
+                if ctrl_dest:
+                    cnt = f"{n_ctrl} filas" if isinstance(n_ctrl, int) and n_ctrl >= 0 else "filas ?"
+                    print(f"  ✓ {ctrl_dest.name}  ({cnt})")
+                    print(f"  → {ctrl_dest}")
+                elif n_ctrl == 0:
+                    print(f"  · Sin despachos de controlados en {fecha_controlados}.")
+                else:
+                    print("  [AVISO] No se generó el Excel de controlados — continúo con el resto.")
+                    print(f"    Revisa debug_controlados.png en {MAESTRO_DIR}")
+            except Exception as e:
+                print(f"  [AVISO] Informe de controlados falló: {e} — continúo con el resto.")
 
         # ════════════════════════════════════════════════════════════════════
         #  PASO 4 — ABASTECIMIENTO  (volver al dashboard → entrar → stock)

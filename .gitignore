@@ -54,6 +54,10 @@ _clozapina_retiros_detalle.csv
 _debug_busqueda_*
 _debug_*_*.png
 _debug_*_*.txt
+# ID de la carpeta Drive de Clozapina — aparte de _drive_folders.json (que SÍ
+# está versionado) para que el nombre "Clozapina - CONFIDENCIAL" no aparezca
+# en el repo público.
+_drive_folders_clozapina.json
 Auditoria_Duplicados_Profunda*.xlsx
 Auditoria_Insulinas_*.xlsx
 Auditoria_Cantidad_Posologia_*.xlsx
