@@ -231,6 +231,11 @@ def buscar_receta_en_maestro(wb, receta_num):
     esto, la misma receta termina duplicada en dos hojas de mes distintas."""
     receta_num = str(receta_num).strip()
     for ws in wb.worksheets:
+        if ws.title == HOJA_HISTORIAL:
+            continue  # log de cambios de estado, no una tabla de recetas — tiene su
+            # propia columna "Nº de receta" pero no "Estado" (sino "Estado Anterior"/
+            # "Estado Nuevo"), y puede tener una fila con este número aunque la receta
+            # ya no viva en ninguna hoja de mes (o viva en otra). No es un match válido.
         try:
             fila_header, headers = _headers_de_hoja(ws)
         except Exception:

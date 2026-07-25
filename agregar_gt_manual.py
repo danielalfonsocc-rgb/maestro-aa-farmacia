@@ -14,16 +14,21 @@ Hace dos cosas con cada fila del CSV:
      planillas automáticas) agrupada por establecimiento, guardada en
      04_Farmacia_Gestion_Territorial/<ESTABLECIMIENTO>/Nóminas de Envío/
 
-Uso:
-  1. Llena una copia de _gt_manual_plantilla.csv con las recetas
-     (una fila por receta). Columnas:
-       receta,paciente,rut,destino,periodo,especialidad,n_presc,telefono,pendiente
+Uso — dos formas de entrada (ver también GT_NOMINA_PARTICULAR.bat):
+
+  A) CSV a mano — llena una copia de _gt_manual_plantilla.csv (una fila por
+     receta): receta,paciente,rut,destino,periodo,especialidad,n_presc,telefono,pendiente
      - destino: nombre del establecimiento tal como quieres que aparezca
        (ej. "CESFAM TEODORO SCHMIDT", "HOSPITAL TOLTEN").
      - pendiente: opcional, texto libre (ej. medicamento que falta).
+       py agregar_gt_manual.py --csv mi_lote.csv --dry-run   (preview)
+       py agregar_gt_manual.py --csv mi_lote.csv             (aplica + genera nóminas)
 
-  2. py agregar_gt_manual.py --csv mi_lote.csv --dry-run   (preview)
-     py agregar_gt_manual.py --csv mi_lote.csv             (aplica + genera nóminas)
+  B) Excel de Modalidad de Despacho ya descargado (reporteGestionTerritorial_*.xlsx,
+     el mismo que baja AUTO_SSASUR.py) — detecta SOLO las recetas que todavía
+     no están en el maestro (las que cruce_gt.py no alcanzó a procesar):
+       py agregar_gt_manual.py --gt-excel reporte.xlsx --dry-run
+       py agregar_gt_manual.py --gt-excel reporte.xlsx
 """
 import argparse
 import csv
@@ -91,6 +96,62 @@ def _leer_csv(path):
     return filas
 
 
+def _leer_gt_excel(path, wb_maestro):
+    """Lee el reporteGestionTerritorial_*.xlsx crudo (Informe Modalidad de
+    Despacho, el mismo que baja AUTO_SSASUR.py) y devuelve SOLO las recetas
+    que todavía NO están en el maestro GT — las que se quedaron atrás porque
+    cruce_gt.py no alcanzó a generarles su Nómina en la corrida automática.
+    Formato real confirmado 24-07-2026 (fila 1 = título fusionado, fila 2 =
+    encabezado real): N° Receta, Paciente, Run Paciente, Edad, Dirección,
+    Comuna, Telefono, Estab. Origen, Farmacia, Estab. Destino, Fecha Entrega,
+    Periodo Receta, Especialidad, Número Prescripciones, Producto, Cantidad,
+    Estab. Prepara, Estab. Transito, Fecha Recepción, Estab. Despacha,
+    Estado, Tipo Retiro, Información Retiro, Cantidad Entregada — una fila
+    por PRODUCTO, hay que agrupar por N° Receta."""
+    wb_in = openpyxl.load_workbook(path, data_only=True)
+    ws_in = wb_in.active
+    filas_raw = list(ws_in.iter_rows(min_row=1, values_only=True))
+    header_idx = next((i for i, row in enumerate(filas_raw) if row and row[0] == "N° Receta"), None)
+    if header_idx is None:
+        raise ValueError(f"No encontré la fila de encabezado ('N° Receta') en {path} — "
+                          f"¿es un Informe Modalidad de Despacho real?")
+    header = [str(c).strip() if c else "" for c in filas_raw[header_idx]]
+
+    def _col(nombre):
+        return header.index(nombre) if nombre in header else None
+
+    c_receta, c_paciente, c_rut = _col("N° Receta"), _col("Paciente"), _col("Run Paciente")
+    c_destino, c_periodo, c_especialidad = _col("Estab. Destino"), _col("Periodo Receta"), _col("Especialidad")
+    c_n_presc, c_telefono = _col("Número Prescripciones"), _col("Telefono")
+
+    por_receta = {}
+    for row in filas_raw[header_idx + 1:]:
+        if not row or not row[c_receta]:
+            continue
+        receta = str(row[c_receta]).strip()
+        por_receta.setdefault(receta, row)  # primera fila del grupo alcanza (mismos datos de cabecera por receta)
+
+    nuevas, ya_registradas = [], []
+    for receta, row in por_receta.items():
+        if GM.buscar_receta_en_maestro(wb_maestro, receta) is not None:
+            ya_registradas.append(receta)
+            continue
+        nuevas.append({
+            "receta": receta,
+            "paciente": str(row[c_paciente] or "").strip(),
+            "rut": str(row[c_rut] or "").strip(),
+            "destino": str(row[c_destino] or "").strip().upper().rstrip("."),
+            "periodo": str(row[c_periodo] or "").strip(),
+            "especialidad": str(row[c_especialidad] or "").strip(),
+            "n_presc": str(row[c_n_presc] or "1").strip(),
+            "telefono": str(row[c_telefono] or "").strip(),
+            "pendiente": "",
+        })
+    print(f"  {len(por_receta)} receta(s) en el informe · {len(ya_registradas)} ya estaban en el maestro "
+          f"(cruce_gt.py sí las tomó) · {len(nuevas)} NUEVA(S) — no alcanzaron a salir con AUTO_SSASUR.")
+    return nuevas
+
+
 def _generar_nomina(destino, filas_destino, fecha_hoy):
     """Genera un .xlsx de Nómina de Envío (mismo formato que skill_gt) para
     un establecimiento, con las filas manuales de esta corrida."""
@@ -129,25 +190,39 @@ def _generar_nomina(destino, filas_destino, fecha_hoy):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--csv", required=True, help="CSV con las recetas sin destino en el sistema")
+    ap.add_argument("--csv", help="CSV con las recetas sin destino en el sistema")
+    ap.add_argument("--gt-excel", help="reporteGestionTerritorial_*.xlsx crudo (Informe Modalidad de Despacho) — "
+                                        "registra solo las recetas que AÚN NO están en el maestro (alternativa a --csv)")
     ap.add_argument("--estado", default="EN PREPARACIÓN",
                      help="Estado a asignar (default: EN PREPARACIÓN)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
-
-    filas = _leer_csv(a.csv)
-    if not filas:
-        print(f"[ERROR] {a.csv} no tiene filas válidas (falta la columna 'receta' o está vacía).")
+    if not a.csv and not a.gt_excel:
+        print("[ERROR] Pasa --csv o --gt-excel.")
         return
-
-    sin_destino = [f["receta"] for f in filas if not f["destino"]]
-    if sin_destino:
-        print(f"[ERROR] Estas recetas no tienen 'destino' en el CSV — complétalo antes de correr: {sin_destino}")
-        return
-
-    print(f"{'[DRY-RUN] ' if a.dry_run else ''}{len(filas)} receta(s) en {a.csv}")
 
     wb, path = GM.cargar_maestro()
+
+    if a.csv:
+        filas = _leer_csv(a.csv)
+        if not filas:
+            print(f"[ERROR] {a.csv} no tiene filas válidas (falta la columna 'receta' o está vacía).")
+            return
+        sin_destino = [f["receta"] for f in filas if not f["destino"]]
+        if sin_destino:
+            print(f"[ERROR] Estas recetas no tienen 'destino' en el CSV — complétalo antes de correr: {sin_destino}")
+            return
+        print(f"{'[DRY-RUN] ' if a.dry_run else ''}{len(filas)} receta(s) en {a.csv}")
+    else:
+        filas = _leer_gt_excel(a.gt_excel, wb)
+        if not filas:
+            print("Nada que registrar — todas las recetas del informe ya estaban en el maestro.")
+            return
+        sin_destino = [f["receta"] for f in filas if not f["destino"]]
+        if sin_destino:
+            print(f"[AVISO] Estas recetas no traen Estab. Destino en el informe — se guardan igual, "
+                  f"revisa el destino a mano después: {sin_destino}")
+
     hoy = datetime.date.today()
     hojas_tocadas = {}
     for f in filas:
