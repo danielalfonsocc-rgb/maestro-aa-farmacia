@@ -49,6 +49,7 @@ import glob
 import os
 import re
 import sys
+import unicodedata
 
 import openpyxl
 from openpyxl.styles import Font, PatternFill
@@ -89,6 +90,7 @@ def _fila_a_dict(filas_receta):
         "paciente": paciente,
         "periodo": (r0.get("Periodo") or "").strip(),
         "especialidad": (r0.get("Especialidad") or "").strip(),
+        "tipo_receta": (r0.get("Tipo Receta") or "").strip(),
         "estado": (r0.get("Estado") or "").strip(),
         # OJO: la columna "Fecha Digitación" del CSV es la fecha de la serie
         # completa, NO por cuota — dos cuotas mensuales normales de una misma
@@ -106,6 +108,45 @@ def _norm_rut(s):
     'N.NNN.NNN-X' — normaliza ambos a solo dígitos+dígito verificador para
     poder cruzarlos."""
     return re.sub(r"[.\s-]", "", str(s or "")).upper()
+
+
+def _norm_texto(s):
+    s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode()
+    return re.sub(r"\s+", " ", s).strip().upper()
+
+
+def _elegir_receta(todas, especialidad_pedida=None):
+    """Elige qué receta imprimir entre TODAS las vigentes de un RUT. Bug real
+    detectado 25-07-2026 (caso Toltén, 8 de 37 pacientes con receta de
+    especialidad equivocada): elegir a ciegas la de N° más alto ignora tanto
+    el Tipo Receta (a veces la más nueva es CONTROLADA — formulario ISP
+    aparte, ver recetas_cheque.py — cuando lo que se necesita es la NORMAL)
+    como la Especialidad (un paciente crónico puede tener recetas vigentes de
+    varias especialidades a la vez; Tolten pide una en concreto).
+
+    Prioridad: 1) Tipo Receta = NORMAL sobre CONTROLADA (salvo que sea la
+    única opción), 2) especialidad pedida si se informó, 3) N° más alto como
+    desempate. Devuelve (receta_elegida, nota_o_None) — la nota se llena
+    cuando ninguna candidata coincide con la especialidad pedida, para que
+    quede visible en el feedback en vez de fallar en silencio."""
+    normales = [r for r in todas if _norm_texto(r.get("tipo_receta")) != "CONTROLADA"]
+    pool = normales or todas
+
+    if especialidad_pedida:
+        esp_pedida = _norm_texto(especialidad_pedida)
+        match = [r for r in pool
+                 if esp_pedida in _norm_texto(r.get("especialidad")) or _norm_texto(r.get("especialidad")) in esp_pedida]
+        if match:
+            elegida = max(match, key=lambda r: int(r["receta"]) if r["receta"].isdigit() else -1)
+            return elegida, None
+        elegida = max(pool, key=lambda r: int(r["receta"]) if r["receta"].isdigit() else -1)
+        nota = (f"Sin receta vigente de {especialidad_pedida} en el sistema — se adjunta la más reciente "
+                f"disponible ({elegida.get('especialidad') or 'especialidad desconocida'}, "
+                f"{elegida.get('estado') or 'estado desconocido'}). Revisar manualmente.")
+        return elegida, nota
+
+    elegida = max(pool, key=lambda r: int(r["receta"]) if r["receta"].isdigit() else -1)
+    return elegida, None
 
 
 def _indice_por_rut(por_receta):
@@ -280,6 +321,7 @@ def _procesar_estab_xlsx(estab, xlsx_path, dry_run):
         print(f"[ERROR] No encontré columna 'RUT' en {xlsx_path} (headers: {header})")
         return
     col_nombre = header.index("NOMBRE") if "NOMBRE" in header else None
+    col_especialidad = header.index("ESPECIALIDAD") if "ESPECIALIDAD" in header else None
 
     pacientes = []
     for row in ws_in.iter_rows(min_row=2, values_only=True):
@@ -287,7 +329,9 @@ def _procesar_estab_xlsx(estab, xlsx_path, dry_run):
         if not rut:
             continue
         nombre = row[col_nombre] if col_nombre is not None and col_nombre < len(row) else None
-        pacientes.append((str(rut).strip(), str(nombre).strip() if nombre else ""))
+        especialidad = row[col_especialidad] if col_especialidad is not None and col_especialidad < len(row) else None
+        pacientes.append((str(rut).strip(), str(nombre).strip() if nombre else "",
+                           str(especialidad).strip() if especialidad else ""))
 
     if not pacientes:
         print(f"[{estab}] La planilla no tiene filas con RUT.")
@@ -299,7 +343,7 @@ def _procesar_estab_xlsx(estab, xlsx_path, dry_run):
 
     set_completo = []
     filas_feedback = []
-    for rut, nombre in pacientes:
+    for rut, nombre, especialidad_pedida in pacientes:
         todas = _todas_las_recetas_del_rut(rut, indice_rut)
         if not todas:
             filas_feedback.append(({
@@ -309,22 +353,33 @@ def _procesar_estab_xlsx(estab, xlsx_path, dry_run):
             continue
         set_completo.extend(todas)
         # El combinado a imprimir/despachar lleva SOLO UNA receta por
-        # paciente (la de N° más alto = la más nueva/vigente) — no todas
-        # las vigentes. Las demás se revisan igual (arriba, para alertas de
-        # duplicado/ambigüedad) pero no se imprimen todas, para no inflar el
-        # combinado con recetas que no corresponden a esta solicitud
-        # puntual (corregido 23-07-2026 tras detectarlo en Freire: 26
-        # pacientes -> 47 páginas por incluir todas las vigentes).
-        a_imprimir = max(todas, key=lambda r: int(r["receta"]) if r["receta"].isdigit() else -1)
+        # paciente — no todas las vigentes. Las demás se revisan igual
+        # (arriba, para alertas de duplicado/ambigüedad) pero no se imprimen
+        # todas, para no inflar el combinado con recetas que no corresponden
+        # a esta solicitud puntual (corregido 23-07-2026 tras detectarlo en
+        # Freire: 26 pacientes -> 47 páginas por incluir todas las vigentes).
+        #
+        # OJO — "la de N° más alto" a secas NO basta (bug real 25-07-2026,
+        # caso Toltén: 8 de 37 pacientes con receta de especialidad
+        # equivocada porque un paciente crónico puede tener recetas vigentes
+        # de VARIAS especialidades a la vez, y a veces la más nueva es
+        # CONTROLADA cuando se necesita la NORMAL). _elegir_receta() filtra
+        # por Tipo Receta=NORMAL y por especialidad pedida (columna
+        # ESPECIALIDAD opcional en la planilla de entrada) antes de usar el
+        # N° más alto como desempate.
+        a_imprimir, nota_mismatch = _elegir_receta(todas, especialidad_pedida)
+        notas = []
         if len(todas) > 1:
             otras = [r["receta"] for r in todas if r is not a_imprimir]
             print(f"  [{todas[0]['paciente']}] {len(todas)} recetas vigentes — se revisan todas, "
-                  f"se imprime solo la más nueva ({a_imprimir['receta']}; otras: {', '.join(otras)}).")
-            nota_extra = f"Paciente tiene otra(s) receta(s) vigente(s) no incluida(s) en el combinado: {', '.join(otras)}"
-        else:
-            nota_extra = None
+                  f"se imprime solo {a_imprimir['receta']} ({a_imprimir.get('especialidad')}); "
+                  f"otras: {', '.join(otras)}.")
+            notas.append(f"Paciente tiene otra(s) receta(s) vigente(s) no incluida(s) en el combinado: {', '.join(otras)}")
+        if nota_mismatch:
+            print(f"  [AVISO] {a_imprimir['paciente']}: {nota_mismatch}")
+            notas.append(nota_mismatch)
         filas_feedback.append((a_imprimir, "Solicitud recibida (planilla establecimiento)"
-                                + (f" — {nota_extra}" if nota_extra else "")))
+                                + (" — " + " | ".join(notas) if notas else "")))
 
     alertas = GM.detectar_alertas_mismo_rut(set_completo)
     alerta_por_receta = {}
