@@ -55,6 +55,15 @@
   }
   header h1 { font-size: 15px; font-weight: 700; line-height: 1.2; }
   header p  { font-size: 11px; opacity: 0.8; margin-top: 2px; }
+  .badge-modo {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 12px;
+    background: rgba(255,255,255,.15);
+    white-space: nowrap;
+  }
 
   /* TABS FARMACIA */
   .tabs-wrap {
@@ -363,6 +372,7 @@
     <h1>Stock de Medicamentos Controlados</h1>
     <p>Hospital Pitrufquén — Pauta de supervisión semanal</p>
   </div>
+  <span id="badgeModo" class="badge-modo no-print"></span>
 </header>
 
 <div class="tabs-wrap" id="tabsWrap"></div>
@@ -445,6 +455,24 @@ const MEDICAMENTOS = {
 const QF_LISTA = _CFG.qf_lista || ['Jose Luis Díaz', 'Jacqueline Valenzuela', 'Otro'];
 
 // ─────────────────────────────────────────────────────────────────
+// MODO ONLINE — activo solo cuando lo sirve servidor_conteo.py, que inyecta
+// window.CONTEO_ONLINE = true. En ese modo el servidor (estado_compartido.json)
+// es la fuente de verdad: varios computadores pueden llenar el MISMO conteo a
+// la vez (normalmente 1 persona por farmacia). Si dos personas editan LA MISMA
+// farmacia al mismo tiempo, gana el último guardado — no hay merge de celdas.
+// Vía Streamlit (conteo_controlados_app.py) o el HTML suelto, ONLINE es false
+// y todo sigue funcionando solo con localStorage, como siempre.
+// ─────────────────────────────────────────────────────────────────
+const ONLINE = (typeof window !== 'undefined' && window.CONTEO_ONLINE) === true;
+let ultimoPush = {};      // { farmaciaId: iso del último "actualizado" que YO empujé/recibí }
+let pausarPoll = false;   // true mientras el usuario tiene el foco en un input (no interrumpir)
+
+(function marcarBadgeModo() {
+  const b = document.getElementById('badgeModo');
+  if (b) b.textContent = ONLINE ? '🟢 En línea (compartido)' : '💾 Local (este computador)';
+})();
+
+// ─────────────────────────────────────────────────────────────────
 // ESTADO
 // ─────────────────────────────────────────────────────────────────
 let farmaciaActiva = 'cerrada';
@@ -471,7 +499,10 @@ function initState() {
     }
     if (!historial[f.id]) historial[f.id] = [];
   });
-  guardar();
+  // guardarLocal (NO guardar): en modo ONLINE no queremos empujar estos valores
+  // recién armados desde localStorage antes de sincronizar con el servidor —
+  // pisaríamos el conteo real de otras computadoras con datos en blanco.
+  guardarLocal();
 }
 
 // Agrega medicamentos nuevos de la lista actual que no estén en el conteo guardado,
@@ -525,8 +556,99 @@ function crearConteoVacio(farmaciaId) {
   };
 }
 
-function guardar() {
+function guardarLocal() {
   localStorage.setItem('controlados_v2', JSON.stringify({ conteos, historial }));
+}
+
+function guardar() {
+  guardarLocal();
+  if (ONLINE) onlinePushConteos();
+}
+
+// ─────────────────────────────────────────────────────────────────
+// SINCRONIZACIÓN ONLINE (servidor_conteo.py) — ver bloque "MODO ONLINE" arriba.
+// Empuja/trae Conteo_Controlados/estado_compartido.json vía fetch al mismo
+// origen (la página la sirve el propio servidor). El historial usa endpoints
+// atómicos (agregar/eliminar) para no perder entradas de otras computadoras
+// por sobre-escribir el arreglo completo con una copia local desactualizada.
+// ─────────────────────────────────────────────────────────────────
+function onlinePushConteos() {
+  FARMACIAS.forEach(f => {
+    fetch('/api/conteo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ farmaciaId: f.id, conteo: conteos[f.id] }),
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (d && d.actualizado) ultimoPush[f.id] = d.actualizado; })
+      .catch(() => { /* sin red momentáneamente: el próximo cambio o poll reintenta */ });
+  });
+}
+
+// El servidor solo crea la clave de una farmacia en su historial cuando ALGUIEN
+// guarda algo ahí (ver Handler._api_historial_agregar en servidor_conteo.py) —
+// por eso data.historial puede venir sin 'abierta'/'urgencia' si nunca se usó.
+// Normalizar aquí garantiza que historial[fid] SIEMPRE sea un arreglo (si no,
+// guardarConteo() truena al hacer historial[farmaciaActiva].unshift(...)).
+function normalizarHistorial(h) {
+  const out = {};
+  FARMACIAS.forEach(f => { out[f.id] = (h && h[f.id]) || []; });
+  return out;
+}
+
+async function onlineAgregarHistorial(farmaciaId, entry) {
+  try {
+    const r = await fetch('/api/historial/agregar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ farmaciaId, entry }),
+    });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.historial) { historial = normalizarHistorial(d.historial); guardarLocal(); }
+    }
+  } catch(e) { /* queda igual guardado localmente; se reconciliará en el próximo poll */ }
+}
+
+async function onlineEliminarHistorial(farmaciaId, guardadoEn) {
+  try {
+    const r = await fetch('/api/historial/eliminar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ farmaciaId, guardadoEn }),
+    });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.historial) { historial = normalizarHistorial(d.historial); guardarLocal(); }
+    }
+  } catch(e) { /* ídem */ }
+}
+
+async function onlineCargarEstado() {
+  try {
+    const r = await fetch('/api/estado');
+    if (!r.ok) return;
+    const data = await r.json();
+    let cambio = false;
+    FARMACIAS.forEach(f => {
+      const remoto = data.conteos && data.conteos[f.id];
+      const ts = data.actualizado && data.actualizado[f.id];
+      if (remoto && ts && ts !== ultimoPush[f.id]) {
+        conteos[f.id] = migrarConteo(remoto, f.id);
+        ultimoPush[f.id] = ts;
+        cambio = true;
+      }
+    });
+    const nuevoHist = normalizarHistorial(data.historial);
+    if (JSON.stringify(nuevoHist) !== JSON.stringify(historial)) {
+      historial = nuevoHist;
+      cambio = true;
+    }
+    if (cambio) {
+      guardarLocal();
+      if (!pausarPoll) renderMain();
+    }
+  } catch(e) { /* servidor no disponible momentáneamente: seguir con lo local */ }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -816,6 +938,7 @@ function guardarConteo() {
   copia.guardadoEn = new Date().toISOString();
   historial[farmaciaActiva].unshift(copia);
   guardar();
+  if (ONLINE) onlineAgregarHistorial(farmaciaActiva, copia);
   alert('✅ Conteo guardado en el historial.');
 }
 
@@ -834,8 +957,10 @@ function confirmarEliminar(farmaciaId, idx) {
     'Eliminar conteo',
     '¿Segura que quieres eliminar este conteo del historial? Esta acción no se puede deshacer.',
     () => {
+      const entry = historial[farmaciaId][idx];
       historial[farmaciaId].splice(idx, 1);
-      guardar();
+      guardarLocal();
+      if (ONLINE && entry) onlineEliminarHistorial(farmaciaId, entry.guardadoEn);
       renderHistorial();
     }
   );
@@ -1163,10 +1288,11 @@ function importarJSON(input) {
         copia.guardadoEn = new Date().toISOString();
         copia.importadoDesde = fNombre;
         historial[data.farmaciaId].unshift(copia);
-        guardar();
+        guardarLocal();
+        if (ONLINE) onlineAgregarHistorial(data.farmaciaId, copia);
         alert(`✅ Conteo de ${fNombre} cargado y guardado en el historial.`);
       } else {
-        guardar();
+        guardarLocal();
         alert(`✅ Conteo de ${fNombre} cargado.\n\nYa existía un conteo de esa fecha (${formatFecha(fechaNueva)}) en el historial — no se duplicó.`);
       }
 
@@ -1423,9 +1549,27 @@ function aplicarStockInyectado() {
 
 // ─────────────────────────────────────────────────────────────────
 initState();
-aplicarStockInyectado();
 renderTabs();
 renderMain();
+
+if (ONLINE) {
+  // El servidor manda: primero traigo el conteo REAL de las otras
+  // computadoras (si no, aplicarStockInyectado() podría pisarlo con los
+  // valores en blanco recién armados en este navegador) y recién ahí aplico
+  // el stock del sistema y repinto.
+  onlineCargarEstado().then(() => {
+    aplicarStockInyectado();
+    renderTabs();
+    renderMain();
+  });
+  setInterval(onlineCargarEstado, 4000);
+  document.addEventListener('focusin',  e => { if (e.target.tagName === 'INPUT') pausarPoll = true; });
+  document.addEventListener('focusout', e => { if (e.target.tagName === 'INPUT') pausarPoll = false; });
+} else {
+  aplicarStockInyectado();
+  renderTabs();
+  renderMain();
+}
 </script>
 </body>
 </html>
