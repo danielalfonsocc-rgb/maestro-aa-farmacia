@@ -86,9 +86,16 @@ from datetime import date, timedelta
 
 # Forzar UTF-8 en la salida — si no, al redirigir a un archivo/pipe Windows usa
 # cp1252 y los caracteres ═ ✓ → ✗ revientan el script antes de empezar.
+# line_buffering=True: sin esto, al redirigir a un archivo/pipe Python usa buffer
+# de bloque para el propio stdout del script, mientras los subprocess.run()
+# (maestro_aa.py, etc.) heredan el mismo handle y escriben en tiempo real. El
+# resultado es un log con el orden de eventos mezclado — ej. el texto de
+# maestro_aa.py aparece ANTES que el "[5/9] Actualizando Maestro AA..." que en
+# realidad lo dispara, dando la falsa impresión de pasos duplicados o de que
+# un paso posterior (GT, controlados) no corrió. Bug real visto 27-07-2026.
 for _stream in (sys.stdout, sys.stderr):
     try:
-        _stream.reconfigure(encoding="utf-8", errors="replace")
+        _stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     except Exception:
         pass
 
