@@ -42,11 +42,17 @@ BUFFER_SS    = 1    # días de safety stock (blindaje reapertura lunes)
 EXTRA_CRIT   = 1    # días extra SS para criticidad ≤ 2
 UMBRAL_PREQUIEBRE = 10   # días de cobertura farmacia bajo los cuales una bodega
                          # AA en 0 se reporta como POR AGOTARSE en Faltantes_AA
-CICLO_INICIO = dt.date(2026, 7, 13)   # inicio ciclo Bod→BodFarm; repite cada 10d hábiles
+CICLO_INICIO = dt.date(2026, 7, 13)   # inicio ciclo Bod→BodFarm; límite de CALENDARIO, repite cada 14 días (lunes)
 # Recalibrado 2026-07-13: el ancla anterior (2026-06-29) cayó en feriado
 # (San Pedro y San Pablo), lo que restó 1 día hábil al 1er ciclo y corrió
 # el límite del 2° ciclo de lunes 13-jul a martes 14-jul. Confirmado con
 # el usuario que el nuevo período de pedido Bod→BodFarm arranca esta semana.
+# Fix 2026-07-27: el límite entre ciclos es de calendario (14 días desde el
+# ancla), no un conteo de 10 días hábiles acumulados — un feriado dentro del
+# ciclo (ej. 16-jul) le resta días hábiles a ESE ciclo pero no corre el
+# inicio del siguiente. Antes el conteo acumulado hacía que el feriado
+# retrasara 1 día hábil el arranque del ciclo nuevo, aunque calendario ya
+# había avanzado 14 días.
 
 # ─────────────── helpers ────────────────────────────────────────────────────
 
@@ -84,17 +90,24 @@ def _dias_ef(hoy, fer):
     return max(1, n)
 
 def _dias_ciclo(hoy, fer):
-    """Días hábiles restantes en el ciclo Bod→BodFarm (10d hábiles, inicio CICLO_INICIO, repite cada 2 semanas)."""
+    """Días hábiles restantes en el ciclo Bod→BodFarm.
+
+    El límite del ciclo es de CALENDARIO (14 días desde CICLO_INICIO), no un
+    conteo de 10 días hábiles acumulados: si un feriado cae dentro del ciclo
+    (ej. 16-jul Virgen del Carmen), ese ciclo queda con 9 días hábiles pero
+    el ciclo siguiente igual arranca 14 días después, no 1 día hábil más tarde.
+    """
     if hoy < CICLO_INICIO:
         return 10
-    d = CICLO_INICIO
-    habiles = 0
-    while d < hoy:
+    ciclo_num = (hoy - CICLO_INICIO).days // 14
+    inicio_ciclo = CICLO_INICIO + dt.timedelta(days=14 * ciclo_num)
+    fin_ciclo = inicio_ciclo + dt.timedelta(days=13)
+    d, restantes = hoy, 0
+    while d <= fin_ciclo:
         if _habil(d, fer):
-            habiles += 1
+            restantes += 1
         d += dt.timedelta(days=1)
-    pos = habiles % 10        # posición 0-9 dentro del ciclo
-    return max(1, 10 - pos)  # días restantes en el ciclo actual
+    return max(1, restantes)
 
 def _semana(d):
     return min((d.day - 1) // 7 + 1, 4)
