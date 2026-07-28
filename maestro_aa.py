@@ -263,6 +263,13 @@ EXCLUIR_ESPECIFICOS_RAW = [
     'HIDROCORTISONA SUCCINATO SODICO 100 MG INYECTABLE',
     'MEROPENEM 1000 MG INYECTABLE',
     'PROPINOXATO 5 MG / 1ML AM',
+    # Batch 28/07/2026 — variantes IV/anestesia sin palabra clave detectable
+    # por es_inyectable() (no llevan AMP/FA/VIAL/INYECTABLE en el nombre),
+    # coladas al universo tras sumar recetas de Urgencia no-inyectables.
+    'PROPOFOL 1% 50 ML',
+    'PROPOFOL 2 % FC 100 ML',
+    'CEFTAZIDIMA 2G / AVIBACTAM 0,5G',
+    'GLUCOSA 30% MATRAZ 500 ML',
 ]
 EXCLUIR_ESPECIFICOS = {norm_erp(x) for x in EXCLUIR_ESPECIFICOS_RAW}
 
@@ -553,9 +560,36 @@ print(f"  Cobertura objetivo: {COB_OBJETIVO} días laborales")
 # ═══════════════════════════════════════════════
 # 4. FILTER AA RECETAS
 # ═══════════════════════════════════════════════
+# Recetas de Urgencia (Procedencia == 'URGENCIA') SÍ cuentan como consumo/
+# requerimiento de Bodega AT Abierta (decisión usuario 28-07-2026): la Bodega
+# Activa Farmacia Urgencia se abastece desde Bodega AT Abierta, así que lo que
+# despacha por el mostrador de Urgencia tira stock de la misma bodega. Se
+# excluyen los productos INYECTABLES que despacha Urgencia (uso clínico propio
+# de esa unidad, no reposición de Bodega AA) — sin columna de forma
+# farmacéutica en el CSV SSASUR, se detecta por palabra clave en el nombre.
+INYECTABLE_KW_SUBSTR = [
+    'INYECTABLE', 'INYECTABL', 'AMPOLLA', 'ENDOVENOSA', 'ENDOVENOSO',
+    'SOL. INY', 'SOL INY', 'JERINGA PRELLENADA', 'FRASCO AMPOLLA',
+]
+INYECTABLE_KW_TOKEN = {'AMP', 'AM', 'FA', 'FAM', 'VIAL', 'IV', 'IM', 'EV'}
+
+def es_inyectable(nombre: str) -> bool:
+    n = norm_erp(nombre)
+    if any(kw in n for kw in INYECTABLE_KW_SUBSTR):
+        return True
+    # Tokeniza por corridas de letras (no por espacios) para no perder
+    # abreviaturas pegadas a la dosis, ej. "FA100 MG/2 ML" (sin espacio).
+    tokens = re.findall(r'[A-Z]+', n)
+    return any(t in INYECTABLE_KW_TOKEN for t in tokens)
+
 mask_proc = df_rec['Procedencia'].isin(['ATENCION ABIERTA', 'SIN RESPALDO'])
-df_aa = df_rec[mask_proc].copy()
-print(f"  Recetas AA (post-filtro procedencia): {len(df_aa):,}")
+mask_urgencia_no_iny = (
+    (df_rec['Procedencia'] == 'URGENCIA') &
+    ~df_rec['Prescripcion_norm'].apply(es_inyectable)
+)
+df_aa = df_rec[mask_proc | mask_urgencia_no_iny].copy()
+print(f"  Recetas AA (post-filtro procedencia, incl. Urgencia no-inyectable): {len(df_aa):,}")
+print(f"    de las cuales Urgencia no-inyectable: {mask_urgencia_no_iny.sum():,}")
 
 # ═══════════════════════════════════════════════
 # 5. BUILD UNIVERSE AA

@@ -23,14 +23,6 @@
     "racha": 1,
     "ultimo_mes": "2026-07"
   },
-  "BUPRENORFINA 10 MCG PARC TRANSDERMICO": {
-    "racha": 1,
-    "ultimo_mes": "2026-07"
-  },
-  "BUPRENORFINA 35 MCG/HR PARC": {
-    "racha": 1,
-    "ultimo_mes": "2026-07"
-  },
   "CASEINATO CALCIO PROTEINA SUERO+LECITINA DE SOYA UD SIN ESPECIFICAR": {
     "racha": 1,
     "ultimo_mes": "2026-07"
@@ -40,14 +32,6 @@
     "ultimo_mes": "2026-07"
   },
   "CLOBAZAM 10 MG COMPRIMIDO": {
-    "racha": 1,
-    "ultimo_mes": "2026-07"
-  },
-  "CLONAZEPAM CM 0,5 MG": {
-    "racha": 1,
-    "ultimo_mes": "2026-07"
-  },
-  "DIAZEPAM 10 MG COMPRIMIDO": {
     "racha": 1,
     "ultimo_mes": "2026-07"
   },
@@ -75,14 +59,6 @@
     "racha": 1,
     "ultimo_mes": "2026-07"
   },
-  "FENTANILO 25 MCG/HORA PARCHE": {
-    "racha": 1,
-    "ultimo_mes": "2026-07"
-  },
-  "FENTANILO AMP 500 MCG/10 ML": {
-    "racha": 1,
-    "ultimo_mes": "2026-07"
-  },
   "FIERRO COMPLEJO HIERRO III POLIMALTOSA COMPRIMIDOS100 MG": {
     "racha": 1,
     "ultimo_mes": "2026-07"
@@ -103,15 +79,7 @@
     "racha": 1,
     "ultimo_mes": "2026-07"
   },
-  "INSULINA ASPARTA 300 UI/3 ML (100 UI/ML) INYECTABLE EN LAPIZ PRELLENADO": {
-    "racha": 1,
-    "ultimo_mes": "2026-07"
-  },
   "JERINGA P/INSULINA C/AGUJA 1 ML 100 UI/A. FIJA 29-31G X 6MM": {
-    "racha": 1,
-    "ultimo_mes": "2026-07"
-  },
-  "KETAMINA 500 MG/10 ML (50 MG/ML) INYECTABLE": {
     "racha": 1,
     "ultimo_mes": "2026-07"
   },
@@ -171,10 +139,6 @@
     "racha": 1,
     "ultimo_mes": "2026-07"
   },
-  "TAPENTADOL 50 MG CM LIBERACION MODIFICADA": {
-    "racha": 1,
-    "ultimo_mes": "2026-07"
-  },
   "TICAGRELOR 90 MG COMPRIMIDO": {
     "racha": 1,
     "ultimo_mes": "2026-07"
@@ -184,6 +148,30 @@
     "ultimo_mes": "2026-07"
   },
   "ZOLPIDEM 10 MG COMPRIMIDO": {
+    "racha": 1,
+    "ultimo_mes": "2026-07"
+  },
+  "AZITROMICINA 200 MG/5 ML POLVO PARA PREPARADO ORAL": {
+    "racha": 1,
+    "ultimo_mes": "2026-07"
+  },
+  "CIPROFLOXACINO 0,3% COLIRIO 5 ML": {
+    "racha": 1,
+    "ultimo_mes": "2026-07"
+  },
+  "CIPROFLOXACINO 0,3% GOTAS OTICAS 5 ML": {
+    "racha": 1,
+    "ultimo_mes": "2026-07"
+  },
+  "DICLOFENACO SODICO 15 MG/ML GOTAS ORALES": {
+    "racha": 1,
+    "ultimo_mes": "2026-07"
+  },
+  "FENTANILO 8,4 MG (50 MCG/HORA) PARCHE": {
+    "racha": 1,
+    "ultimo_mes": "2026-07"
+  },
+  "NISTATINA 100.000 UI/ML SUSPENSION ORAL": {
     "racha": 1,
     "ultimo_mes": "2026-07"
   }
