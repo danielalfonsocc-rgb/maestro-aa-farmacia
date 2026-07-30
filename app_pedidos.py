@@ -390,6 +390,23 @@ def _get(row, col, default=0):
         return default
     return v
 
+def _nec_bodfarm(row, dias_ciclo, fe_map):
+    """Necesidad Bodega AA -> Bodega Fármacos (mismo criterio que calc_h2 en
+    pedido_fusion.py). Compartida entre rep_h2_map y la pestaña tab_pedido_farm
+    para que ambas no puedan desincronizarse si se ajusta la fórmula."""
+    med    = str(row.get('Medicamento', '')).strip()
+    cons10 = pd.to_numeric(row.get('Consumo_10D_Trend', 0), errors='coerce')
+    cons10 = 0.0 if pd.isna(cons10) else float(cons10)
+    req2   = pd.to_numeric(row.get('Req_2_Semanas', 0), errors='coerce')
+    req2   = 0.0 if pd.isna(req2) else float(req2)
+    cdl    = (cons10 / 10) if cons10 > 0 else (req2 / 10 if req2 > 0 else 0.0)
+    sbod   = int(_get(row, 'Stock_Bod_Actual', 0) or 0)
+    sfarm  = int(_get(row, 'Stock_Farm_Actual', 0) or 0)
+    req_ciclo = math.ceil(cdl * dias_ciclo) if cdl > 0 else 0
+    fe     = int(fe_map.get(med, 1)) or 1
+    nec    = _ceil_fe(max(0, req_ciclo - (sbod + sfarm)), fe)
+    return req_ciclo, nec
+
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 💊 Pedidos AA")
@@ -456,17 +473,8 @@ if len(df_sgli_base):
 # viene en camino, mismo criterio que calc_h1 en pedido_fusion.py (2026-07-14).
 rep_h2_map = {}
 for _, _r in df_bod.iterrows():
-    _med    = str(_r.get('Medicamento', '')).strip()
-    _cons10 = pd.to_numeric(_r.get('Consumo_10D_Trend', 0), errors='coerce')
-    _cons10 = 0.0 if pd.isna(_cons10) else float(_cons10)
-    _req2   = pd.to_numeric(_r.get('Req_2_Semanas', 0), errors='coerce')
-    _req2   = 0.0 if pd.isna(_req2) else float(_req2)
-    _cdl    = (_cons10 / 10) if _cons10 > 0 else (_req2 / 10 if _req2 > 0 else 0.0)
-    _sbod   = int(_get(_r, 'Stock_Bod_Actual', 0) or 0)
-    _sfarm  = int(_get(_r, 'Stock_Farm_Actual', 0) or 0)
-    _req_ciclo = math.ceil(_cdl * dias_ciclo_hoy) if _cdl > 0 else 0
-    _fe     = int(fe_map.get(_med, 1)) or 1
-    rep_h2_map[_med] = _ceil_fe(max(0, _req_ciclo - (_sbod + _sfarm)), _fe)
+    _med = str(_r.get('Medicamento', '')).strip()
+    _, rep_h2_map[_med] = _nec_bodfarm(_r, dias_ciclo_hoy, fe_map)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -804,17 +812,7 @@ with tab_pedido_farm:
     # — en vez de la ventana fija de 10 días.
     _nec_pf, _reqciclo_pf = [], []
     for _, r in df_pf.iterrows():
-        med    = str(r.get('Medicamento', '')).strip()
-        cons10 = pd.to_numeric(r.get('Consumo_10D_Trend', 0), errors='coerce')
-        cons10 = 0.0 if pd.isna(cons10) else float(cons10)
-        req2   = pd.to_numeric(r.get('Req_2_Semanas', 0), errors='coerce')
-        req2   = 0.0 if pd.isna(req2) else float(req2)
-        cdl    = (cons10 / 10) if cons10 > 0 else (req2 / 10 if req2 > 0 else 0.0)
-        sbod   = int(_get(r, 'Stock_Bod_Actual', 0) or 0)
-        sfarm  = int(_get(r, 'Stock_Farm_Actual', 0) or 0)
-        req_ciclo = math.ceil(cdl * dias_ciclo_hoy) if cdl > 0 else 0
-        fe     = int(fe_map.get(med, 1)) or 1
-        nec    = _ceil_fe(max(0, req_ciclo - (sbod + sfarm)), fe)
+        req_ciclo, nec = _nec_bodfarm(r, dias_ciclo_hoy, fe_map)
         _nec_pf.append(nec)
         _reqciclo_pf.append(req_ciclo)
 
@@ -1047,19 +1045,17 @@ with tab_dialisis:
                          else pd.Series(5, index=dfa.index)
         dfa = dfa[dfa['_dial5d'] > 0].copy()
         # Cantidad sugerida = consumo mensual de diálisis (5 días hábiles → 30 días)
-        dfa['_mensual'] = (dfa['_dial5d'] / 5 * 30).round().astype(int)
-        dfa = dfa.sort_values(['_ord', '_mensual'], ascending=[True, False]).reset_index(drop=True)
+        dfa['_mensual_raw'] = dfa['_dial5d'] / 5 * 30
+        dfa = dfa.sort_values(['_ord', '_mensual_raw'], ascending=[True, False]).reset_index(drop=True)
 
         if dfa.empty:
             st.success("✅ No hay consumo de diálisis registrado en el periodo.")
         else:
             filas = []
             for _, row in dfa.iterrows():
-                base     = int(row['_mensual'])
                 med_dial = str(_get(row, 'Medicamento', ''))
                 factor   = _fe_map_dial.get(med_dial, 0) or (int(row['_factor']) if int(row['_factor']) > 0 else 1)
-                # Aproximar al factor de empaque (hacia arriba)
-                cantidad = ((base + factor - 1) // factor) * factor if factor > 1 else base
+                cantidad = _ceil_fe(row['_mensual_raw'], factor)
                 stock    = int(row['_stock'])
                 if stock >= cantidad:
                     obs = f"Se puede sacar directo de Farmacia AA (stock actual: {stock} ud)."

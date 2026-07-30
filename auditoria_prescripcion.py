@@ -28,6 +28,11 @@ def main():
         return
     print(f"Recetas dedup: {len(rec):,}")
 
+    # Solo estados que representan consumo/demanda real (igual que maestro_aa.py)
+    ESTADOS_CONSUMO = {'ENTREGADO', 'PENDIENTE', 'SOLICITADO'}
+    rec["_estado"] = rec["Estado Prescripción"].fillna("").str.strip().str.upper()
+    rec = rec[rec["_estado"].isin(ESTADOS_CONSUMO)]
+
     rec["_med"] = rec["Prescripción"].fillna("").apply(norm_erp).map(lambda x: HOMOLOGACION.get(x, x))
     rec["_ent"] = pd.to_numeric(rec["Cantidad Entregada"], errors="coerce").fillna(0)
     rec["_rec"] = pd.to_numeric(rec["Cantidad Recetada"], errors="coerce").fillna(0)

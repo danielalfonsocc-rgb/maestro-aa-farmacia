@@ -1217,6 +1217,11 @@ df_ped['Requerimiento_Farm'] = np.where(
 _frac_dial = (df_ped['Prescrito_Dialisis_Op'] /
               df_ped['Prescrito_Total_Op'].replace(0, np.nan)).fillna(0).clip(0, 1)
 df_ped['Requerimiento_Farm_NoDial'] = (df_ped['Requerimiento_Farm'] * (1 - _frac_dial)).round(1)
+# Analogo no-dial de Consumo_5D_Trend (mismo criterio que Consumo_5D_FarmNoDial
+# del pipeline de dialisis, linea ~1524) para que pedido_fusion.py calc_h1()
+# no derive el CDL de Farm_Bod desde el consumo TOTAL (incluye dialisis) y
+# duplique el pedido que la hoja Dialisis ya hace por separado (mensual).
+df_ped['Consumo_5D_Farm_NoDial'] = (df_ped['Consumo_5D_Trend'] * (1 - _frac_dial)).round(1)
 
 # Necesidad bruta = requerimiento no-diálisis − stock Farmacia AA; luego redondeo
 # al factor de empaque (garantiza ≥ 1 empaque cuando hay necesidad > 0 = el "piso").
@@ -1341,6 +1346,7 @@ _farm_cols = {
     'Stock_Farm_Actual'        : 'Stock_Farmacia_AA',
     'Cob_Farm_Actual_Dias'     : 'Cob_Farm_Dias',
     'Consumo_5D_Trend'         : 'Consumo_5D_Trend',
+    'Consumo_5D_Farm_NoDial'   : 'Consumo_5D_Farm_NoDial',
     'Consumo_5D_Plano'         : 'Consumo_5D',
     'Necesidad_5D_Farm'        : 'Necesidad_Farm',
     'Stock_Bodega_Disponible'  : 'Stock_Bodega_AA',
@@ -1384,6 +1390,7 @@ _farm_pedido_sin_datos = pd.DataFrame({
     'Stock_Farm_Actual'         : _df_master_sin_datos_farm['Stock_Farmacia_AA'].values,
     'Cob_Farm_Actual_Dias'      : 0.0,
     'Consumo_5D_Trend'          : 0.0,
+    'Consumo_5D_Farm_NoDial'    : 0.0,
     'Consumo_5D_Plano'          : 0.0,
     'Necesidad_5D_Farm'         : 0,
     'Stock_Bodega_Disponible'   : _df_master_sin_datos_farm['Stock_Bodega_AA'].values,
@@ -1476,8 +1483,8 @@ print(f"  Pedido Reposicion Bodega AA  : {len(df_bod_pedido):,} medicamentos")
 
 df_dial = df_op_consumo[df_op_consumo['Prof_Norm'].isin(MEDICOS_DIALISIS)].copy()
 
-# Consumo dialisis (Cantidad_Recetada) en el periodo completo, por medicamento
-cd_total_dial = consumo_periodo(df_dial, FECHA_INICIO_OP, FECHA_MAX)
+# Consumo dialisis ya calculado en c_total_dial (linea ~669), mismo filtro y rango.
+cd_total_dial = c_total_dial
 idx_dial = sorted([m for m in cd_total_dial.index if cd_total_dial[m] > 0])
 
 # Master dialisis = stock compartido (df_master) + CDL/CMP de SOLO estas recetas

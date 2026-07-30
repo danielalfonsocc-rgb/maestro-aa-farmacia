@@ -996,6 +996,7 @@ async def main():
         # IMPORTANTE: NO seleccionar el establecimiento — hacerlo dispara un modal
         # ("Selección Proyecto") cuyo backdrop bloquea el botón Generar XLS.
         # El establecimiento ya viene en "PITRUFQUEN HOSP." (única opción).
+        bodega_ok = True
         try:
             await page.select_option("#bodega", BODEGA_TODAS)
             await page.wait_for_timeout(1_000)
@@ -1004,23 +1005,24 @@ async def main():
                 raise RuntimeError(f"selector #bodega quedó en '{valor_actual}', no en TODAS ('{BODEGA_TODAS}')")
             print("  Bodega: TODAS")
         except Exception as e:
-            print(f"  [ERROR] No se pudo seleccionar bodega TODAS — abortando para no generar stock parcial: {e}")
+            print(f"  [ERROR] No se pudo seleccionar bodega TODAS — omito stock para no generar reporte parcial: {e}")
             await page.screenshot(path=str(MAESTRO_DIR / "debug_stock.png"))
-            raise
+            bodega_ok = False
 
-        print("  Generando XLS de stock... (puede tardar varios minutos)")
-        try:
-            # force=True: el overlay "Generando reporte. Espere un momento."
-            # puede interponerse al clic; force lo atraviesa.
-            await descargar(
-                page, MAESTRO_DIR,
-                lambda: page.click("#generarXLS_stock", force=True),
-                "ABASTECIMIENTO",
-            )
-        except Exception as e:
-            print(f"  [ERROR] Descarga ABASTECIMIENTO falló: {e}")
-            await page.screenshot(path=str(MAESTRO_DIR / "debug_stock.png"))
-            print("  Screenshot guardado: debug_stock.png")
+        if bodega_ok:
+            print("  Generando XLS de stock... (puede tardar varios minutos)")
+            try:
+                # force=True: el overlay "Generando reporte. Espere un momento."
+                # puede interponerse al clic; force lo atraviesa.
+                await descargar(
+                    page, MAESTRO_DIR,
+                    lambda: page.click("#generarXLS_stock", force=True),
+                    "ABASTECIMIENTO",
+                )
+            except Exception as e:
+                print(f"  [ERROR] Descarga ABASTECIMIENTO falló: {e}")
+                await page.screenshot(path=str(MAESTRO_DIR / "debug_stock.png"))
+                print("  Screenshot guardado: debug_stock.png")
 
         # ════════════════════════════════════════════════════════════════════
         #  PASO 4b — PROGRAMACIÓN AA  (mismo módulo ABASTECIMIENTO, mes en curso)
@@ -1114,6 +1116,7 @@ async def main():
                     from clozapina_hce_hemogramas import (
                         entrar_hce, esperar_firma_electronica, buscar_paciente,
                         descargar_hemograma_mas_reciente, limpiar_busqueda, _run_a_partes,
+                        HEMOGRAMAS_DIR,
                     )
                     from clozapina_consolidar import (
                         cargar_despachos_clozapina, extraer_hemograma_pdf,
@@ -1126,20 +1129,31 @@ async def main():
                     await entrar_hce(page)
                     await esperar_firma_electronica(page)
                     filas_minsal_cloz, filas_obs_cloz = [], []
+                    nuevos_cloz = 0
                     for _, prow in por_paciente_cloz.iterrows():
                         run = prow["run_normalizado"]
                         run_sin_guion = run.replace("-", "").replace(".", "")
                         run_num, dv = _run_a_partes(run)
                         nombre = f"{prow['Nombre']} {prow['Apellido Paterno']} {prow['Apellido Materno']}"
                         hemograma = None
-                        if await buscar_paciente(page, run_num, dv):
-                            pdf_path = await descargar_hemograma_mas_reciente(context, page, run_sin_guion)
-                            if pdf_path:
-                                try:
-                                    hemograma = extraer_hemograma_pdf(pdf_path)
-                                except Exception as e:
-                                    print(f"    [aviso] no se pudo leer PDF de {run_sin_guion}: {e}")
-                        await limpiar_busqueda(page)
+                        pdf_cacheado = HEMOGRAMAS_DIR / f"{run_sin_guion}.pdf"
+                        if pdf_cacheado.exists():
+                            # Ya se descargó en una corrida anterior — solo se busca
+                            # en HCE lo de los despachos NUEVOS (sin PDF todavía).
+                            try:
+                                hemograma = extraer_hemograma_pdf(pdf_cacheado)
+                            except Exception:
+                                hemograma = None
+                        if hemograma is None:
+                            nuevos_cloz += 1
+                            if await buscar_paciente(page, run_num, dv):
+                                pdf_path = await descargar_hemograma_mas_reciente(context, page, run_sin_guion)
+                                if pdf_path:
+                                    try:
+                                        hemograma = extraer_hemograma_pdf(pdf_path)
+                                    except Exception as e:
+                                        print(f"    [aviso] no se pudo leer PDF de {run_sin_guion}: {e}")
+                            await limpiar_busqueda(page)
                         fc = FilaConsolidada(
                             run=run, nombre=nombre,
                             fecha_despacho=prow["fecha_despacho"].date() if prow["fecha_despacho"] == prow["fecha_despacho"] else None,
@@ -1151,7 +1165,8 @@ async def main():
                         filas_obs_cloz.append(fo)
                     _ruta_cloz = ruta_archivo_mes(today)
                     guardar_excel(filas_minsal_cloz, filas_obs_cloz, str(_ruta_cloz))
-                    print(f"  ✓ {_ruta_cloz.name} ({len(por_paciente_cloz)} pacientes)")
+                    print(f"  ✓ {_ruta_cloz.name} ({len(por_paciente_cloz)} pacientes"
+                          f" — {nuevos_cloz} nuevos buscados en HCE, {len(por_paciente_cloz) - nuevos_cloz} ya cacheados)")
                 except Exception as e:
                     print(f"  [aviso] Consolidado Clozapina falló: {e}")
 
