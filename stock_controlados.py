@@ -101,6 +101,43 @@ async def _dump_formulario(page, etiqueta="stockFecha"):
     print(f"    botones/enlaces: {info['btns']}")
 
 
+async def _fijar_nivel_reporte_local(page):
+    """Fija 'nivel_reporte' en 'Mi establecimiento' (value local) si existe el
+    select. En el formulario stockFecha el <select> de bodega se puebla vía
+    AJAX dependiendo de este valor — si queda sin seleccionar, bodega llega
+    vacío (bug real 27-07-2026: <select id='bodega'> [] sin opciones, y en el
+    intento anterior el reporte generado no disparaba descarga — probable
+    validación de formulario incompleta)."""
+    return await page.evaluate(r"""() => {
+      const s = document.querySelector('#nivel_reporte, select[name="nivel_reporte"]');
+      if (!s) return false;
+      const o = [...s.options].find(o => /^local$/i.test(o.value) || /establecimiento/i.test(o.textContent || ''));
+      if (!o) return false;
+      if (s.value !== o.value) {
+        s.value = o.value;
+        s.dispatchEvent(new Event('change', {bubbles: true}));
+      }
+      return true;
+    }""")
+
+
+async def _esperar_opciones_bodega(page, intentos=10, espera_ms=800):
+    """Espera a que el <select> de bodega tenga opciones — se puebla vía AJAX
+    tras fijar 'nivel_reporte' y puede tardar más que el wait_for_timeout fijo
+    de después del goto. Devuelve True si aparecieron opciones, False si se
+    agotaron los intentos (el llamador igual sigue y falla con el error de
+    siempre, que ahora queda diagnosticado con [DESCUBRIR])."""
+    for _ in range(intentos):
+        n = await page.evaluate(r"""() => {
+          const s = document.querySelector('#bodega, select[name="bodega"]');
+          return s ? s.options.length : -1;
+        }""")
+        if n and n > 0:
+            return True
+        await page.wait_for_timeout(espera_ms)
+    return False
+
+
 async def _seleccionar_bodega(page, texto_bodega: str):
     """Selecciona en el <select> de bodega la opción cuyo texto contiene
     `texto_bodega` (ej. 'FARMACIA AT ABIERTA'). Busca por texto — no por id/value
@@ -220,6 +257,93 @@ async def _click_generar_xls(page):
     raise RuntimeError(f"No encontré el botón 'Generar XLS' (probé: {SELS_XLS})")
 
 
+def _reporte_stock_general_reciente() -> "Path | None":
+    """El reporte_de_stock_*.xlsx más reciente en la carpeta del proyecto — el
+    que baja AUTO_SSASUR en el paso ABASTECIMIENTO (bodega=TODAS) para
+    maestro_aa.py, justo antes de llegar a este módulo."""
+    candidatos = sorted(MAESTRO_DIR.glob("reporte_de_stock_*.xlsx"),
+                         key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidatos[0] if candidatos else None
+
+
+def _parse_stock_general_xlsx(path: Path, bodega_objetivo: str) -> dict:
+    """Lee el reporte de stock GENERAL (bodega=TODAS, mismo informe
+    'stock_en_momento_bodega' que usa AUTO_SSASUR en el paso ABASTECIMIENTO) y
+    devuelve {DESCRIPCIÓN: cantidad} solo para las filas de `bodega_objetivo`.
+    Permite no pedirle a SSASUR el MISMO reporte por 2ª vez para AT Cerrada
+    (bug real detectado 27-07-2026: 'Informe Stock' se bajaba dos veces en
+    cada corrida — una con bodega=TODAS, otra con bodega=CERRADA — mismo
+    endpoint, mismos datos, solo cambiaba el filtro). Best-effort; {} si no
+    reconoce el formato o no encuentra la bodega."""
+    try:
+        import openpyxl
+    except Exception:
+        return {}
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return {}
+    ws = wb.worksheets[0]
+    filas = [list(r) for r in ws.iter_rows(values_only=True)]
+    wb.close()
+
+    def _norm(v):
+        return str(v).strip().lower() if v is not None else ""
+
+    col_desc = col_cant = col_bod = header_i = -1
+    for i, fila in enumerate(filas[:25]):
+        celdas = [_norm(c) for c in fila]
+        cd = next((j for j, c in enumerate(celdas)
+                   if any(k in c for k in ("descrip", "producto", "glosa", "artículo", "articulo"))), -1)
+        cc = next((j for j, c in enumerate(celdas)
+                   if any(k in c for k in ("cantidad", "stock", "saldo", "existencia"))), -1)
+        cb = next((j for j, c in enumerate(celdas) if "bodega" in c), -1)
+        if cd != -1 and cc != -1 and cb != -1:
+            col_desc, col_cant, col_bod, header_i = cd, cc, cb, i
+            break
+    if header_i == -1:
+        return {}
+
+    objetivo_norm = " ".join(bodega_objetivo.upper().split())
+    stock = {}
+    for fila in filas[header_i + 1:]:
+        if col_bod >= len(fila) or col_desc >= len(fila) or col_cant >= len(fila):
+            continue
+        bod = fila[col_bod]
+        if not bod or " ".join(str(bod).upper().split()) != objetivo_norm:
+            continue
+        desc = fila[col_desc]
+        if desc is None or not str(desc).strip():
+            continue
+        try:
+            cant = float(fila[col_cant]) if fila[col_cant] is not None else 0.0
+        except (ValueError, TypeError):
+            cant = 0.0
+        stock[str(desc).strip()] = int(cant) if cant == int(cant) else cant
+    return stock
+
+
+def _stock_desde_reporte_general(bodega: str, mapeo: dict, hoy: date) -> "dict | None":
+    """Intenta servir el stock de `bodega` desde el reporte_de_stock_*.xlsx
+    GENERAL ya descargado en este mismo run, en vez de descargarlo de nuevo.
+    None si no hay reporte de HOY (evita reusar uno viejo en una corrida suelta
+    de stock_controlados.py sin AUTO_SSASUR) o si no trae esa bodega — el
+    llamador cae a la descarga en vivo de siempre."""
+    ruta = _reporte_stock_general_reciente()
+    if not ruta:
+        return None
+    if date.fromtimestamp(ruta.stat().st_mtime) != hoy:
+        return None
+    crudo = _parse_stock_general_xlsx(ruta, bodega)
+    if not crudo:
+        return None
+    mapeado = _mapear(crudo, mapeo)
+    if not mapeado:
+        return None
+    print(f"    ✓ reutilizado de {ruta.name} (bodega={bodega}, ya descargado en este run — sin pedirlo 2 veces a SSASUR)")
+    return mapeado
+
+
 def _parse_stock_xlsx(path: Path) -> dict:
     """Lee el xlsx del Reporte Stock en Fecha → {DESCRIPCIÓN_SSASUR: cantidad}.
     Detecta la fila de encabezado buscando una columna de nombre (descripción/
@@ -306,6 +430,10 @@ async def _bajar_stockfecha(page, bodega: str, fecha_str: str, fid: str, mapeo: 
     await page.wait_for_load_state("networkidle")
     await page.wait_for_timeout(1_800)
 
+    await _fijar_nivel_reporte_local(page)
+    if not await _esperar_opciones_bodega(page):
+        await _dump_formulario(page, f"stockFecha-{fid}-bodega-vacio")
+
     sel = await _seleccionar_bodega(page, bodega)
     if not sel:
         await _dump_formulario(page, f"stockFecha-{fid}")
@@ -388,7 +516,14 @@ async def descargar_stock_controlados(page, hoy: "date | None" = None, config: d
         print(f"  [{bodega}] {etq_fuente} — {fecha_str} "
               f"({'día actual' if dia == 'actual' else 'día anterior'}) ...")
         mapeado = None
+        if fuente == "momento":
+            # AT Cerrada pide "existencia actual" — el MISMO informe que ya
+            # bajó AUTO_SSASUR con bodega=TODAS para maestro_aa.py. Reusarlo
+            # evita pedirle a SSASUR el mismo reporte 2 veces por corrida.
+            mapeado = _stock_desde_reporte_general(bodega, mapeo, hoy)
         for intento in (1, 2):   # la 1ª bodega puede fallar por el modal → 1 reintento
+            if mapeado is not None:
+                break
             try:
                 if fuente == "momento":
                     mapeado = await _bajar_momento(page, bodega, fid, mapeo)
@@ -401,7 +536,18 @@ async def descargar_stock_controlados(page, hoy: "date | None" = None, config: d
         if mapeado is not None:
             por_farmacia[fid] = {"fecha": fecha.isoformat(), "dia": dia, "fuente": fuente, "stock": mapeado}
         else:
-            await page.screenshot(path=str(MAESTRO_DIR / "debug_stock_controlados.png"))
+            try:
+                await page.screenshot(path=str(MAESTRO_DIR / "debug_stock_controlados.png"))
+            except Exception:
+                # La página ya puede estar cerrada (mismo error que hizo fallar
+                # los 2 intentos) — si el screenshot también revienta sin este
+                # try/except, la excepción se propaga fuera de la función y
+                # las bodegas que SÍ se descargaron bien en este loop (ej.
+                # Cerrada) se pierden entero: nunca se llega a escribir
+                # stock_sistema.json. Bug real detectado 27-07-2026: Abierta
+                # falló 2/2, el screenshot también falló por página cerrada,
+                # y el JSON quedó con la fecha del día anterior.
+                pass
 
     if not por_farmacia:
         print("  [AVISO] No se obtuvo stock de ninguna bodega — no se escribe el JSON.")
