@@ -246,6 +246,25 @@ async def descargar_como(page, dest_path: Path, accion, timeout=TIMEOUT_DESCARGA
     return dest_path
 
 
+def _limpiar_versiones_previas(dest_dir: Path, patron: str, mantener: Path):
+    """Borra copias anteriores de un reporte con nombre fechado por SSASUR
+    (mismo patrón glob), conservando solo `mantener` (la recién descargada).
+    maestro_aa.py y programacion_aa.py SIEMPRE usan la copia más reciente por
+    mtime (glob + max) — las versiones viejas nunca se vuelven a leer y solo
+    se acumulan como basura en la carpeta del proyecto, run tras run."""
+    borrados = 0
+    for f in dest_dir.glob(patron):
+        if f.resolve() == mantener.resolve():
+            continue
+        try:
+            f.unlink()
+            borrados += 1
+        except Exception:
+            pass
+    if borrados:
+        print(f"  🧹 {borrados} copia(s) anterior(es) de '{patron}' eliminada(s)")
+
+
 # ── Entrada CORRECTA al módulo RECETA + descarga del informe sabana ─────────────
 # CLAVE (descubierto por captura HTTP del flujo manual): el informe sabana sale
 # VACÍO (0 filas) si la sesión NO está acuñada para el PROYECTO (629), aunque el
@@ -1014,11 +1033,12 @@ async def main():
             try:
                 # force=True: el overlay "Generando reporte. Espere un momento."
                 # puede interponerse al clic; force lo atraviesa.
-                await descargar(
+                _dest_stock = await descargar(
                     page, MAESTRO_DIR,
                     lambda: page.click("#generarXLS_stock", force=True),
                     "ABASTECIMIENTO",
                 )
+                _limpiar_versiones_previas(MAESTRO_DIR, "reporte_de_stock_*.xlsx", _dest_stock)
             except Exception as e:
                 print(f"  [ERROR] Descarga ABASTECIMIENTO falló: {e}")
                 await page.screenshot(path=str(MAESTRO_DIR / "debug_stock.png"))
@@ -1073,10 +1093,15 @@ async def main():
                 await _seleccionar_diag(page, "#select_proyecto", PROYECTO_LOCAL, "Proyecto")
                 await _seleccionar_diag(page, "#cc", CC_FARMACIA, "Centro de Costo")
                 await page.wait_for_timeout(500)
-                await descargar(
+                _dest_prog = await descargar(
                     page, MAESTRO_DIR,
                     lambda: page.click("#generarXLS_salida", force=True),
                     "PROGRAMACION AA",
+                )
+                _limpiar_versiones_previas(
+                    MAESTRO_DIR,
+                    "cantidad_de_productos_consumidos_en_centro_de_costo_farmacia*.xlsx",
+                    _dest_prog,
                 )
             except Exception as e:
                 print(f"  [ERROR] Descarga Programación AA falló: {e}")
@@ -1116,7 +1141,7 @@ async def main():
                     from clozapina_hce_hemogramas import (
                         entrar_hce, esperar_firma_electronica, buscar_paciente,
                         descargar_hemograma_mas_reciente, limpiar_busqueda, _run_a_partes,
-                        HEMOGRAMAS_DIR,
+                        HEMOGRAMAS_DIR, _construir_filas_desde_cache,
                     )
                     from clozapina_consolidar import (
                         cargar_despachos_clozapina, extraer_hemograma_pdf,
@@ -1126,49 +1151,71 @@ async def main():
                     por_paciente_cloz = despachos_cloz.sort_values("fecha_despacho").groupby("run_normalizado").last()
                     por_paciente_cloz = por_paciente_cloz.reset_index().sort_values("fecha_despacho")
                     print(f"  {len(por_paciente_cloz)} paciente(s) con Clozapina este mes.")
-                    await entrar_hce(page)
-                    await esperar_firma_electronica(page)
-                    filas_minsal_cloz, filas_obs_cloz = [], []
-                    nuevos_cloz = 0
-                    for _, prow in por_paciente_cloz.iterrows():
-                        run = prow["run_normalizado"]
-                        run_sin_guion = run.replace("-", "").replace(".", "")
-                        run_num, dv = _run_a_partes(run)
-                        nombre = f"{prow['Nombre']} {prow['Apellido Paterno']} {prow['Apellido Materno']}"
-                        hemograma = None
-                        pdf_cacheado = HEMOGRAMAS_DIR / f"{run_sin_guion}.pdf"
-                        if pdf_cacheado.exists():
-                            # Ya se descargó en una corrida anterior — solo se busca
-                            # en HCE lo de los despachos NUEVOS (sin PDF todavía).
-                            try:
-                                hemograma = extraer_hemograma_pdf(pdf_cacheado)
-                            except Exception:
-                                hemograma = None
-                        if hemograma is None:
-                            nuevos_cloz += 1
-                            if await buscar_paciente(page, run_num, dv):
-                                pdf_path = await descargar_hemograma_mas_reciente(context, page, run_sin_guion)
-                                if pdf_path:
-                                    try:
-                                        hemograma = extraer_hemograma_pdf(pdf_path)
-                                    except Exception as e:
-                                        print(f"    [aviso] no se pudo leer PDF de {run_sin_guion}: {e}")
-                            await limpiar_busqueda(page)
-                        fc = FilaConsolidada(
-                            run=run, nombre=nombre,
-                            fecha_despacho=prow["fecha_despacho"].date() if prow["fecha_despacho"] == prow["fecha_despacho"] else None,
-                            dosis_mg_dia=prow["dosis_mg_dia"], cuota_receta=prow["cuota_receta"] or "",
-                            posologia_texto=prow["posologia_texto"] or "", hemograma=hemograma,
-                        )
-                        fm, fo = construir_fila(fc, today)
-                        filas_minsal_cloz.append(fm)
-                        filas_obs_cloz.append(fo)
-                    _ruta_cloz = ruta_archivo_mes(today)
-                    guardar_excel(filas_minsal_cloz, filas_obs_cloz, str(_ruta_cloz))
-                    print(f"  ✓ {_ruta_cloz.name} ({len(por_paciente_cloz)} pacientes"
-                          f" — {nuevos_cloz} nuevos buscados en HCE, {len(por_paciente_cloz) - nuevos_cloz} ya cacheados)")
+
+                    def _run_sin_guion_cloz(run):
+                        return run.replace("-", "").replace(".", "")
+
+                    _hay_pendientes = any(
+                        not (HEMOGRAMAS_DIR / f"{_run_sin_guion_cloz(r)}.pdf").exists()
+                        for r in por_paciente_cloz["run_normalizado"]
+                    )
+                    if not _hay_pendientes:
+                        # Mismo criterio que clozapina_hce_hemogramas.py standalone:
+                        # si TODOS los pacientes ya tienen hemograma cacheado, no hace
+                        # falta entrar a HCE ni esperar Firma Electrónica (que puede
+                        # quedar colgada o fallar si no hay nadie frente al equipo).
+                        print("  Sin despachos nuevos — todos cacheados. No se entra a HCE.")
+                        filas_minsal_cloz, filas_obs_cloz, _fallidos_cloz = _construir_filas_desde_cache(por_paciente_cloz)
+                        _ruta_cloz = ruta_archivo_mes(today)
+                        guardar_excel(filas_minsal_cloz, filas_obs_cloz, str(_ruta_cloz))
+                        print(f"  ✓ {_ruta_cloz.name} ({len(por_paciente_cloz)} pacientes"
+                              f" — 0 nuevos buscados en HCE, {len(por_paciente_cloz)} ya cacheados)")
+                    else:
+                        await entrar_hce(page)
+                        await esperar_firma_electronica(page)
+                        filas_minsal_cloz, filas_obs_cloz = [], []
+                        nuevos_cloz = 0
+                        for _, prow in por_paciente_cloz.iterrows():
+                            run = prow["run_normalizado"]
+                            run_sin_guion = run.replace("-", "").replace(".", "")
+                            run_num, dv = _run_a_partes(run)
+                            nombre = f"{prow['Nombre']} {prow['Apellido Paterno']} {prow['Apellido Materno']}"
+                            hemograma = None
+                            pdf_cacheado = HEMOGRAMAS_DIR / f"{run_sin_guion}.pdf"
+                            if pdf_cacheado.exists():
+                                # Ya se descargó en una corrida anterior — solo se busca
+                                # en HCE lo de los despachos NUEVOS (sin PDF todavía).
+                                try:
+                                    hemograma = extraer_hemograma_pdf(pdf_cacheado)
+                                except Exception:
+                                    hemograma = None
+                            if hemograma is None:
+                                nuevos_cloz += 1
+                                if await buscar_paciente(page, run_num, dv):
+                                    pdf_path = await descargar_hemograma_mas_reciente(context, page, run_sin_guion)
+                                    if pdf_path:
+                                        try:
+                                            hemograma = extraer_hemograma_pdf(pdf_path)
+                                        except Exception as e:
+                                            print(f"    [aviso] no se pudo leer PDF de {run_sin_guion}: {e}")
+                                await limpiar_busqueda(page)
+                            fc = FilaConsolidada(
+                                run=run, nombre=nombre,
+                                fecha_despacho=prow["fecha_despacho"].date() if prow["fecha_despacho"] == prow["fecha_despacho"] else None,
+                                dosis_mg_dia=prow["dosis_mg_dia"], cuota_receta=prow["cuota_receta"] or "",
+                                posologia_texto=prow["posologia_texto"] or "", hemograma=hemograma,
+                            )
+                            fm, fo = construir_fila(fc, today)
+                            filas_minsal_cloz.append(fm)
+                            filas_obs_cloz.append(fo)
+                        _ruta_cloz = ruta_archivo_mes(today)
+                        guardar_excel(filas_minsal_cloz, filas_obs_cloz, str(_ruta_cloz))
+                        print(f"  ✓ {_ruta_cloz.name} ({len(por_paciente_cloz)} pacientes"
+                              f" — {nuevos_cloz} nuevos buscados en HCE, {len(por_paciente_cloz) - nuevos_cloz} ya cacheados)")
                 except Exception as e:
+                    import traceback
                     print(f"  [aviso] Consolidado Clozapina falló: {e}")
+                    traceback.print_exc()
 
         await browser.close()
 
