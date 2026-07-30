@@ -3,6 +3,12 @@ informe_completo_recetas*.csv
 reporte_de_stock_*.xlsx
 cantidad_de_productos_consumidos_en_centro_de_costo_farmacia*.xlsx
 
+# ── GT crudo: su lugar es ../04_Farmacia_Gestion_Territorial/, no el repo.
+# Red de seguridad por si algún download manual/con nombre mal formado queda
+# suelto en la raíz del repo (trae RUT de pacientes — Ley 19.628; caso real
+# detectado 30-07-2026, reporteGestionTerritorial<timestamp>.xlsx) ───────────
+reporteGestionTerritorial*.xlsx
+
 # ── Sesión SSASUR (contiene cookies/credenciales — NUNCA subir) ──────────────
 .ssasur_session.json
 
