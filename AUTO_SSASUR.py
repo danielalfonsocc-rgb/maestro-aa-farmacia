@@ -610,6 +610,21 @@ async def paso_gt(page, desde=None, hasta=None, debug=False):
 
     n = await _filas_resultado(page)
     if n == 0:
+        # Reintento: puede ser el mismo tipo de condición de carrera del
+        # llenado de fechas ya visto en vivo (14-07-2026) — a veces el filtro
+        # no alcanza a aplicarse antes de leer la tabla y devuelve "sin datos"
+        # aunque SSASUR sí tenga despachos para el rango (detectado 30-07-2026:
+        # 29/07 quedó vacío una corrida y con 64 filas la siguiente, mismo rango).
+        print("  (0 filas — reintentando por si el filtro no aplicó a tiempo...)")
+        await page.wait_for_timeout(2_000)
+        try:
+            await _click_primero(page, SELS_BUSCAR, "Buscar")
+        except Exception:
+            pass
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(2_500)
+        n = await _filas_resultado(page)
+    if n == 0:
         print("  (sin recetas en el listado — no hay despacho para esas fechas)")
         return (None, 0)
 

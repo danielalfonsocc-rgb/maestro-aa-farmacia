@@ -42,7 +42,11 @@ echo.
 rem stdout se guarda en auto_ssasur_stdout.log (ademas de mostrarse en pantalla)
 rem porque los [ERROR]/[AVISO] del paso GT son print() normales, no excepciones,
 rem y antes se perdian sin quedar en ningun lado si la corrida "fallaba en silencio".
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& { py AUTO_SSASUR.py %* 2>> 'auto_ssasur_error.log' | Tee-Object -FilePath 'auto_ssasur_stdout.log'; exit $LASTEXITCODE }"
+rem auto_ssasur_error.log se trunca en CADA corrida (2> en vez de 2>>): antes
+rem quedaba acumulando errores de corridas anteriores para siempre, y el
+rem "type" de abajo mostraba mezclados bugs ya resueltos de hace semanas con
+rem el error real de la corrida actual (detectado 30-07-2026).
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& { py AUTO_SSASUR.py %* 2> 'auto_ssasur_error.log' | Tee-Object -FilePath 'auto_ssasur_stdout.log'; exit $LASTEXITCODE }"
 
 echo.
 echo  ============================================================
