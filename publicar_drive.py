@@ -5,6 +5,14 @@ publicar_drive.py — Sube las salidas de Farmacia AA a Google Drive.
 Sube los mismos archivos que publicar_escritorio.py EXCEPTO los datos de
 pacientes (Recetas Cheque, que contienen RUT y están sujetos a la Ley 19.628).
 
+EXCEPCIÓN — Clozapina: el usuario autorizó explícitamente (2026-07-23) subir
+Clozapina_Reportes/ (RUT + nombre + diagnóstico psiquiátrico implícito) a su
+PROPIA carpeta de nivel superior en Drive ("Clozapina - CONFIDENCIAL"), fuera
+de la carpeta raíz "Farmacia AA" para no heredar su lista de compartidos.
+Solo sube con el flag explícito --solo-clozapina, JAMÁS como parte de una
+sincronización general (mismo criterio que [[recetas-cheque-drive-excepcion]]
+y [[gt-sheets-rut-drive-excepcion]] en memoria del proyecto).
+
 Todo .xlsx se sube convertido a Google Sheets nativo (no como archivo Excel
 crudo) — se abre editable en el navegador sin descargar. PDF/JSON no se tocan.
 
@@ -32,6 +40,8 @@ Uso normal (token ya generado):
 import argparse, glob, hashlib, json, os, re, sys
 from datetime import datetime
 
+import gt_maestro as _GM  # solo para MESES_ES (mismo esquema de carpetas que agregar_gt_manual.py)
+
 for _s in (sys.stdout, sys.stderr):
     try:
         _s.reconfigure(encoding="utf-8", errors="replace")
@@ -50,8 +60,21 @@ SUB_AUDIT   = "4 - Auditoria Prescripcion"
 SUB_CENTINELA = "6 - Centinela"
 SUB_PROG    = "7 - Programacion AA"
 
-# IDs de carpetas ya creadas en Drive (evita duplicados en búsquedas)
+# Clozapina: RUT + nombre + diagnóstico psiquiátrico implícito (más sensible
+# que el RUT genérico de Recetas Cheque/GT) — por eso NO va dentro de la
+# carpeta raíz "Farmacia AA" (que ya está compartida con más gente), sino en
+# su PROPIA carpeta de nivel superior en el Drive de la cuenta autenticada,
+# privada por defecto (nadie más la ve salvo que la QF la comparta a mano).
+# Autorizado explícitamente por el usuario 2026-07-23 — solo corre con el
+# flag --solo-clozapina, NUNCA como parte de la sincronización general.
+NOMBRE_RAIZ_CLOZAPINA = "Clozapina - CONFIDENCIAL"
+
+# IDs de carpetas ya creadas en Drive (evita duplicados en búsquedas). El de
+# Clozapina va en un archivo APARTE (gitignored) — el nombre "Clozapina -
+# CONFIDENCIAL" no debe aparecer en _drive_folders.json porque ese SÍ está
+# versionado en el repo público (revelaría que se maneja data psiquiátrica).
 _FOLDER_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_drive_folders.json")
+_FOLDER_CACHE_FILE_CLOZAPINA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_drive_folders_clozapina.json")
 
 _RANGO_RE = re.compile(r"^\d{2}-\d{2}-\d{4}_\d{2}-\d{2}-\d{4}$")
 
@@ -175,7 +198,7 @@ def _buscar_archivo(service, nombre, parent_id):
 SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
 
 
-def _subir(service, local_path, folder_id, nuevo_nombre=None, stats=None):
+def _subir(service, local_path, folder_id, nuevo_nombre=None, stats=None, md5_local=None):
     """Sube local_path a folder_id en Drive. Los .xlsx se suben como Google Sheets
     NATIVO (Drive los convierte al vuelo) — se abren editables en el navegador,
     sin descargar ni necesitar Excel.
@@ -213,7 +236,8 @@ def _subir(service, local_path, folder_id, nuevo_nombre=None, stats=None):
         nombre = (nombre_local[:-len(ext)] if a_sheets and nombre_local.lower().endswith(ext)
                   else nombre_local)
 
-        md5_local = _md5(local_path)
+        if md5_local is None:
+            md5_local = _md5(local_path)
         fid, md5_drive, mime_drive = _buscar_archivo(service, nombre, folder_id)
         if a_sheets and fid is None and nombre_local != nombre:
             # No estaba con el nombre sin extensión (ya convertido) — puede seguir
@@ -228,12 +252,9 @@ def _subir(service, local_path, folder_id, nuevo_nombre=None, stats=None):
 
         media = MediaFileUpload(local_path, mimetype=mime, resumable=not a_sheets)
 
-        if fid and a_sheets and not ya_convertido:
-            # Migración única: no se puede convertir un xlsx crudo con update().
-            service.files().delete(fileId=fid).execute()
-            fid = None
+        migrar = fid and a_sheets and not ya_convertido
 
-        if fid:
+        if fid and not migrar:
             body = {"name": nombre}   # ya es Sheet (o no aplica conversión): sin mimeType
             service.files().update(fileId=fid, body=body, media_body=media).execute()
             if stats:
@@ -244,6 +265,11 @@ def _subir(service, local_path, folder_id, nuevo_nombre=None, stats=None):
             if a_sheets:
                 meta["mimeType"] = SHEETS_MIME
             service.files().create(body=meta, media_body=media, fields="id").execute()
+            if migrar:
+                # Solo se borra el xlsx crudo DESPUÉS de crear el Sheet con éxito,
+                # para no dejar una ventana sin ninguna versión del archivo en Drive
+                # si el create() fallara.
+                service.files().delete(fileId=fid).execute()
             if stats:
                 stats["ok"] += 1
             return "created"
@@ -301,8 +327,12 @@ NOMINAS_ENVIO = "Nóminas de Envío"
 
 def _depositar_arbol_local(rango_dir):
     """Copia las planillas por establecimiento de un rango out_gt/ al árbol local
-    ordenado: 04_Farmacia_Gestion_Territorial/<ESTAB>/Nóminas de Envío/<fecha>/,
-    donde <fecha> es el día en que se generó el archivo (= día del envío).
+    ordenado: 04_Farmacia_Gestion_Territorial/<ESTAB>/Nóminas de Envío/<mes>/<fecha>/,
+    donde <fecha> es el día en que se generó el archivo (= día del envío) y <mes>
+    es "JULIO 2026" etc. — mismo esquema de 2 niveles que agregar_gt_manual.py
+    (antes esta función depositaba directo en Nóminas de Envío/<fecha>/, sin mes,
+    y quedaba desordenado frente a lo que sí anida agregar_gt_manual.py; detectado
+    30-07-2026, requería correr _reorganizar_nominas_por_mes.py a mano después).
     Dedup por MD5; si existe un archivo distinto con el mismo nombre, se agrega
     el rango como sufijo. Devuelve cuántos archivos copió."""
     import shutil
@@ -319,8 +349,10 @@ def _depositar_arbol_local(rango_dir):
         carpeta_local = local_de_drive.get(destino) if destino else None
         if not carpeta_local:
             continue
-        fecha = datetime.fromtimestamp(os.path.getmtime(f)).strftime("%d-%m-%Y")
-        ddir = os.path.join(GT_SOLICITUDES_DIR, carpeta_local, NOMINAS_ENVIO, fecha)
+        f_mtime = datetime.fromtimestamp(os.path.getmtime(f))
+        fecha = f_mtime.strftime("%d-%m-%Y")
+        carpeta_mes = f"{_GM.MESES_ES[f_mtime.month - 1]} {f_mtime.year}"
+        ddir = os.path.join(GT_SOLICITUDES_DIR, carpeta_local, NOMINAS_ENVIO, carpeta_mes, fecha)
         os.makedirs(ddir, exist_ok=True)
         dest = os.path.join(ddir, nb)
         if os.path.exists(dest):
@@ -521,7 +553,7 @@ def _subir_arbol(service, local_dir, fid_padre, stats, cache, prefijo_log, estad
         if estado is not None and estado.get(clave) == md5_local:
             stats["skip"] += 1
             continue
-        r = _subir(service, ruta, fid_padre, stats=stats)
+        r = _subir(service, ruta, fid_padre, stats=stats, md5_local=md5_local)
         if r != "fail" and estado is not None:
             estado[clave] = md5_local
         if r != "skip":
@@ -600,6 +632,24 @@ def sync_programacion(service, raiz_id, stats, cache=None):
         print("  Programacion_AA: no encontrado, omitido (corre programacion_aa.py)")
 
 
+def sync_clozapina(service, stats, cache=None):
+    """Sube los reportes mensuales de Clozapina (Clozapina_Reportes/*.xlsx) a su
+    PROPIA carpeta de nivel superior en Drive (NOMBRE_RAIZ_CLOZAPINA) — no
+    dentro de 'Farmacia AA'. Solo corre con --solo-clozapina (ver main())."""
+    src_dir = os.path.join(WORK_DIR, "Clozapina_Reportes")
+    if not os.path.isdir(src_dir):
+        print("  [Clozapina] sin Clozapina_Reportes/ todavía — corre AUTO_SSASUR.py --clozapina primero")
+        return
+    fid = _obtener_o_crear_carpeta(service, NOMBRE_RAIZ_CLOZAPINA, parent_id=None, cache=cache)
+    archivos = sorted(glob.glob(os.path.join(src_dir, "Consolidado_Hemogramas_Clozapina_*.xlsx")))
+    if not archivos:
+        print("  [Clozapina] sin reportes mensuales que subir")
+        return
+    for f in archivos:
+        r = _subir(service, f, fid, stats=stats)
+        print(f"  {os.path.basename(f)}: {r}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="Sube salidas Farmacia AA a Google Drive")
@@ -611,6 +661,10 @@ def main():
     ap.add_argument("--solo-auditoria",action="store_true")
     ap.add_argument("--solo-centinela",action="store_true")
     ap.add_argument("--solo-programacion", action="store_true")
+    ap.add_argument("--solo-clozapina", action="store_true",
+                    help="Sube Clozapina_Reportes/ a su PROPIA carpeta Drive (privada, fuera de "
+                         "'Farmacia AA') — NUNCA corre como parte de una sincronización general, "
+                         "solo con este flag explícito.")
     a = ap.parse_args()
 
     if a.setup and os.path.exists(TOKEN_FILE):
@@ -620,7 +674,6 @@ def main():
     print("\n[Drive] Conectando con Google Drive...")
     svc = _get_service()
 
-    # Carpeta raíz "Farmacia AA" — usa IDs pre-conocidos si existen
     cache = {}
     known = {}
     if os.path.exists(_FOLDER_CACHE_FILE):
@@ -630,53 +683,122 @@ def main():
         except Exception:
             pass
 
-    if NOMBRE_RAIZ in known:
-        raiz_id = known[NOMBRE_RAIZ]
-        # Pre-carga sub-carpetas fijas para evitar búsquedas API
-        for sub in (SUB_APP, SUB_GT, SUB_PEDIDO, SUB_AUDIT, SUB_CENTINELA, SUB_PROG):
-            if sub in known:
-                cache[(sub, raiz_id)] = known[sub]
-    else:
-        raiz_id = _obtener_o_crear_carpeta(svc, NOMBRE_RAIZ, cache=cache)
+    # Caché de Clozapina APARTE (gitignored) — nunca se mezcla con known/_FOLDER_CACHE_FILE.
+    known_clozapina = {}
+    if os.path.exists(_FOLDER_CACHE_FILE_CLOZAPINA):
+        try:
+            with open(_FOLDER_CACHE_FILE_CLOZAPINA, encoding="utf-8") as _f:
+                known_clozapina = json.load(_f)
+        except Exception:
+            pass
+    if NOMBRE_RAIZ_CLOZAPINA in known_clozapina:
+        cache[(NOMBRE_RAIZ_CLOZAPINA, None)] = known_clozapina[NOMBRE_RAIZ_CLOZAPINA]
 
     stats = {"ok": 0, "skip": 0, "fail": 0}
 
     todos = not any([a.solo_app, a.solo_gt, a.solo_pedido, a.solo_auditoria,
-                     a.solo_centinela, a.solo_programacion])
+                     a.solo_centinela, a.solo_programacion, a.solo_clozapina])
+    # Clozapina vive en su PROPIA carpeta (fuera de "Farmacia AA") — si es la
+    # ÚNICA cosa que se pidió subir, no hace falta resolver/imprimir la raíz
+    # "Farmacia AA" en absoluto (evita el mensaje engañoso "Subiendo a
+    # «Farmacia AA»" cuando en realidad va a una carpeta totalmente distinta).
+    necesita_raiz_farmacia = todos or any([a.solo_app, a.solo_gt, a.solo_pedido,
+                                            a.solo_auditoria, a.solo_centinela, a.solo_programacion])
 
-    print(f"\n[Drive] Subiendo a «{NOMBRE_RAIZ}» (id={raiz_id[:8]}…)")
+    raiz_id = None
+    if necesita_raiz_farmacia:
+        # Carpeta raíz "Farmacia AA" — usa IDs pre-conocidos si existen
+        if NOMBRE_RAIZ in known:
+            raiz_id = known[NOMBRE_RAIZ]
+            # Pre-carga sub-carpetas fijas para evitar búsquedas API
+            for sub in (SUB_APP, SUB_GT, SUB_PEDIDO, SUB_AUDIT, SUB_CENTINELA, SUB_PROG):
+                if sub in known:
+                    cache[(sub, raiz_id)] = known[sub]
+        else:
+            raiz_id = _obtener_o_crear_carpeta(svc, NOMBRE_RAIZ, cache=cache)
+
+        print(f"\n[Drive] Subiendo a «{NOMBRE_RAIZ}» (id={raiz_id[:8]}…)")
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"        {ts}\n")
 
+    # Cada sync_*() va en su propio try/except: un error de carpeta/API en una
+    # sección (p.ej. resolver una de las 12 carpetas de GT) no debe abortar el
+    # resto de secciones independientes de la corrida.
     if todos or a.solo_app:
         print(f"  ── {SUB_APP} ──")
-        sync_app(svc, raiz_id, stats, cache)
+        try:
+            sync_app(svc, raiz_id, stats, cache)
+        except Exception as e:
+            print(f"  [error] {SUB_APP}: {e}")
+            stats["fail"] += 1
 
     if todos or a.solo_gt:
         print(f"\n  ── {SUB_GT} ──")
-        sync_gt(svc, raiz_id, stats, cache)
+        try:
+            sync_gt(svc, raiz_id, stats, cache)
+        except Exception as e:
+            print(f"  [error] {SUB_GT}: {e}")
+            stats["fail"] += 1
 
     if todos or a.solo_pedido:
         print(f"\n  ── {SUB_PEDIDO} ──")
-        sync_pedido(svc, raiz_id, stats, cache)
+        try:
+            sync_pedido(svc, raiz_id, stats, cache)
+        except Exception as e:
+            print(f"  [error] {SUB_PEDIDO}: {e}")
+            stats["fail"] += 1
 
     if todos or a.solo_auditoria:
         print(f"\n  ── {SUB_AUDIT} ──")
-        sync_auditoria(svc, raiz_id, stats, cache)
+        try:
+            sync_auditoria(svc, raiz_id, stats, cache)
+        except Exception as e:
+            print(f"  [error] {SUB_AUDIT}: {e}")
+            stats["fail"] += 1
 
     if todos or a.solo_centinela:
         print(f"\n  ── {SUB_CENTINELA} ──")
-        sync_centinela(svc, raiz_id, stats, cache)
+        try:
+            sync_centinela(svc, raiz_id, stats, cache)
+        except Exception as e:
+            print(f"  [error] {SUB_CENTINELA}: {e}")
+            stats["fail"] += 1
 
     if todos or a.solo_programacion:
         print(f"\n  ── {SUB_PROG} ──")
-        sync_programacion(svc, raiz_id, stats, cache)
+        try:
+            sync_programacion(svc, raiz_id, stats, cache)
+        except Exception as e:
+            print(f"  [error] {SUB_PROG}: {e}")
+            stats["fail"] += 1
+
+    # Clozapina: EXPLÍCITAMENTE fuera de "todos" — solo sube con --solo-clozapina.
+    if a.solo_clozapina:
+        print(f"\n  ── {NOMBRE_RAIZ_CLOZAPINA} (carpeta separada, privada) ──")
+        try:
+            sync_clozapina(svc, stats, cache)
+        except Exception as e:
+            print(f"  [error] {NOMBRE_RAIZ_CLOZAPINA}: {e}")
+            stats["fail"] += 1
 
     total = stats["ok"] + stats["skip"] + stats["fail"]
     print(f"\n[Drive] Listo: {stats['ok']} subidos · {stats['skip']} sin cambios · "
           f"{stats['fail']} errores  ({total} total)")
 
-    # Persiste IDs de carpetas nuevas descubiertas en esta corrida
+    # Persiste el ID de la carpeta de Clozapina en su archivo APARTE (gitignored)
+    # — NUNCA en _FOLDER_CACHE_FILE, que sí está versionado en el repo público.
+    if (NOMBRE_RAIZ_CLOZAPINA, None) in cache:
+        fid_cloz = cache[(NOMBRE_RAIZ_CLOZAPINA, None)]
+        if known_clozapina.get(NOMBRE_RAIZ_CLOZAPINA) != fid_cloz:
+            with open(_FOLDER_CACHE_FILE_CLOZAPINA, "w", encoding="utf-8") as _f:
+                json.dump({NOMBRE_RAIZ_CLOZAPINA: fid_cloz}, _f, ensure_ascii=False, indent=2)
+
+    # Persiste IDs de carpetas de "Farmacia AA" nuevas descubiertas en esta
+    # corrida (solo si de verdad se resolvió esa raíz — ver necesita_raiz_farmacia).
+    if not necesita_raiz_farmacia:
+        if stats["fail"]:
+            sys.exit(1)
+        return
     nuevos = {nombre: fid for (nombre, pid), fid in cache.items() if pid == raiz_id}
     nuevos[NOMBRE_RAIZ] = raiz_id
     if os.path.exists(_FOLDER_CACHE_FILE):
