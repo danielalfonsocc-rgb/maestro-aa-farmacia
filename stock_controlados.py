@@ -60,6 +60,14 @@ STOCKFECHA_URL = "https://www.ssasur.cl/abastecimiento/reportes/stockFecha"
 # bodega=TODAS para el maestro. AT Abierta usa STOCKFECHA_URL (día anterior).
 STOCK_MOMENTO_URL = "https://www.ssasur.cl/abastecimiento/reportes/stock_en_momento_bodega"
 TIMEOUT_DESCARGA = 600_000
+# stockFecha (AT Abierta) tiene un historial de veces en que el evento de
+# descarga simplemente nunca se dispara (27-07 y 31-07-2026) — esperar los
+# 10 min completos de TIMEOUT_DESCARGA en cada uno de los 2 intentos deja el
+# paso [4d/9] colgado hasta 20 min sin ganar nada. Con el fix de
+# _fijar_nivel_reporte_local (dispara 'change' siempre) el caso más común
+# queda resuelto; para lo que igual falle, mejor fallar rápido y dejar que
+# el 2º intento tenga tiempo real de correr.
+TIMEOUT_DESCARGA_STOCKFECHA = 60_000
 
 
 def _fmt(d: date) -> str:
@@ -104,19 +112,21 @@ async def _dump_formulario(page, etiqueta="stockFecha"):
 async def _fijar_nivel_reporte_local(page):
     """Fija 'nivel_reporte' en 'Mi establecimiento' (value local) si existe el
     select. En el formulario stockFecha el <select> de bodega se puebla vía
-    AJAX dependiendo de este valor — si queda sin seleccionar, bodega llega
-    vacío (bug real 27-07-2026: <select id='bodega'> [] sin opciones, y en el
-    intento anterior el reporte generado no disparaba descarga — probable
-    validación de formulario incompleta)."""
+    AJAX disparada por el evento 'change' de este select — NO por su valor
+    (bug real 27-07-2026 y 31-07-2026, mismo síntoma en el reintento: <select
+    id='bodega'> [] sin opciones). Si la página ya trae 'local' seleccionado
+    de fábrica (pasa en un reload, no en la 1ª carga), el código anterior no
+    disparaba 'change' por no haber cambio de valor, y el AJAX de bodega
+    nunca se ejecutaba — por eso el 1er intento de una sesión suele funcionar
+    y el reintento (page.goto de nuevo) llega con bodega vacío. Se dispara el
+    evento SIEMPRE, haya cambiado el valor o no."""
     return await page.evaluate(r"""() => {
       const s = document.querySelector('#nivel_reporte, select[name="nivel_reporte"]');
       if (!s) return false;
       const o = [...s.options].find(o => /^local$/i.test(o.value) || /establecimiento/i.test(o.textContent || ''));
       if (!o) return false;
-      if (s.value !== o.value) {
-        s.value = o.value;
-        s.dispatchEvent(new Event('change', {bubbles: true}));
-      }
+      s.value = o.value;
+      s.dispatchEvent(new Event('change', {bubbles: true}));
       return true;
     }""")
 
@@ -448,7 +458,7 @@ async def _bajar_stockfecha(page, bodega: str, fecha_str: str, fid: str, mapeo: 
     await page.wait_for_timeout(400)
 
     tmp = SALIDA_DIR / f"_stock_{fid}_{fecha_str.replace('/', '-')}.xlsx"
-    async with page.expect_download(timeout=TIMEOUT_DESCARGA) as dl_info:
+    async with page.expect_download(timeout=TIMEOUT_DESCARGA_STOCKFECHA) as dl_info:
         await _click_generar_xls(page)
     dl = await dl_info.value
     await dl.save_as(tmp)
