@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 import openpyxl
+from openpyxl.styles import Font, PatternFill
 from pypdf import PdfWriter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -70,6 +71,51 @@ def _leer_recetas_de_feedback(path):
 ESTADOS_NO_VIGENTES = {"ENTREGADA", "CERRADA / INCOMPLETA", "ANULADA"}
 
 
+def _es_vigente(estado):
+    """Corregido 31-07-2026 (caso CESFAM Teodoro Schmidt): el sitio también
+    devuelve 'CERRADA POR VENCIMIENTO' — una variante de cerrada que la
+    igualdad exacta contra ESTADOS_NO_VIGENTES no capturaba, así que se
+    colaban recetas vencidas al combinado para despachar. Cualquier estado
+    que empiece con CERRADA, o sea ENTREGADA/ANULADA, se considera no
+    vigente."""
+    e = (estado or "").strip().upper()
+    return e not in ESTADOS_NO_VIGENTES and not e.startswith("CERRADA")
+
+
+def _leer_ruts_de_feedback(path):
+    """Lee Paciente+RUT de un Feedback_Solicitud_*.xlsx (columnas ya
+    conocidas por revision_solicitudes._escribir_feedback) para hacer
+    búsqueda EN VIVO en SSASUR por RUT — usado cuando el Nº de receta que
+    trae el CSV local ya está ENTREGADA/no existe (receta de una cuota tan
+    nueva que el histórico local todavía no la tiene, caso frecuente en
+    solicitudes de CESFAM Teodoro Schmidt 31-07-2026)."""
+    wb = openpyxl.load_workbook(path, data_only=True)
+    ws = wb.active
+    header_idx = None
+    for i, row in enumerate(ws.iter_rows(values_only=True), start=1):
+        if row and any(str(c).strip() == "RUT" for c in row if c):
+            header_idx = i
+            break
+    if header_idx is None:
+        raise ValueError(f"No encontré la columna 'RUT' en {path}")
+    header = [str(c).strip() if c else "" for c in list(ws.iter_rows(values_only=True))[header_idx - 1]]
+    col_rut = header.index("RUT")
+    col_pac = header.index("Paciente") if "Paciente" in header else None
+    out = []
+    vistos = set()
+    for row in list(ws.iter_rows(values_only=True))[header_idx:]:
+        rut = row[col_rut] if col_rut < len(row) else None
+        if not rut:
+            continue
+        rut = str(rut).strip()
+        if rut in vistos:
+            continue
+        vistos.add(rut)
+        paciente = row[col_pac] if col_pac is not None and col_pac < len(row) else ""
+        out.append((rut, str(paciente or "").strip()))
+    return out
+
+
 def _split_rut(rut):
     """'6.385.207-4' / '6385207-4' -> ('6385207', '4')."""
     limpio = re.sub(r"[.\s]", "", str(rut)).upper()
@@ -91,9 +137,14 @@ async def _buscar_vigentes_por_rut(page, rut, origen_filtro="PITRUFQUEN HOSP."):
     await AS._click_primero(page, ('button:has-text("Buscar"):visible', 'a:has-text("Buscar"):visible'), "Buscar")
     await page.wait_for_load_state("networkidle")
     try:
+        # Corregido 31-07-2026: exigir >=1 fila para dar por "cargada" la
+        # tabla es incorrecto — un RUT con CERO recetas vigentes (resultado
+        # legítimo, no una falla) nunca cumple esa condición y siempre
+        # agotaba el timeout, disparando el [AVISO] aunque la búsqueda haya
+        # funcionado bien. Ahora solo se espera a que desaparezca el
+        # indicador "Cargando"; la tabla vacía se lee después como 0 filas.
         await page.wait_for_function(
-            "() => { const t = document.querySelector('#tablaResultados'); "
-            "return t && t.querySelectorAll('tbody tr').length >= 1 && !document.body.innerText.includes('Cargando'); }",
+            "() => !document.body.innerText.includes('Cargando')",
             timeout=20_000,
         )
     except Exception:
@@ -113,7 +164,7 @@ async def _buscar_vigentes_por_rut(page, rut, origen_filtro="PITRUFQUEN HOSP."):
         n_receta, origen, estado = r[0], r[1], r[9]
         if not n_receta or not n_receta.isdigit():
             continue
-        if estado.upper() in ESTADOS_NO_VIGENTES:
+        if not _es_vigente(estado):
             continue
         if origen_filtro and origen_filtro.upper() not in origen.upper():
             continue
@@ -132,8 +183,26 @@ async def _descargar_una(page, n_receta, dest_path, debug):
     dispara internamente una petición a un endpoint que SÍ devuelve el PDF
     oficial directo — "RECETA MÉDICA N°..." con firma del médico y checklist
     de retiro, no la vista web de consulta. Se pide ese endpoint directo con
-    la sesión ya autenticada, sin necesidad de navegar el formulario."""
-    resp = await page.context.request.get(PDF_ENDPOINT.format(n_receta=n_receta))
+    la sesión ya autenticada, sin necesidad de navegar el formulario.
+
+    Corregido 31-07-2026 (caso CESFAM Teodoro Schmidt, corrida de 36 RUT):
+    una falla de red transitoria (DNS/VPN) en request.get() no está atrapada
+    por ningún try/except más arriba — sin este bloque, una sola receta con
+    mala suerte de red mata TODO el proceso en asyncio.run() y se pierde el
+    trabajo de las recetas ya descargadas (el combinado solo se arma al
+    final del bucle). Se reintenta una vez tras una pausa corta antes de
+    darse por vencido con esa receta puntual."""
+    for intento in (1, 2):
+        try:
+            resp = await page.context.request.get(PDF_ENDPOINT.format(n_receta=n_receta))
+        except Exception as e:
+            if intento == 1:
+                print(f"  [AVISO] {n_receta}: error de red ({e}) — reintentando...")
+                await page.wait_for_timeout(3_000)
+                continue
+            print(f"  [ERROR] {n_receta}: error de red persistente — {e}")
+            return False
+        break
     if resp.status != 200 or "pdf" not in (resp.headers.get("content-type") or "").lower():
         print(f"  [ERROR] {n_receta}: el endpoint no devolvió un PDF (status {resp.status}).")
         if debug:
@@ -150,7 +219,7 @@ async def _descargar_una(page, n_receta, dest_path, debug):
     return True
 
 
-async def _main_async(estab, recetas, debug, rut=None):
+async def _main_async(estab, recetas, debug, rut=None, ruts=None):
     carpeta_local = _CARPETA_LOCAL.get(estab.upper())
     if not carpeta_local:
         print(f"[ERROR] '{estab}' no está en el mapeo de establecimientos.")
@@ -177,7 +246,15 @@ async def _main_async(estab, recetas, debug, rut=None):
 
         await AS.entrar_receta(page)
 
-        if rut:
+        async def _ir_a_consultar_receta():
+            """Corregido 31-07-2026 (caso CESFAM Teodoro Schmidt, 36 RUT en
+            lote): reusar la misma pantalla de resultados para buscar un
+            segundo RUT no funciona — tras la primera búsqueda el sitio deja
+            #rut como type=hidden con el valor viejo pegado y las siguientes
+            fill() cuelgan 30s cada una. Hay que volver a entrar a Consultar
+            Receta (vía AS.entrar_receta, que ya sabe resetear al inicio del
+            módulo) ANTES de cada búsqueda, no solo una vez al principio."""
+            await AS.entrar_receta(page)
             for sel in ('a:has-text("Reportes")', 'button:has-text("Reportes")'):
                 try:
                     await page.click(sel, timeout=3_000)
@@ -192,15 +269,25 @@ async def _main_async(estab, recetas, debug, rut=None):
                     break
                 except Exception:
                     continue
-            print(f"\nBuscando recetas vigentes del RUT {rut} (origen PITRUFQUEN HOSP.)...")
-            vigentes = await _buscar_vigentes_por_rut(page, rut)
+
+        rut_targets = ([(rut, "")] if rut else []) + list(ruts or [])
+        encontrados_por_rut = {}
+        for rut_i, nombre_i in rut_targets:
+            etiqueta = nombre_i or rut_i
+            print(f"\nBuscando recetas vigentes de {etiqueta} (RUT {rut_i}, origen PITRUFQUEN HOSP.)...")
+            try:
+                await _ir_a_consultar_receta()
+                vigentes = await _buscar_vigentes_por_rut(page, rut_i)
+            except Exception as e:
+                print(f"  [ERROR] {rut_i}: {e}")
+                encontrados_por_rut[rut_i] = []
+                continue
             if not vigentes:
                 print("  No se encontraron recetas vigentes (no ENTREGADA/CERRADA/ANULADA) para ese RUT.")
-                await browser.close()
-                return
+            encontrados_por_rut[rut_i] = vigentes
             for n_receta, estado in vigentes:
                 print(f"  Encontrada: receta {n_receta} — Estado: {estado}")
-            recetas = list(recetas) + [(n, "") for n, _ in vigentes]
+            recetas = list(recetas) + [(n, nombre_i) for n, _ in vigentes]
 
         if not recetas:
             print("No hay recetas para descargar.")
@@ -209,13 +296,20 @@ async def _main_async(estab, recetas, debug, rut=None):
 
         # _descargar_una pide el endpoint PDF directo — no navega el
         # formulario, así que no hace falta "volver a la pantalla de
-        # consulta" entre una receta y otra como antes.
+        # consulta" entre una receta y otra como antes. Ya trae su propio
+        # reintento de red; igual se envuelve en try/except para que una
+        # falla imprevista en una receta puntual no tumbe el resto del lote.
         ok, fallidos, descargados = 0, [], []
         for n_receta, paciente in recetas:
             nombre_archivo = re.sub(r"\s+", "", paciente) or "Paciente"
             dest = Path(os.path.join(salida_dir, f"Receta_{n_receta}_{nombre_archivo}.pdf"))
             print(f"\nReceta {n_receta} ({paciente})...")
-            if await _descargar_una(page, n_receta, dest, debug):
+            try:
+                exito = await _descargar_una(page, n_receta, dest, debug)
+            except Exception as e:
+                print(f"  [ERROR] {n_receta}: {e}")
+                exito = False
+            if exito:
                 ok += 1
                 descargados.append(dest)
             else:
@@ -240,6 +334,39 @@ async def _main_async(estab, recetas, debug, rut=None):
             os.replace(str(p), os.path.join(pdfs_dir, p.name))
         print(f"{len(descargados)} PDF individual(es) movido(s) a 'PDFs individuales'.")
 
+    if ruts:
+        fecha_str = datetime.date.today().strftime("%Y-%m-%d")
+        resumen_path = os.path.join(salida_dir, f"Resumen_Busqueda_SSASUR_{carpeta_local}_{fecha_str}.xlsx")
+        _escribir_resumen_busqueda(resumen_path, rut_targets, encontrados_por_rut)
+        print(f"Guardado: {resumen_path}")
+
+
+def _escribir_resumen_busqueda(path, rut_targets, encontrados_por_rut):
+    """Feedback de la búsqueda EN VIVO por RUT en SSASUR — una fila por
+    paciente con las recetas vigentes (no ENTREGADA/CERRADA/ANULADA)
+    encontradas en origen Pitrufquén, o el aviso de que no se encontró
+    ninguna (para revisión manual del QF)."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Resumen"
+    ws.append(["Paciente", "RUT", "Recetas vigentes encontradas (Nº — Estado)", "Observación"])
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="4472C4")
+    for rut_i, nombre_i in rut_targets:
+        vigentes = encontrados_por_rut.get(rut_i, [])
+        if vigentes:
+            texto = "; ".join(f"{n} — {e}" for n, e in vigentes)
+            obs = "PDF descargado y combinado." if len(vigentes) == 1 else "Varias vigentes — se descargaron todas, revisar cuál corresponde."
+        else:
+            texto = ""
+            obs = "Sin recetas vigentes en SSASUR (origen Pitrufquén) — revisar manualmente."
+        ws.append([nombre_i, rut_i, texto, obs])
+    anchos = [30, 14, 40, 45]
+    for i, w in enumerate(anchos, start=1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    wb.save(path)
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -248,24 +375,34 @@ def main():
     ap.add_argument("--recetas", help="Lista de N° de receta separados por coma (alternativa a --feedback)")
     ap.add_argument("--rut", help="Busca las recetas VIGENTES (no entregadas) de este RUT en vivo en SSASUR — "
                                    "para cuando la receta es tan nueva que todavía no está en el CSV local")
+    ap.add_argument("--rut-live-desde-feedback",
+                     help="Ruta a un Feedback_Solicitud_*.xlsx: busca EN VIVO en SSASUR, por cada RUT de la "
+                          "planilla, las recetas vigentes (no ENTREGADA/CERRADA/ANULADA) de origen Pitrufquén, "
+                          "en una sola sesión — para solicitudes donde el CSV local no tiene la cuota nueva")
     ap.add_argument("--debug", action="store_true", help="Vuelca formularios y screenshots para ajustar selectores")
     a = ap.parse_args()
 
-    if a.feedback:
+    ruts = None
+    if a.rut_live_desde_feedback:
+        ruts = _leer_ruts_de_feedback(a.rut_live_desde_feedback)
+        recetas = []
+    elif a.feedback:
         recetas = _leer_recetas_de_feedback(a.feedback)
     elif a.recetas:
         recetas = [(n.strip(), "") for n in a.recetas.split(",") if n.strip()]
     elif a.rut:
         recetas = []
     else:
-        print("[ERROR] Pasa --feedback, --recetas o --rut.")
+        print("[ERROR] Pasa --feedback, --recetas, --rut o --rut-live-desde-feedback.")
         return
-    if not recetas and not a.rut:
+    if not recetas and not a.rut and not ruts:
         print("No hay recetas para procesar.")
         return
     if recetas:
         print(f"{len(recetas)} receta(s) a descargar.")
-    asyncio.run(_main_async(a.estab, recetas, a.debug, rut=a.rut))
+    if ruts:
+        print(f"{len(ruts)} RUT(s) a buscar en vivo en SSASUR.")
+    asyncio.run(_main_async(a.estab, recetas, a.debug, rut=a.rut, ruts=ruts))
 
 
 if __name__ == "__main__":

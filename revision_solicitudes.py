@@ -92,6 +92,7 @@ def _fila_a_dict(filas_receta):
         "especialidad": (r0.get("Especialidad") or "").strip(),
         "tipo_receta": (r0.get("Tipo Receta") or "").strip(),
         "estado": (r0.get("Estado") or "").strip(),
+        "estab_digita": (r0.get("Establecimiento Digita") or "").strip(),
         # OJO: la columna "Fecha Digitación" del CSV es la fecha de la serie
         # completa, NO por cuota — dos cuotas mensuales normales de una misma
         # receta crónica comparten el mismo valor. Si se pasa a
@@ -115,7 +116,22 @@ def _norm_texto(s):
     return re.sub(r"\s+", " ", s).strip().upper()
 
 
-def _elegir_receta(todas, especialidad_pedida=None):
+ESTAB_REQUERIDO = "PITRUFQUEN"  # las recetas de GT siempre deben estar digitadas en Hosp. Pitrufquén
+# Mismo criterio de "vigente" que descargar_recetas_pdf.py: no basta exigir
+# literalmente Estado=="SOLICITADA" — PENDIENTE también es una receta viva,
+# aún no entregada. "Entregada" es lo único que obliga a buscar reemplazo.
+ESTADOS_NO_VIGENTES = {"ENTREGADA", "CERRADA / INCOMPLETA", "ANULADA"}
+
+
+def _es_vigente(estado):
+    """Mismo criterio que descargar_recetas_pdf._es_vigente — SSASUR en vivo
+    también devuelve variantes como 'CERRADA POR VENCIMIENTO' que la
+    igualdad exacta no capturaba."""
+    e = (estado or "").strip().upper()
+    return e not in ESTADOS_NO_VIGENTES and not e.startswith("CERRADA")
+
+
+def _elegir_receta(todas, especialidad_pedida=None, receta_pedida=None, estab_requerido=ESTAB_REQUERIDO):
     """Elige qué receta imprimir entre TODAS las vigentes de un RUT. Bug real
     detectado 25-07-2026 (caso Toltén, 8 de 37 pacientes con receta de
     especialidad equivocada): elegir a ciegas la de N° más alto ignora tanto
@@ -124,29 +140,61 @@ def _elegir_receta(todas, especialidad_pedida=None):
     como la Especialidad (un paciente crónico puede tener recetas vigentes de
     varias especialidades a la vez; Tolten pide una en concreto).
 
-    Prioridad: 1) Tipo Receta = NORMAL sobre CONTROLADA (salvo que sea la
-    única opción), 2) especialidad pedida si se informó, 3) N° más alto como
-    desempate. Devuelve (receta_elegida, nota_o_None) — la nota se llena
-    cuando ninguna candidata coincide con la especialidad pedida, para que
-    quede visible en el feedback en vez de fallar en silencio."""
-    normales = [r for r in todas if _norm_texto(r.get("tipo_receta")) != "CONTROLADA"]
-    pool = normales or todas
+    Ampliado 31-07-2026 (caso CESFAM Teodoro Schmidt): la solicitud a veces
+    trae el Nº de receta que el establecimiento cree correcto, pero esa
+    receta puede ya estar ENTREGADA o no existir — en ese caso hay que
+    reemplazarla por la vigente en estado SOLICITADA. Y toda receta elegida
+    debe estar digitada en Hosp. Pitrufquén (estab_requerido) — nunca en otro
+    establecimiento, aunque sea la única vigente para ese RUT.
+
+    Prioridad: 0) filtrar a estab_requerido (obligatorio, sin excepción),
+    1) si viene receta_pedida y sigue vigente (no ENTREGADA) en el pool
+    filtrado, usarla tal cual, 2) Tipo Receta = NORMAL sobre CONTROLADA
+    (salvo que sea la única opción), 3) estado vigente (no ENTREGADA/
+    CERRADA/ANULADA — incluye SOLICITADA y PENDIENTE) sobre entregadas,
+    4) especialidad pedida si se informó, 5) Nº más alto como desempate.
+    Devuelve (receta_elegida_o_None, nota_o_None) — None cuando ninguna
+    receta vigente del RUT está prescrita en estab_requerido."""
+    candidatas = todas
+    if estab_requerido:
+        candidatas = [r for r in todas if estab_requerido in _norm_texto(r.get("estab_digita"))]
+    if not candidatas:
+        return None, None
+
+    nota_receta = None
+    if receta_pedida:
+        exacta = next((r for r in candidatas if r["receta"] == str(receta_pedida).strip()), None)
+        if exacta and _es_vigente(exacta.get("estado")):
+            return exacta, None
+        nota_receta = (f"Receta indicada por el establecimiento ({receta_pedida}) no válida — "
+                        f"no encontrada, ya ENTREGADA, o fuera de {estab_requerido}; se reemplazó "
+                        f"por la vigente SOLICITADA en el sistema.")
+
+    normales = [r for r in candidatas if _norm_texto(r.get("tipo_receta")) != "CONTROLADA"]
+    pool = normales or candidatas
+    vigentes = [r for r in pool if _es_vigente(r.get("estado"))]
+    pool_estado = vigentes or pool
+    if not vigentes:
+        nota_sin_sol = (f"Sin receta vigente (no ENTREGADA) para este RUT en {estab_requerido} — "
+                         f"se adjunta la más reciente disponible ({pool_estado[0].get('estado') if pool_estado else '?'}). "
+                         f"Revisar en vivo en SSASUR (Consultar Receta por RUT).")
+        nota_receta = " | ".join(n for n in (nota_receta, nota_sin_sol) if n)
 
     if especialidad_pedida:
         esp_pedida = _norm_texto(especialidad_pedida)
-        match = [r for r in pool
+        match = [r for r in pool_estado
                  if esp_pedida in _norm_texto(r.get("especialidad")) or _norm_texto(r.get("especialidad")) in esp_pedida]
         if match:
             elegida = max(match, key=lambda r: int(r["receta"]) if r["receta"].isdigit() else -1)
-            return elegida, None
-        elegida = max(pool, key=lambda r: int(r["receta"]) if r["receta"].isdigit() else -1)
+            return elegida, nota_receta
+        elegida = max(pool_estado, key=lambda r: int(r["receta"]) if r["receta"].isdigit() else -1)
         nota = (f"Sin receta vigente de {especialidad_pedida} en el sistema — se adjunta la más reciente "
                 f"disponible ({elegida.get('especialidad') or 'especialidad desconocida'}, "
                 f"{elegida.get('estado') or 'estado desconocido'}). Revisar manualmente.")
-        return elegida, nota
+        return elegida, " | ".join(n for n in (nota_receta, nota) if n)
 
-    elegida = max(pool, key=lambda r: int(r["receta"]) if r["receta"].isdigit() else -1)
-    return elegida, None
+    elegida = max(pool_estado, key=lambda r: int(r["receta"]) if r["receta"].isdigit() else -1)
+    return elegida, nota_receta
 
 
 def _indice_por_rut(por_receta):
@@ -320,8 +368,11 @@ def _procesar_estab_xlsx(estab, xlsx_path, dry_run):
     except ValueError:
         print(f"[ERROR] No encontré columna 'RUT' en {xlsx_path} (headers: {header})")
         return
-    col_nombre = header.index("NOMBRE") if "NOMBRE" in header else None
+    # Coincidencia flexible: encabezados con tildes suelen llegar con mojibake
+    # (ej. "N° Receta" -> "N? RECETA") — se busca por substring "RECETA"/"NOMBRE".
+    col_nombre = next((i for i, h in enumerate(header) if "NOMBRE" in h), None)
     col_especialidad = header.index("ESPECIALIDAD") if "ESPECIALIDAD" in header else None
+    col_receta = next((i for i, h in enumerate(header) if "RECETA" in h), None)
 
     pacientes = []
     for row in ws_in.iter_rows(min_row=2, values_only=True):
@@ -330,8 +381,14 @@ def _procesar_estab_xlsx(estab, xlsx_path, dry_run):
             continue
         nombre = row[col_nombre] if col_nombre is not None and col_nombre < len(row) else None
         especialidad = row[col_especialidad] if col_especialidad is not None and col_especialidad < len(row) else None
+        receta_pedida = row[col_receta] if col_receta is not None and col_receta < len(row) else None
+        if isinstance(receta_pedida, float):
+            receta_pedida = str(int(receta_pedida))
+        elif receta_pedida is not None:
+            receta_pedida = str(receta_pedida).strip()
         pacientes.append((str(rut).strip(), str(nombre).strip() if nombre else "",
-                           str(especialidad).strip() if especialidad else ""))
+                           str(especialidad).strip() if especialidad else "",
+                           receta_pedida or ""))
 
     if not pacientes:
         print(f"[{estab}] La planilla no tiene filas con RUT.")
@@ -343,7 +400,7 @@ def _procesar_estab_xlsx(estab, xlsx_path, dry_run):
 
     set_completo = []
     filas_feedback = []
-    for rut, nombre, especialidad_pedida in pacientes:
+    for rut, nombre, especialidad_pedida, receta_pedida in pacientes:
         todas = _todas_las_recetas_del_rut(rut, indice_rut)
         if not todas:
             filas_feedback.append(({
@@ -367,7 +424,17 @@ def _procesar_estab_xlsx(estab, xlsx_path, dry_run):
         # por Tipo Receta=NORMAL y por especialidad pedida (columna
         # ESPECIALIDAD opcional en la planilla de entrada) antes de usar el
         # N° más alto como desempate.
-        a_imprimir, nota_mismatch = _elegir_receta(todas, especialidad_pedida)
+        a_imprimir, nota_mismatch = _elegir_receta(todas, especialidad_pedida, receta_pedida=receta_pedida)
+        if a_imprimir is None:
+            estabs_vistos = sorted({r.get("estab_digita") or "?" for r in todas})
+            print(f"  [AVISO] {todas[0]['paciente']}: {len(todas)} receta(s) vigente(s) pero ninguna "
+                  f"digitada en {ESTAB_REQUERIDO} (digitadas en: {', '.join(estabs_vistos)}) — revisar en SSASUR.")
+            filas_feedback.append(({
+                "paciente": todas[0]["paciente"], "rut": rut,
+                "receta": receta_pedida or f"SIN_RECETA_{rut}", "especialidad": especialidad_pedida, "periodo": "",
+            }, f"Tiene receta(s) vigente(s) pero ninguna digitada en Hosp. {ESTAB_REQUERIDO} "
+               f"(digitadas en: {', '.join(estabs_vistos)}) — revisar manualmente en SSASUR"))
+            continue
         notas = []
         if len(todas) > 1:
             otras = [r["receta"] for r in todas if r is not a_imprimir]
