@@ -78,6 +78,8 @@ a demanda y no gastar tokens en cada corrida de AUTO_SSASUR.
 ═══════════════════════════════════════════════════════════════
 """
 import asyncio
+import csv as _csv
+import glob as _glob
 import os
 import subprocess
 import sys
@@ -183,6 +185,91 @@ def dia_habil_anterior(d: date) -> date:
     while ant.weekday() >= 5 or ant in fer:
         ant -= timedelta(days=1)
     return ant
+
+
+def rango_backlog_gt(hoy: date) -> tuple[date, date] | None:
+    """Bug real detectado 30-07-2026 (caso Teodoro Schmidt, 23 recetas GT
+    despachadas el viernes 24 y sábado 25 de julio sin nómina): el informe
+    'Modalidad de Despacho' que usa paso_gt() solo muestra despachos
+    PENDIENTES — una vez que SSASUR procesa/entrega la receta, desaparece del
+    listado para siempre. Si no corre AUTO_SSASUR un día (fin de semana,
+    feriado), cualquier receta que se digitó Y despachó ese mismo día queda
+    invisible para SIEMPRE a paso_gt(), sin importar qué tan amplio sea el
+    rango de fechas que se consulte (verificado en vivo: ni ampliando la
+    ventana hacia atrás aparecen).
+
+    Devuelve el rango de fechas [desde, hasta] a revisar contra el HISTÓRICO
+    real (informe_completo_recetas*.csv, no el reporte de pendientes) para
+    detectar recetas GT que se despacharon en ese hueco. None si no hay hueco
+    que revisar (día hábil normal sin fin de semana/feriado de por medio)."""
+    ultimo_habil = dia_habil_anterior(hoy)
+    desde = ultimo_habil          # inclusive: el propio último día hábil puede
+                                   # tener despachos posteriores a la corrida de esa mañana
+    hasta = hoy - timedelta(days=1)   # ayer
+    if desde >= hoy:
+        return None
+    return (desde, hasta)
+
+
+def verificar_backlog_gt(hoy: date) -> None:
+    """Cruza informe_completo_recetas*.csv (histórico real, no el reporte de
+    pendientes) contra gt_maestro.xlsx para encontrar recetas con Gestión
+    Territorial='S' y Fecha Entrega Receta dentro del hueco fin de
+    semana/feriado que paso_gt() no pudo ver (ver rango_backlog_gt). Solo
+    IMPRIME lo que encuentra — no escribe nada — para que un QF revise y
+    corra GT_NOMINA_PARTICULAR.bat / agregar_gt_manual.py a mano, mismo
+    patrón que las hojas 'ambiguas' de limpiar_gt_maestro.py: mejor reportar
+    y dejar que una persona decida que auto-aplicar en silencio."""
+    rango = rango_backlog_gt(hoy)
+    if rango is None:
+        return
+    desde, hasta = rango
+    fechas_ok = {(desde + timedelta(days=i)).strftime("%d/%m/%Y")
+                 for i in range((hasta - desde).days + 1)}
+
+    filas_por_receta = {}
+    for path in sorted(_glob.glob(str(MAESTRO_DIR / "informe_completo_recetas*.csv"))):
+        try:
+            with open(path, encoding="latin-1", newline="") as fh:
+                for row in _csv.DictReader(fh, delimiter=";"):
+                    if (row.get("Gestión Territorial") or "").strip().upper() != "S":
+                        continue
+                    if (row.get("Fecha Entrega Receta") or "").strip() not in fechas_ok:
+                        continue
+                    n = (row.get("Número Receta") or "").strip()
+                    if n:
+                        filas_por_receta.setdefault(n, row)
+        except Exception:
+            continue
+    if not filas_por_receta:
+        return
+
+    try:
+        import gt_maestro as _GM
+        wb, _ = _GM.cargar_maestro()
+        faltantes = [(n, r) for n, r in filas_por_receta.items()
+                     if _GM.buscar_receta_en_maestro(wb, n) is None]
+    except Exception as e:
+        print(f"\n[AVISO] No pude cruzar contra gt_maestro.xlsx para el chequeo de backlog GT: {e}")
+        faltantes = list(filas_por_receta.items())
+
+    if not faltantes:
+        return
+
+    print("\n" + "═" * 62)
+    print(f"  [ALERTA] Backlog GT sin nómina — {desde.strftime('%d/%m/%Y')} → {hasta.strftime('%d/%m/%Y')}")
+    print("═" * 62)
+    print(f"  {len(faltantes)} receta(s) con Gestión Territorial='S' despachada(s) en ese rango")
+    print("  y SIN fila en el maestro GT — no salieron con AUTO_SSASUR (el reporte de")
+    print("  pendientes ya no las muestra, quedaron invisibles).")
+    for n, r in sorted(faltantes, key=lambda t: t[0]):
+        nombre = f"{r.get('Nombre','').strip()} {r.get('Apellido Paterno','').strip()} {r.get('Apellido Materno','').strip()}"
+        destino = r.get("Establecimiento Retira G. Territorial") or f"(sin destino — comuna: {r.get('Comuna','?')})"
+        print(f"    {n} | {nombre} | {destino} | entregada {r.get('Fecha Entrega Receta')}")
+    print("  → Bájate el Informe Modalidad de Despacho actual y corre")
+    print("    GT_NOMINA_PARTICULAR.bat (opción 2) o agregar_gt_manual.py --gt-excel")
+    print("    para generar la(s) nómina(s) que faltan.")
+    print("═" * 62)
 
 
 def gt_salida(dest: Path) -> Path:
@@ -980,6 +1067,19 @@ async def main():
             else:
                 print("  [AVISO] No se generó el Excel GT — continúo con el resto.")
                 print(f"    Revisa debug_gt.png en {MAESTRO_DIR}")
+
+        # ── Chequeo de backlog GT (fin de semana / feriado) ────────────────────
+        # El reporte de arriba solo ve PENDIENTES — una receta despachada un
+        # día sin corrida (sábado, domingo, feriado) desaparece de ahí para
+        # siempre sin dejar nómina. Se cruza el histórico real
+        # (informe_completo_recetas) contra el maestro para no perderlas
+        # (ver rango_backlog_gt/verificar_backlog_gt). Corre siempre — es un
+        # chequeo de solo lectura, no hace nada si no hay hueco que revisar.
+        if not no_gt:
+            try:
+                verificar_backlog_gt(today)
+            except Exception as e:
+                print(f"  [AVISO] Chequeo de backlog GT falló: {e} — continúo con el resto.")
 
         # ════════════════════════════════════════════════════════════════════
         #  PASO 3b — INFORME MEDICAMENTOS CONTROLADOS (Farmacia AT Abierta)
