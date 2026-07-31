@@ -130,7 +130,8 @@ def _df() -> pd.DataFrame:
 
     rec = rec.dropna(subset=["_fecha"])
     rec = rec[rec["_med"] != ""]
-    rec = rec[rec["RUN"].fillna("").str.strip() != ""]
+    rec["RUN"] = rec["RUN"].fillna("").str.strip()
+    rec = rec[rec["RUN"] != ""]
 
     _cache_df = rec
     print(f"  Recetas cargadas: {len(rec):,}  "

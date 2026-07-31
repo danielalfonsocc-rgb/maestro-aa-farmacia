@@ -22,8 +22,10 @@ sin entrar a la carpeta del repositorio.
     ├── 7 - Auditoria Duplicados\  Accesos a Agente Duplicados IA + Auditoria Profunda
     │                               (corren a demanda; el Excel con nombres de pacientes
     │                               NO se copia aquí — queda solo en la carpeta local)
-    └── 8 - Programacion AA\    Resumen_Programacion_AA.xlsx (conteo vs programación,
-                                    generado por programacion_aa.py --aplicar-conteo)
+    ├── 8 - Programacion AA\    Resumen_Programacion_AA.xlsx (conteo vs programación,
+    │                             generado por programacion_aa.py --aplicar-conteo)
+    └── 9 - Clozapina\          Accesos a carpetas locales de reportes/hemogramas
+                                    (RUT pacientes, NO se copian a la nube)
 
 IMPORTANTE: este script COPIA, no mueve. El repositorio sigue siendo la fuente de
 verdad — la app Streamlit lee el Consolidado del repo y PUBLICAR_DATOS.bat publica
@@ -82,6 +84,7 @@ SUB_PEDIDO = "5 - Pedido Fusionado"
 SUB_CENTINELA = "6 - Centinela"
 SUB_DUP    = "7 - Auditoria Duplicados"
 SUB_PROG   = "8 - Programacion AA"
+SUB_CLOZAPINA = "9 - Clozapina"
 
 # Iconos para distinguir los accesos directos (shell32.dll, índices clásicos).
 _SHELL32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "shell32.dll")
@@ -326,6 +329,53 @@ def sync_rch():
         pass
 
 
+def sync_clozapina():
+    """Mismo criterio que sync_rch(): los reportes mensuales y los PDF de
+    hemograma traen RUT + nombre de paciente (Ley 19.628) — NO se copian a la
+    carpeta del Escritorio (sincronizada a OneDrive), solo accesos directos
+    locales. Un reporte por mes en Clozapina_Reportes/ (julio, agosto, ...) —
+    no se acumula todo en un solo archivo."""
+    dst = os.path.join(BASE, SUB_CLOZAPINA)
+    os.makedirs(dst, exist_ok=True)
+    reportes_dir = os.path.join(WORK_DIR, "Clozapina_Reportes")
+    hemogramas_dir = os.path.join(WORK_DIR, "_hemogramas_clozapina")
+    # Purga cualquier copia de un reporte que se hubiera dejado antes (privacidad).
+    purgados = 0
+    for viejo in glob.glob(os.path.join(dst, "Consolidado_Hemogramas_Clozapina*.xlsx")):
+        try:
+            os.remove(viejo)
+            purgados += 1
+        except OSError:
+            pass
+    if purgados:
+        REP.say(f"  [privacidad] quitada(s) {purgados} copia(s) de la nube")
+    if os.path.isdir(reportes_dir) and glob.glob(os.path.join(reportes_dir, "*.xlsx")):
+        _crear_lnk(os.path.join(dst, "Abrir Reportes Clozapina.lnk"), reportes_dir,
+                   "Abre la carpeta LOCAL con un reporte por mes (no se sube a la nube)", icono=_ICON_FOLDER)
+        REP.say("[Clozapina] acceso directo a la carpeta de reportes mensuales (sin subir a la nube)")
+    else:
+        REP.say("[Clozapina] (aún no generado — corre AUTO_SSASUR.py --clozapina o clozapina_hce_hemogramas.py)")
+    if os.path.isdir(hemogramas_dir):
+        _crear_lnk(os.path.join(dst, "Abrir carpeta Hemogramas PDF.lnk"), hemogramas_dir,
+                   "Abre la carpeta LOCAL de PDF de hemogramas (no se sube a la nube)", icono=_ICON_FOLDER)
+    nota = (
+        "CLOZAPINA — datos de pacientes\n"
+        "===============================\n\n"
+        "Los reportes mensuales y los PDF de hemograma NO se copian a esta carpeta\n"
+        "porque contienen RUT/nombre de paciente y el Escritorio se sincroniza a la\n"
+        "nube de OneDrive.\n\n"
+        "Usa los accesos directos para abrir la carpeta de reportes (uno por mes:\n"
+        "julio, agosto, ...) y la carpeta de PDF en su ubicación LOCAL (no sincronizada):\n"
+        f"  {reportes_dir}\n"
+        f"  {hemogramas_dir}\n"
+    )
+    try:
+        with open(os.path.join(dst, "LEEME.txt"), "w", encoding="utf-8") as fh:
+            fh.write(nota)
+    except OSError:
+        pass
+
+
 def sync_pedido():
     dst = os.path.join(BASE, SUB_PEDIDO)
     src = _mas_reciente(os.path.join(WORK_DIR, "Pedido_Fusion_AA*.xlsx"))
@@ -548,6 +598,7 @@ cada vez que corres cada proceso.
                             nombres de pacientes NO se copia aquí (Escritorio = OneDrive).
   8 - Programacion AA      Resumen_Programacion_AA.xlsx (conteo físico vs programación
                             SSASUR del ciclo Bodega AA, generado por programacion_aa.py)
+  9 - Clozapina             Accesos a carpetas locales de reportes/hemogramas (RUT pacientes, NO se copian a la nube)
 
 ------------------------------------------------------------------------
 Nota: estas son COPIAS para consulta. El programa original sigue en
@@ -598,13 +649,14 @@ _ACCESOS = [
     ("AUTO_SSASUR.lnk",                 "AUTO_SSASUR.bat",    "Descarga de SSASUR, recalcula todo y publica",  _ICON_REFRESH),
     ("Gestion Territorial.lnk",         "GT.bat",             "Descarga y genera las planillas de GT",         _ICON_DOC),
     ("Recetas Cheque ISP.lnk",          "RECETAS_CHEQUE.bat", "Actualiza el registro ISP del mes",             _ICON_RUN),
+    ("Clozapina.lnk",                   "CLOZAPINA.bat",      "AUTO_SSASUR + hemogramas HCE -> Excel para ingreso MINSAL", _ICON_RUN),
     ("Sincronizar Todo.lnk",            "SINCRONIZAR_TODO.bat","Publica lo ya generado: Escritorio + GitHub + Drive + Recetas Cheque (sin SSASUR)", _ICON_REFRESH),
 ]
 
 
 def crear_estructura(forzar_lnk=False):
     """Crea carpetas, LEEME y (si faltan o forzar_lnk) los accesos directos."""
-    for sub in (SUB_APP, SUB_GT, SUB_RCH, SUB_AUDIT, SUB_PEDIDO, SUB_CENTINELA, SUB_DUP, SUB_PROG):
+    for sub in (SUB_APP, SUB_GT, SUB_RCH, SUB_AUDIT, SUB_PEDIDO, SUB_CENTINELA, SUB_DUP, SUB_PROG, SUB_CLOZAPINA):
         os.makedirs(os.path.join(BASE, sub), exist_ok=True)
     try:
         with open(os.path.join(BASE, "LEEME.txt"), "w", encoding="utf-8") as fh:
@@ -652,8 +704,8 @@ def main():
         print("\nListo: carpetas y accesos directos actualizados.")
         return
 
-    selectivo = args & {"--app", "--gt", "--rch", "--auditoria",
-                         "--pedido", "--centinela", "--duplicados", "--programacion"}
+    selectivo = args & {"--app", "--gt", "--rch", "--auditoria", "--pedido",
+                         "--centinela", "--duplicados", "--programacion", "--clozapina"}
     todo = not selectivo
 
     if todo or "--app" in args:
@@ -672,6 +724,8 @@ def main():
         sync_duplicados()
     if todo or "--programacion" in args:
         sync_programacion()
+    if todo or "--clozapina" in args:
+        sync_clozapina()
 
     escribir_log()
     print(f"\nListo ({REP.ok} copiados, {REP.skip} sin cambios). "

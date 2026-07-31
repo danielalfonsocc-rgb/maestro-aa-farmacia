@@ -262,8 +262,11 @@ def _calc_h1_rows(df_farm, fe_map, dias_ef, todos=False, rep_h2_map=None):
         med   = str(r.get('Medicamento', '')).strip()
         crit  = str(r.get('Criticidad', '5-OK'))
         nv    = _nivel(crit)
-        # CDL de tendencia (Consumo_5D_Trend ya tiene factor de carga semanal aplicado)
-        trend5d = _n(r.get('Consumo_5D_Trend', 0))
+        # CDL de tendencia SOLO no-dialisis (Consumo_5D_Farm_NoDial ya tiene el factor
+        # de carga semanal aplicado): Consumo_5D_Trend es el consumo TOTAL (incluye
+        # dialisis, ver maestro_aa.py), y esa fraccion ya se pide aparte en la hoja
+        # Dialisis (calc_h3) — usar el total aqui duplicaria el pedido.
+        trend5d = _n(r.get('Consumo_5D_Farm_NoDial', 0))
         cdl     = (trend5d / 5) if trend5d > 0 else _n(r.get('CDL_DiasHab', 0))
         sfarm   = int(_n(r.get('Stock_Farm_Actual', 0)))
         sbod    = int(_n(r.get('Stock_Bodega_Disponible', 0)))

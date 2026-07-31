@@ -387,13 +387,17 @@ def generar_propuestas_haiku(df_res: pd.DataFrame) -> dict:
         n_lote = (len(casos_anon) - 1) // batch_sz + 1
         print(f"  [IA] Lote {i // batch_sz + 1}/{n_lote} ({len(lote)} casos)...")
 
-        resp = client.messages.create(
-            model      = MODELO_HAIKU,
-            max_tokens = 4096,
-            system     = _SYSTEM_HAIKU,
-            messages   = [{"role": "user", "content":
-                           f"Casos ({len(lote)}):\n{json.dumps(lote, ensure_ascii=False, indent=2)}"}],
-        )
+        try:
+            resp = client.messages.create(
+                model      = MODELO_HAIKU,
+                max_tokens = 4096,
+                system     = _SYSTEM_HAIKU,
+                messages   = [{"role": "user", "content":
+                               f"Casos ({len(lote)}):\n{json.dumps(lote, ensure_ascii=False, indent=2)}"}],
+            )
+        except Exception as e:
+            print(f"  [AVISO IA] Error de API en lote {i // batch_sz + 1}: {e}")
+            continue
         texto = resp.content[0].text.strip()
         try:
             m = re.search(r"\[.*\]", texto, re.DOTALL)

@@ -131,7 +131,7 @@ def leer_recetas(csv_paths):
             df = pd.read_csv(
                 p, encoding="latin-1", sep=None, engine="python",
                 usecols=["Prescripción", "Estado Prescripción", "Cantidad Entregada",
-                         "Fecha Entrega Receta", "ID Receta Detalle", "Número Receta"],
+                         "Fecha Entrega Receta", "ID Receta Detalle", "Número Receta", "RUN"],
             )
             frames.append(df)
         except Exception as e:
@@ -159,7 +159,12 @@ def leer_recetas(csv_paths):
     max_epi_year = max(t[0] for t in df["semana"])
     df = df[df["semana"].apply(lambda t: t[0] == max_epi_year)].copy()
     df["semana"] = df["semana"].apply(lambda t: t[1]).astype(int)
-    num_recetas = df["Número Receta"].nunique() if "Número Receta" in df.columns else 0
+    # Evento = RUN+Prescripción+Fecha Entrega Receta: SSASUR emite un Número
+    # Receta separado por cada cuota de una receta crónica anual (ver auditoria_prescripcion.py).
+    if "RUN" in df.columns:
+        num_recetas = df.drop_duplicates(subset=["RUN", "Prescripción", "Fecha Entrega Receta"]).shape[0]
+    else:
+        num_recetas = df["Número Receta"].nunique() if "Número Receta" in df.columns else 0
     return df, total_bruto, num_recetas
 
 
@@ -286,7 +291,11 @@ def calcular(df, stock, semana_override=None):
         consumo = eg.get(srep, 0)
         proy, alg, alg_desc, vals_activos = proyeccion_inteligente(eg, sem_min, sem_max)
         eg_sem_ant = eg.get(srep - 1, 0)
-        hist_avg = np.mean(vals_activos) if vals_activos else 0
+        # Excluir la propia semana reportada del promedio histórico: si no, var_hist
+        # compara consumo contra un promedio que incluye al propio consumo.
+        vals_hist = [eg.get(s2, 0) for s2 in range(sem_min, sem_max + 1)
+                     if eg.get(s2, 0) > 0 and s2 != srep]
+        hist_avg = np.mean(vals_hist) if vals_hist else 0
         var_sem = round((consumo - eg_sem_ant) / eg_sem_ant * 100, 1) if eg_sem_ant > 0 else None
         var_hist = round((consumo - hist_avg) / hist_avg * 100, 1) if hist_avg > 0 else None
         rot = round(stk / proy, 1) if proy > 0 else None

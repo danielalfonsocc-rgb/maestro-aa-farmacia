@@ -322,13 +322,16 @@ def calcular_abc_xyz(df_rec: pd.DataFrame, feriados: set) -> pd.DataFrame:
     else:
         stats_s["_acum_pct"] = 100.0
 
-    # La primera fila puede ya superar ABC_PARETO_A si un ítem domina mucho
-    # → pd.cut con include_lowest para asignar A al primer ítem siempre
     stats_s["ABC"] = pd.cut(
         stats_s["_acum_pct"],
         bins=[-0.001, ABC_PARETO_A, ABC_PARETO_B, 100.0],
         labels=["A", "B", "C"],
     ).astype(str)
+
+    # Si un solo ítem concentra por sí solo >ABC_PARETO_A% del CDL_pico total
+    # (ej. Paracetamol), su _acum_pct cae en el bin B/C pese a ser el más
+    # crítico logísticamente → forzar el de mayor CDL_Pico a A.
+    stats_s.iloc[0, stats_s.columns.get_loc("ABC")] = "A"
 
     # Calcular umbrales reales de CDL_pico para informar en el reporte
     limite_a = stats_s.loc[stats_s["ABC"] == "A", "CDL_Pico"].min()

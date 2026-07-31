@@ -535,11 +535,13 @@ def _forzar_carta(pdf_path):
 def to_pdf(path, outdir):
     pdf_path = os.path.join(outdir, os.path.splitext(os.path.basename(path))[0] + ".pdf")
     abs_path = os.path.abspath(path)
+    if os.path.exists(pdf_path):
+        os.remove(pdf_path)
     # 1. Intentar LibreOffice (soffice)
     try:
         r = subprocess.run(["soffice","--headless","--convert-to","pdf","--outdir",outdir,path],
                            check=False, capture_output=True, timeout=120)
-        if os.path.exists(pdf_path):
+        if r.returncode == 0 and os.path.exists(pdf_path):
             _forzar_carta(pdf_path)
             return True
     except FileNotFoundError:
@@ -547,6 +549,8 @@ def to_pdf(path, outdir):
     except Exception as e:
         print(f"  (soffice falló: {e})")
     # 2. Fallback: Excel via win32com (Windows + Excel instalado)
+    xl = None
+    wb = None
     try:
         import win32com.client
         xl = win32com.client.Dispatch("Excel.Application")
@@ -554,13 +558,16 @@ def to_pdf(path, outdir):
         xl.DisplayAlerts = False
         wb = xl.Workbooks.Open(abs_path)
         wb.ExportAsFixedFormat(0, os.path.abspath(pdf_path))  # 0 = xlTypePDF
-        wb.Close(False)
-        xl.Quit()
-        if os.path.exists(pdf_path):
-            _forzar_carta(pdf_path)
-            return True
     except Exception as e:
         print(f"  (Excel win32com falló: {e})")
+    finally:
+        if wb is not None:
+            wb.Close(False)
+        if xl is not None:
+            xl.Quit()
+    if os.path.exists(pdf_path):
+        _forzar_carta(pdf_path)
+        return True
     print(f"  (PDF omitido — sin LibreOffice ni Excel disponible)")
     return False
 

@@ -42,6 +42,7 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 - **El modelo SGLI no tiene techo de capacidad**: el Nivel Objetivo T se calcula desde la demanda; Cap_Max es informativo y solo activa [ALERTA_ESTRES].
 - **RUTs**: nunca a la API. `agente_duplicados.py` anonimiza con SHA-256 antes de llamar a Claude.
 - **GT raw downloads**: van a `../04_Farmacia_Gestion_Territorial/` (carpeta hermana del repo). Nombrado: `reporteGestionTerritorial_<desde>_<hasta>.xlsx`. `dedup_recetas.py` busca ahí.
+- **Reporte de Programación AA (PASO 4b de `AUTO_SSASUR.py`)**: se descarga TODOS LOS DÍAS (nunca solo al inicio del ciclo), para poder ver día a día cuánto se ha consumido de lo programado del mes. No pasar `--no-programacion` en la tarea programada. El resto del flujo de `PROGRAMACION_AA.bat` / `programacion_aa.py` (generar planilla solo al inicio de ciclo o con `--forzar`, `--aplicar-conteo`) no cambia.
 - **Drive**: NO subir CSV sábanas ni stock xlsx (RUTs / Ley 19.628). Carpeta raíz `Farmacia AA` en Drive — IDs fijos en `_drive_folders.json`. Para activar: `SETUP_DRIVE.bat`.
 - **Rutas fuera del repo (otra máquina)**: `RCH_DIR` y `PLANTILLA_BLANCO_RCH` (carpeta/plantilla del formulario ISP de Recetas Cheque) viven en `utils_aa.py`, configurables por variable de entorno — `MAESTRO_RCH_DIR` y `MAESTRO_PLANTILLA_RCH` — para no hardcodear la ruta de la QF al correr esto en otro equipo. Default = la ruta actual de esta máquina.
 

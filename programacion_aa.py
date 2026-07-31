@@ -297,7 +297,7 @@ def _escribir_planilla(sal, filas, mae, ruta_reporte, meta_txt, hoy, forzar,
 
     hdrs = list(HDRS)
     if es_resumen:
-        hdrs = hdrs + [('Diferencia (Bod.AA - Real)', 20)]
+        hdrs = hdrs + [('Diferencia (Real - Bod.AA)', 20)]
     ncols = len(hdrs)
 
     titulo = ('RESUMEN CONTEO vs PROGRAMACIÓN — Bodega AA' if es_resumen
@@ -359,14 +359,76 @@ def _escribir_planilla(sal, filas, mae, ruta_reporte, meta_txt, hoy, forzar,
     wb.save(sal)
 
 
+BODEGA_FISICA_AA = 'BODEGA AT ABIERTA'  # debe calzar con BODEGAS_AA_BODEGA en maestro_aa.py
+
+
+def _stock_bodega_desde_reporte(ruta_reporte):
+    """Lee un reporte_de_stock_*.xlsx crudo de SSASUR (no el Consolidado) y
+    devuelve {key: cantidad} para BODEGA_FISICA_AA, sumando por lote."""
+    df = pd.read_excel(ruta_reporte, header=2, engine='openpyxl')
+    df.columns = [str(c).strip() for c in df.columns]
+    descr_col = next(c for c in df.columns if 'Descrip' in c)
+    bod_col = next(c for c in df.columns if 'Bodega' in c)
+    df[bod_col] = df[bod_col].astype(str).str.strip().str.upper()
+    sub = df[df[bod_col] == BODEGA_FISICA_AA].copy()
+    sub['Cantidad'] = pd.to_numeric(sub['Cantidad'], errors='coerce').fillna(0)
+    sub['_key'] = sub[descr_col].astype(str).map(_key)
+    return sub.groupby('_key')['Cantidad'].sum().to_dict()
+
+
+def _mejor_stock_reporte(valores_key):
+    """AUTO_SSASUR puede correr varias veces entre que se imprime la planilla
+    y se termina el conteo físico, y el stock del sistema se mueve entre una
+    corrida y otra — "la más reciente" no siempre es la que mejor refleja lo
+    que había en la bodega al momento de contar. Compara TODOS los
+    reporte_de_stock_*.xlsx descargados contra el conteo físico y usa el que
+    más coincidencias tiene (empate → el más reciente por fecha).
+    Devuelve (stock_key, archivo_elegido, ranking) o ({}, None, []) si no hay
+    ningún reporte_de_stock_*.xlsx disponible."""
+    candidatos = [f for f in glob.glob(os.path.join(WORK_DIR, 'reporte_de_stock_*.xlsx'))
+                  if not os.path.basename(f).startswith('~$')]
+    if not candidatos:
+        return {}, None, []
+
+    ranking = []
+    for f in candidatos:
+        try:
+            stock = _stock_bodega_desde_reporte(f)
+        except (OSError, ValueError, KeyError, StopIteration) as e:
+            print(f'  [aviso] no se pudo leer {os.path.basename(f)}: {e}')
+            continue
+        coincide = sum(1 for k, real in valores_key.items()
+                        if k in stock and int(stock[k]) == real)
+        total = sum(1 for k in valores_key if k in stock)
+        ranking.append((f, stock, coincide, total, os.path.getmtime(f)))
+
+    if not ranking:
+        return {}, None, []
+
+    ranking.sort(key=lambda r: (r[2], r[4]), reverse=True)
+    mejor_f, mejor_stock, mejor_c, mejor_t, _ = ranking[0]
+    resumen = [(os.path.basename(f), c, t) for f, _, c, t, _ in ranking]
+    return {k: int(v) for k, v in mejor_stock.items()}, mejor_f, resumen
+
+
 # ─────────────── modo 2: aplicar conteo (tras escanear) ────────────────────
 
-def aplicar_conteo(ruta_json):
-    plantilla = _mas_reciente('Programacion_AA_*.xlsx', extra_dirs=[OUT_DIR])
+def aplicar_conteo(ruta_json, ruta_plantilla=None):
+    # Si un nuevo ciclo generó una Programacion_AA_*.xlsx más reciente mientras
+    # el conteo físico de la anterior seguía en curso, "la más reciente" ya NO
+    # es la que se imprimió y contó — hay que poder fijarla a mano.
+    plantilla = ruta_plantilla or _mas_reciente('Programacion_AA_*.xlsx', extra_dirs=[OUT_DIR])
     if not plantilla:
         print('[ERROR] No hay ninguna Programacion_AA_*.xlsx generada todavía. '
               'Corre primero: py programacion_aa.py --forzar')
         sys.exit(1)
+    if not ruta_plantilla:
+        otras = [f for f in glob.glob(os.path.join(WORK_DIR, 'Programacion_AA_*.xlsx'))
+                 if os.path.abspath(f) != os.path.abspath(plantilla)]
+        if otras:
+            print(f'  [aviso] hay {len(otras)} otra(s) Programacion_AA_*.xlsx en la carpeta — '
+                  f'se está usando la más reciente ({os.path.basename(plantilla)}). '
+                  'Si el conteo físico corresponde a otra, usa --plantilla ruta.xlsx.')
     try:
         with open(ruta_json, encoding='utf-8') as fh:
             valores = json.load(fh)
@@ -375,6 +437,33 @@ def aplicar_conteo(ruta_json):
         sys.exit(1)
 
     valores_key = {_key(k): v for k, v in valores.items()}
+
+    # Stock Bodega AA ACTUAL (no el congelado en la planilla impresa): el conteo
+    # físico suele hacerse varios días después de imprimir la planilla, y el
+    # stock del sistema se mueve en el intertanto. Comparar contra el número
+    # ya viejo produce "diferencias" falsas que solo reflejan el paso del
+    # tiempo, no un problema real de inventario.
+    #
+    # Además, entre que se imprime la planilla y se termina de contar puede
+    # correr AUTO_SSASUR varias veces — se compara contra TODAS las corridas
+    # de reporte_de_stock_*.xlsx disponibles y se usa la que más coincide con
+    # el conteo físico, no automáticamente "la más reciente".
+    universo, mae = _universo_bodega()
+    stock_actual_key, archivo_stock, ranking = _mejor_stock_reporte(valores_key)
+    if archivo_stock:
+        mejor_c, mejor_t = next((c, t) for f, c, t in ranking if f == os.path.basename(archivo_stock))
+        print(f'  Stock Bodega AA: {os.path.basename(archivo_stock)} '
+              f'— la que más coincide con el conteo ({mejor_c}/{mejor_t})')
+        for nombre, c, t in ranking:
+            if nombre != os.path.basename(archivo_stock):
+                print(f'    (descartada: {nombre} → {c}/{t})')
+    else:
+        stock_actual_key = {
+            _key(r.Medicamento): (0 if pd.isna(r.Stock_Bod_Actual) else int(r.Stock_Bod_Actual))
+            for r in universo.itertuples(index=False)
+        }
+        print(f'  [aviso] no se encontraron reporte_de_stock_*.xlsx sueltos; '
+              f'usando Stock_Bod_Actual de {os.path.basename(mae)}')
 
     wb = openpyxl.load_workbook(plantilla)
     ws = wb.active
@@ -387,8 +476,8 @@ def aplicar_conteo(ruta_json):
             continue
         key = _key(med_c.value)
         stock_real = valores_key.get(key)
-        sbod = sbod_c.value or 0
-        diff = None if stock_real is None else sbod - stock_real
+        sbod = stock_actual_key.get(key, sbod_c.value or 0)
+        diff = None if stock_real is None else stock_real - sbod
         if diff:
             n_diff += 1
         filas.append({
@@ -402,13 +491,14 @@ def aplicar_conteo(ruta_json):
             'Diferencia': diff,
         })
 
-    mae = _mas_reciente('Consolidado_AA_MAESTRO*.xlsx')
+    fuente_stock = archivo_stock or mae
     os.makedirs(OUT_DIR, exist_ok=True)
     sal = os.path.join(OUT_DIR, f'Resumen_Programacion_AA_{hoy.strftime("%Y%m%d_%H%M")}.xlsx')
-    _escribir_planilla(sal, filas, mae or plantilla, plantilla, '', hoy, False,
+    _escribir_planilla(sal, filas, fuente_stock, plantilla, '', hoy, False,
                         es_resumen=True, n_diferencias=n_diff)
 
     print(f'Planilla base : {os.path.basename(plantilla)}')
+    print(f'Stock Bodega AA: refrescado desde {os.path.basename(fuente_stock)} (no el congelado de la planilla impresa)')
     print(f'Conteo aplicado: {len(valores_key)} medicamento(s) en {os.path.basename(ruta_json)}')
     print(f'Diferencias detectadas: {n_diff} de {len(filas)} medicamentos')
     print(f'\nExcel: {os.path.basename(sal)}  (carpeta {os.path.basename(OUT_DIR)}\\)')
@@ -426,10 +516,13 @@ def main():
                      help='Ruta a un reporte SSASUR específico (si no, usa el más reciente)')
     ap.add_argument('--aplicar-conteo', default=None, metavar='JSON',
                      help='Aplica el conteo físico (JSON medicamento→cantidad) y genera el Resumen final')
+    ap.add_argument('--plantilla', default=None, metavar='XLSX',
+                     help='Fuerza la Programacion_AA_*.xlsx a usar con --aplicar-conteo '
+                          '(si no, usa la más reciente — cuidado si ya empezó un ciclo nuevo)')
     args = ap.parse_args()
 
     if args.aplicar_conteo:
-        aplicar_conteo(args.aplicar_conteo)
+        aplicar_conteo(args.aplicar_conteo, args.plantilla)
     else:
         generar(args.reporte, args.forzar)
 

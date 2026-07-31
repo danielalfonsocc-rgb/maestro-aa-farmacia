@@ -178,7 +178,11 @@ def analizar_gt(gt_dir, limpiar=False):
             bak = arch + ".bak"
             if not os.path.exists(bak):
                 shutil.copy2(arch, bak)
-            eliminadas = _guardar_gt_xlsx_sin(arch, arch, excluir)
+            try:
+                eliminadas = _guardar_gt_xlsx_sin(arch, arch, excluir)
+            except Exception as e:
+                print(f"  [ERROR] {nombre}: no se pudo limpiar ({e}) — ¿archivo abierto en Excel? Se conserva el .bak, sigo con el resto.", file=sys.stderr)
+                continue
             print(f"    {nombre}: {eliminadas} fila(s) eliminadas (.bak guardado)")
 
     return n_dup
