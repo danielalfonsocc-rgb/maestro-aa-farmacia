@@ -1227,6 +1227,21 @@ async def main():
                         guardar_excel(filas_minsal_cloz, filas_obs_cloz, str(_ruta_cloz))
                         print(f"  ✓ {_ruta_cloz.name} ({len(por_paciente_cloz)} pacientes"
                               f" — {nuevos_cloz} nuevos buscados en HCE, {len(por_paciente_cloz) - nuevos_cloz} ya cacheados)")
+
+                    # Sube el Consolidado a su carpeta Drive privada en ESTA misma
+                    # corrida — antes quedaba pendiente de --solo-clozapina manual,
+                    # que nadie disparaba, y el reporte nunca llegaba a Drive
+                    # (detectado 30-07-2026). Mismo patrón que usa Centinela arriba.
+                    pub_py_cloz = MAESTRO_DIR / "publicar_drive.py"
+                    if pub_py_cloz.exists() and (MAESTRO_DIR / "token_drive.json").exists():
+                        print("  [Clozapina] Sincronizando reporte a Drive...")
+                        pret_cloz = subprocess.run(
+                            [sys.executable, str(pub_py_cloz), "--solo-clozapina"],
+                            cwd=str(MAESTRO_DIR),
+                            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                        )
+                        if pret_cloz.returncode != 0:
+                            print(f"  [aviso] publicar_drive.py --solo-clozapina terminó con código {pret_cloz.returncode}")
                 except Exception as e:
                     import traceback
                     print(f"  [aviso] Consolidado Clozapina falló: {e}")
