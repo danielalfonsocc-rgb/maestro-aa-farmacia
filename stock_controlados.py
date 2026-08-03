@@ -131,12 +131,16 @@ async def _fijar_nivel_reporte_local(page):
     }""")
 
 
-async def _esperar_opciones_bodega(page, intentos=10, espera_ms=800):
+async def _esperar_opciones_bodega(page, intentos=18, espera_ms=800):
     """Espera a que el <select> de bodega tenga opciones — se puebla vía AJAX
     tras fijar 'nivel_reporte' y puede tardar más que el wait_for_timeout fijo
     de después del goto. Devuelve True si aparecieron opciones, False si se
     agotaron los intentos (el llamador igual sigue y falla con el error de
-    siempre, que ahora queda diagnosticado con [DESCUBRIR])."""
+    siempre, que ahora queda diagnosticado con [DESCUBRIR]). Ventana ampliada
+    03-08-2026: con el fix de disparar 'change' siempre, el bug de bodega
+    vacía en el reintento IGUAL reapareció en vivo — la AJAX parece tardar
+    más de los ~8s que cubrían los 10 intentos originales en algunas
+    corridas."""
     for _ in range(intentos):
         n = await page.evaluate(r"""() => {
           const s = document.querySelector('#bodega, select[name="bodega"]');
@@ -250,14 +254,42 @@ async def _descartar_modal(page):
     return False
 
 
-async def _click_generar_xls(page):
+async def _dump_boton_generar_xls(page, sel: str, etiqueta: str):
+    """Vuelca el outerHTML del botón 'Generar XLS' y el action/method/target
+    de su <form> contenedor (si tiene uno) — el fix de 31-07/03-08-2026
+    (disparar 'change' siempre) NO resolvió el bug de raíz, y la hipótesis
+    pendiente es que 'Generar XLS' no dispara un evento 'download' real de
+    Playwright, igual que pasaba con 'Ver PDF' en clozapina_hce_hemogramas.py
+    (tuvo que resolverse con context.request.post en vez de expect_download).
+    Este volcado no requiere sesión interactiva del usuario — se genera solo
+    en cualquier corrida real (AUTO_SSASUR --clozapina o el runner suelto) y
+    queda listo para diagnosticar la próxima vez que falle."""
+    try:
+        info = await page.eval_on_selector(sel, r"""el => {
+          const f = el.closest('form');
+          return {
+            outerHTML: el.outerHTML,
+            form: f ? {action: f.action, method: f.method, target: f.target} : null,
+          };
+        }""")
+        (MAESTRO_DIR / f"_debug_generarxls_{etiqueta}.txt").write_text(
+            f"selector: {sel}\nform: {info.get('form')}\n\nouterHTML:\n{info.get('outerHTML')}\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+async def _click_generar_xls(page, etiqueta: str = "stockfecha"):
     """Clic en 'Generar XLS'. Espera primero a que el botón esté visible (la 1ª
-    carga del form puede tardar) y descarta cualquier modal que lo tape."""
-    # Espera a que aparezca alguno de los selectores (hasta ~12s).
-    for _ in range(12):
+    carga del form puede tardar, o el botón puede re-renderizarse tras el
+    'change' de bodega/nivel_reporte) y descarta cualquier modal que lo tape."""
+    # Espera a que aparezca alguno de los selectores (hasta ~20s).
+    for _ in range(20):
         for sel in SELS_XLS:
             try:
                 if await page.is_visible(sel):
+                    await _dump_boton_generar_xls(page, sel, etiqueta)
                     await _descartar_modal(page)
                     await page.click(sel, timeout=4_000, force=True)
                     return sel
@@ -451,15 +483,26 @@ async def _bajar_stockfecha(page, bodega: str, fecha_str: str, fid: str, mapeo: 
         raise RuntimeError(f"no encontré la bodega '{bodega}' en el select")
     print(f"    Bodega → {sel['label']}")
     await _descartar_modal(page)   # 1ª selección puede abrir modal Selección Proyecto
+    # Elegir bodega dispara su propio 'change' (igual que nivel_reporte), que
+    # puede re-renderizar el panel de botones (Mostrar Resultado/Generar XLS)
+    # vía AJAX — validado 31-07-2026: con el fix de _fijar_nivel_reporte_local
+    # (dispara 'change' siempre) el intento 1 pasó a fallar por "no encontré
+    # el botón Generar XLS" en vez de por bodega vacía, señal de que el botón
+    # aún no había terminado de re-renderizarse cuando arrancó la búsqueda.
+    # Espera a que esa AJAX asiente antes de buscar el botón.
+    try:
+        await page.wait_for_load_state("networkidle", timeout=8_000)
+    except Exception:
+        pass
 
     ok_fecha = await _set_fecha(page, fecha_str)
     if not ok_fecha:
         print(f"    [AVISO] no pude fijar la fecha {fecha_str} — uso la del formulario.")
-    await page.wait_for_timeout(400)
+    await page.wait_for_timeout(600)
 
     tmp = SALIDA_DIR / f"_stock_{fid}_{fecha_str.replace('/', '-')}.xlsx"
     async with page.expect_download(timeout=TIMEOUT_DESCARGA_STOCKFECHA) as dl_info:
-        await _click_generar_xls(page)
+        await _click_generar_xls(page, etiqueta=f"stockfecha-{fid}")
     dl = await dl_info.value
     await dl.save_as(tmp)
     return _finalizar_descarga(tmp, mapeo)
@@ -487,7 +530,7 @@ async def _bajar_momento(page, bodega: str, fid: str, mapeo: dict) -> dict:
 
     tmp = SALIDA_DIR / f"_stock_{fid}_momento.xlsx"
     async with page.expect_download(timeout=TIMEOUT_DESCARGA) as dl_info:
-        await _click_generar_xls(page)
+        await _click_generar_xls(page, etiqueta=f"momento-{fid}")
     dl = await dl_info.value
     await dl.save_as(tmp)
     return _finalizar_descarga(tmp, mapeo)
