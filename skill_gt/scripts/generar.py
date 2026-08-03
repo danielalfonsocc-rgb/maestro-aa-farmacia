@@ -69,6 +69,24 @@ def es_ultima(per):
         n,m=str(per).split("/"); return int(n)==int(m)
     except Exception: return False
 
+def es_psiquiatria(especialidad):
+    """True si la especialidad es Psiquiatría/Siquiatría (con o sin acento, con o sin la 'p'
+    inicial muda — forma habitual en las recetas SSASUR, ej. "Siquiatría Adulto")."""
+    u=unicodedata.normalize("NFKD",str(especialidad or "")).encode("ascii","ignore").decode().upper()
+    return "SIQUIATR" in u  # cubre tanto PSIQUIATR* como SIQUIATR*
+
+def es_inyectable_antipsicotico(texto):
+    """True si `texto` (nombre del medicamento sujeto a control legal) es un antipsicótico
+    inyectable de depósito: Haloperidol 50 mg (decanoato), Paliperidona o Risperidona inyectables.
+    Exige una señal explícita de vía inyectable/formulación depot para no arrastrar las formas
+    orales de risperidona/paliperidona, mucho más frecuentes."""
+    u=unicodedata.normalize("NFKD",str(texto or "")).encode("ascii","ignore").decode().upper()
+    if not u: return False
+    if "HALOPERIDOL" in u and ("50" in u or "INYECT" in u or "DECANOATO" in u or "AMPOLLA" in u): return True
+    if "PALIPERIDONA" in u and any(k in u for k in ("INYECT","PALMITATO","DEPOT","AMPOLLA","XEPLION","TREVICTA","SUSTENNA")): return True
+    if "RISPERIDONA" in u and any(k in u for k in ("INYECT","CONSTA","MICROESFERAS","DEPOT","AMPOLLA")): return True
+    return False
+
 # ---- inserción de logos centrados verticalmente, con margen interior ----
 def place_logo(ws, path, col_letter, target_h_px, col_off_px, row_off_px, from_row0=0):
     if not path or not os.path.exists(path): return False
@@ -121,11 +139,11 @@ def carta_landscape(ws, fit_height, print_area=None):
 
 def hoja_funcionarios(wb, regs, destino, titulo, subtitulo, modo="normal"):
     ws=wb.active; ws.title="Funcionarios"  # única hoja — sin Maestra
-    col_label="Controlados" if modo=="controlados" else "Refrigerados"
+    col_label="Medicamento Sujeto a Control Legal" if modo=="controlados" else "Refrigerados"
     col_color=RED if modo=="controlados" else GREEN
     # ✓ Revisado como col A, a la izquierda de N° Receta
     h2=["✓ Revisado","N° Receta","Paciente","RUN","Especialidad","Período","Estado Receta","N° Presc.",col_label,"Modalidad de Entrega","Pendiente"]
-    w2=[6,10,30,13,20,8,13,7,22,18,16]; C2={"✓ Revisado","N° Receta","RUN","Período","Estado Receta","N° Presc."}
+    w2=[6,10,30,13,20,8,13,7,26,18,16]; C2={"✓ Revisado","N° Receta","RUN","Período","Estado Receta","N° Presc."}
     last=get_column_letter(len(h2)); COL={h:i+1 for i,h in enumerate(h2)}
     for c,w in enumerate(w2,start=1): ws.column_dimensions[get_column_letter(c)].width=w
     ws.row_dimensions[1].height=40; ws.row_dimensions[2].height=40
@@ -604,8 +622,16 @@ def main():
     for destino, regs in grupos.items():
         titulo=f"GESTIÓN TERRITORIAL - {destino.upper()}"
         subtitulo=f"Origen: {origen}   |   Destino: {destino}   |   Fecha de entrega: {FECHA}"
-        regs_ctrl=[g for g in regs if (g.get("controlado","") or "").strip()]
-        regs_norm=[g for g in regs if not (g.get("controlado","") or "").strip()]
+        # Salud mental: recetas prescritas por siquiatra van en nómina aparte del resto. Dentro
+        # de esas, los antipsicóticos inyectables de depósito (Haloperidol 50, Paliperidona y
+        # Risperidona inyectables) van en una nómina todavía más separada. Ambas, igual que las
+        # demás, se generan por establecimiento de destino.
+        regs_sm=[g for g in regs if es_psiquiatria(g.get("especialidad",""))]
+        regs_resto=[g for g in regs if not es_psiquiatria(g.get("especialidad",""))]
+        regs_sm_iny=[g for g in regs_sm if es_inyectable_antipsicotico(g.get("controlado","") or "")]
+        regs_sm_gen=[g for g in regs_sm if not es_inyectable_antipsicotico(g.get("controlado","") or "")]
+        regs_ctrl=[g for g in regs_resto if (g.get("controlado","") or "").strip()]
+        regs_norm=[g for g in regs_resto if not (g.get("controlado","") or "").strip()]
         archivos_dest=[]
         if regs_norm:
             wb=Workbook()
@@ -618,6 +644,18 @@ def main():
             hoja_funcionarios(wb, regs_ctrl, destino, titulo_ctrl, subtitulo, modo="controlados")
             pl_ctrl=os.path.join(a.salida, f"{slug(destino)}_Controlados_Planilla.xlsx"); wb.save(pl_ctrl); archivos_dest.append(os.path.basename(pl_ctrl))
             # Controlados: solo xlsx, sin PDF
+        if regs_sm_gen:
+            titulo_sm=f"GESTIÓN TERRITORIAL SALUD MENTAL - {destino.upper()}"
+            wb=Workbook()
+            hoja_funcionarios(wb, regs_sm_gen, destino, titulo_sm, subtitulo, modo="controlados")
+            pl_sm=os.path.join(a.salida, f"{slug(destino)}_SaludMental_Planilla.xlsx"); wb.save(pl_sm); archivos_dest.append(os.path.basename(pl_sm))
+            # Salud Mental: solo xlsx, sin PDF
+        if regs_sm_iny:
+            titulo_sm_iny=f"GESTIÓN TERRITORIAL SALUD MENTAL (INYECTABLES) - {destino.upper()}"
+            wb=Workbook()
+            hoja_funcionarios(wb, regs_sm_iny, destino, titulo_sm_iny, subtitulo, modo="controlados")
+            pl_sm_iny=os.path.join(a.salida, f"{slug(destino)}_SaludMental_Inyectables_Planilla.xlsx"); wb.save(pl_sm_iny); archivos_dest.append(os.path.basename(pl_sm_iny))
+            # Salud Mental Inyectables: solo xlsx, sin PDF
         lleva=any(((g.get("refrigerado","") or "").strip() or (g["receta"] in refri_map)) for g in regs)
         le=os.path.join(a.salida, f"{slug(destino)}_Letrero.xlsx"); letrero(destino, lleva, le)
         # Letrero: solo PDF (xlsx temporal se elimina)
@@ -631,7 +669,10 @@ def main():
                 print(f"  (Letrero: PDF no generado, se conserva {os.path.basename(le)})")
         else:
             archivos_dest.append(os.path.basename(le))
-        resumen=f"{len(regs_norm)} normales" + (f" + {len(regs_ctrl)} controlados" if regs_ctrl else "")
+        resumen=f"{len(regs_norm)} normales"
+        if regs_ctrl: resumen+=f" + {len(regs_ctrl)} controlados"
+        if regs_sm_gen: resumen+=f" + {len(regs_sm_gen)} salud mental"
+        if regs_sm_iny: resumen+=f" + {len(regs_sm_iny)} SM inyectables"
         print(f"OK {destino}: {len(regs)} recetas ({resumen}) | refrigerado={lleva} -> {', '.join(archivos_dest)}")
         # Dígito verificador (módulo 11) - siempre
         malos=[(g["receta"],g["paciente"],g["run"]) for g in regs if dv_correcto(g["run"]) is False]
