@@ -871,12 +871,22 @@ async def main():
     # calendario) — si hoy es lunes, cae en viernes; si hubo feriado, lo salta.
     # Override para reintentos/backfill: --fecha-controlados dd/mm/yyyy.
     fecha_controlados = _arg_val("--fecha-controlados", fmt(dia_habil_anterior(today)))
-    # Default GT: ayer → +13 días (2 semanas hacia adelante). Captura despachos
-    # próximos programados (el reporte muestra pendientes, no histórico entregado).
-    # Los despachos pasados desaparecen del listado al ser procesados, por eso se
-    # mira al FUTURO en lugar de hacia atrás.
+    # Default GT: último día hábil (no "ayer" calendario) → +13 días. Captura
+    # despachos próximos programados (el reporte muestra pendientes, no
+    # histórico entregado) — los despachos pasados desaparecen del listado al
+    # ser procesados, por eso se mira al FUTURO en lugar de hacia atrás.
+    # Bug real 30-07-2026 (caso Teodoro Schmidt): con "ayer" a secas, un lunes
+    # arranca en domingo y nunca llega a ver viernes/sábado — cualquier cosa
+    # que se digitó Y despachó ese fin de semana (sin corrida de por medio)
+    # queda fuera de la ventana consultada. dia_habil_anterior() ya salta
+    # fines de semana Y feriados, así que un lunes normal arranca en viernes
+    # solo; si el viernes fue feriado, arranca más atrás. Sin cambio en el
+    # resto de la semana (dia_habil_anterior(martes) = lunes = ayer de todos
+    # modos). Complementa a verificar_backlog_gt(), que cubre el caso — más
+    # grave — de lo que ya se despachó y desapareció del reporte antes de
+    # que corriera cualquier ventana.
     # Se puede acotar con --desde dd/mm/yyyy o --fecha dd/mm/yyyy.
-    _gt_inicio = _fecha or fmt(today - timedelta(days=1))
+    _gt_inicio = _fecha or fmt(dia_habil_anterior(today))
     desde_gt = _arg_val("--desde", _gt_inicio)
     hasta_gt = _arg_val("--hasta", _fecha or fmt(today + timedelta(days=13)))
 
