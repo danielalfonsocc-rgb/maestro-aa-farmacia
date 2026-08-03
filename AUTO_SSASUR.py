@@ -305,7 +305,7 @@ async def entrar_modulo(page, nombre: str):
         await page.wait_for_url(lambda u: "login.ssasur.cl" not in u, timeout=30_000)
     except Exception:
         pass
-    await page.wait_for_load_state("networkidle")
+    await _networkidle(page)
     await page.wait_for_timeout(2_000)
     print(f"  ✓ En módulo {nombre}: {page.url}")
 
@@ -366,12 +366,27 @@ ANCLA_HISTORICO  = date(2026, 6, 1)   # primer día del histórico de recetas
 BLOQUE_DIAS      = 30           # tope del servidor: máx. 30 días por consulta
 
 
+async def _networkidle(page, timeout=15_000):
+    """Espera networkidle con tolerancia: varios modulos de SSASUR mantienen
+    alguna conexion de fondo que nunca llega a estar realmente idle, asi que
+    un timeout aqui no es un error real de navegacion (el wait_for_timeout()
+    de resguardo que sigue a cada llamado ya cubre el asentamiento visual)."""
+    try:
+        await page.wait_for_load_state("networkidle", timeout=timeout)
+    except Exception:
+        pass
+
+
 async def entrar_receta(page):
     """Dashboard → tarjeta RECETA → (modal proyecto) → www.ssasur.cl/receta.
     Si ya estamos dentro del módulo receta, vuelve al inicio del módulo sin
     pasar por el dashboard (evita el timeout del botón RECETA)."""
     if "www.ssasur.cl/receta" in page.url:
-        await page.goto("https://www.ssasur.cl/receta", wait_until="networkidle")
+        try:
+            await page.goto("https://www.ssasur.cl/receta")
+            await _networkidle(page)
+        except Exception:
+            pass
         await page.wait_for_timeout(1_000)
         print(f"  ✓ En módulo receta: {page.url}")
         return
@@ -400,7 +415,10 @@ async def entrar_receta(page):
         )
     except Exception:
         pass
-    await page.wait_for_load_state("networkidle")
+    try:
+        await _networkidle(page)
+    except Exception:
+        pass
     await page.wait_for_timeout(1_500)
     print(f"  ✓ En módulo receta: {page.url}")
 
@@ -488,7 +506,7 @@ async def _abrir_reporte_gt(page):
     (o 'Modalidad de despacho'). Devuelve True si el formulario cargó."""
     try:
         await page.goto(GESTION_TERRITORIAL_URL)
-        await page.wait_for_load_state("networkidle")
+        await _networkidle(page)
         await page.wait_for_timeout(1_500)
     except Exception:
         pass
@@ -515,7 +533,7 @@ async def _abrir_reporte_gt(page):
             break
         except Exception:
             continue
-    await page.wait_for_load_state("networkidle")
+    await _networkidle(page)
     await page.wait_for_timeout(1_500)
     return await _hay_form_gt(page)
 
@@ -689,7 +707,7 @@ async def paso_gt(page, desde=None, hasta=None, debug=False):
         await _click_primero(page, SELS_BUSCAR, "Buscar")
     except Exception:
         pass   # por si el listado cargara solo al marcar origen
-    await page.wait_for_load_state("networkidle")
+    await _networkidle(page)
     await page.wait_for_timeout(2_500)
     if debug:
         await _dump_formulario(page, "post-buscar")
@@ -708,7 +726,7 @@ async def paso_gt(page, desde=None, hasta=None, debug=False):
             await _click_primero(page, SELS_BUSCAR, "Buscar")
         except Exception:
             pass
-        await page.wait_for_load_state("networkidle")
+        await _networkidle(page)
         await page.wait_for_timeout(2_500)
         n = await _filas_resultado(page)
     if n == 0:
@@ -758,7 +776,7 @@ async def paso_controlados(page, fecha: str, debug=False):
     print(f"\n[Controlados] Informe Medicamentos Controlados — Farmacia AT Abierta ({fecha})")
     await entrar_receta(page)
     await page.goto(CONTROLADOS_URL)
-    await page.wait_for_load_state("networkidle")
+    await _networkidle(page)
     await page.wait_for_timeout(1_500)
 
     if not await page.evaluate("() => !!document.querySelector('select')"):
@@ -785,7 +803,7 @@ async def paso_controlados(page, fecha: str, debug=False):
         await _dump_formulario(page, "controlados-sin-buscar")
         await page.screenshot(path=str(MAESTRO_DIR / "debug_controlados.png"))
         return (None, -1)
-    await page.wait_for_load_state("networkidle")
+    await _networkidle(page)
     await page.wait_for_timeout(2_000)
     if debug:
         await _dump_formulario(page, "controlados-post-buscar")
@@ -996,7 +1014,7 @@ async def main():
             await entrar_receta(page)
 
             await page.goto(RECETA_INFORME)
-            await page.wait_for_load_state("networkidle")
+            await _networkidle(page)
             await page.wait_for_timeout(1_500)
 
             if not await page.evaluate("() => !!document.getElementById('fechaInicio')"):
@@ -1107,23 +1125,23 @@ async def main():
         # ════════════════════════════════════════════════════════════════════
         print("\n[4/9] Módulo ABASTECIMIENTO...")
         await page.goto(DASHBOARD_URL)
-        await page.wait_for_load_state("networkidle")
+        await _networkidle(page)
         await page.wait_for_timeout(1_500)
         await entrar_modulo(page, "ABASTECIMIENTO")
 
         await page.goto(STOCK_REPORTE)
-        await page.wait_for_load_state("networkidle")
+        await _networkidle(page)
         await page.wait_for_timeout(2_500)
 
         if "login.ssasur.cl" in page.url:
             # Por si la sesión del módulo no quedó lista: reintentar una vez
             print("  [AVISO] Rebote al login — reintentando entrar a ABASTECIMIENTO...")
             await page.goto(DASHBOARD_URL)
-            await page.wait_for_load_state("networkidle")
+            await _networkidle(page)
             await page.wait_for_timeout(1_500)
             await entrar_modulo(page, "ABASTECIMIENTO")
             await page.goto(STOCK_REPORTE)
-            await page.wait_for_load_state("networkidle")
+            await _networkidle(page)
             await page.wait_for_timeout(2_500)
 
         # Configurar el reporte: bodega = TODAS.
@@ -1200,7 +1218,7 @@ async def main():
             print("\n[4b/9] Reporte de Programación AA (mes en curso)...")
             try:
                 await page.goto(PROGRAMACION_REPORTE)
-                await page.wait_for_load_state("networkidle")
+                await _networkidle(page)
                 await page.wait_for_timeout(1_500)
                 await _seleccionar_diag(page, "#ano", str(today.year), "Año")
                 await _seleccionar_diag(page, "#mes", str(today.month), "Mes")
