@@ -93,6 +93,8 @@ def _fila_a_dict(filas_receta):
         "tipo_receta": (r0.get("Tipo Receta") or "").strip(),
         "estado": (r0.get("Estado") or "").strip(),
         "estab_digita": (r0.get("Establecimiento Digita") or "").strip(),
+        "procedencia": (r0.get("Procedencia") or "").strip(),
+        "tipo_atencion": (r0.get("Tipo Atención") or "").strip(),
         # OJO: la columna "Fecha Digitación" del CSV es la fecha de la serie
         # completa, NO por cuota — dos cuotas mensuales normales de una misma
         # receta crónica comparten el mismo valor. Si se pasa a
@@ -125,10 +127,30 @@ ESTADOS_NO_VIGENTES = {"ENTREGADA", "CERRADA / INCOMPLETA", "ANULADA"}
 
 def _es_vigente(estado):
     """Mismo criterio que descargar_recetas_pdf._es_vigente — SSASUR en vivo
-    también devuelve variantes como 'CERRADA POR VENCIMIENTO' que la
-    igualdad exacta no capturaba."""
+    también devuelve variantes como 'CERRADA POR VENCIMIENTO' o 'ANULADO POR
+    SISTEMA' que la igualdad exacta no capturaba."""
     e = (estado or "").strip().upper()
-    return e not in ESTADOS_NO_VIGENTES and not e.startswith("CERRADA")
+    return e not in ESTADOS_NO_VIGENTES and not e.startswith("CERRADA") and not e.startswith("ANULAD")
+
+
+# Pedido por el usuario 04-08-2026 (caso Elier Ruben Sanhueza Garces, CESFAM
+# Teodoro Schmidt): una receta de un episodio de hospitalización, su alta, o
+# una urgencia NO es para retiro por Gestión Territorial aunque esté vigente
+# (SOLICITADA/PENDIENTE) — GT es solo para el control crónico ambulatorio del
+# paciente. Se detecta por "Procedencia" (ATENCION ABIERTA/HOSPITALIZADO/
+# URGENCIA), con "Tipo Atención" (p.ej. "ALTA HOSPITALIZADO") como respaldo
+# por si Procedencia viniera vacía.
+PROCEDENCIA_NO_AMBULATORIA = {"HOSPITALIZADO", "URGENCIA"}
+
+
+def _es_ambulatoria(receta):
+    procedencia = _norm_texto(receta.get("procedencia"))
+    if procedencia in PROCEDENCIA_NO_AMBULATORIA:
+        return False
+    tipo_atencion = _norm_texto(receta.get("tipo_atencion"))
+    if tipo_atencion.startswith("ALTA HOSPITAL") or tipo_atencion == "HOSPITALIZADO":
+        return False
+    return True
 
 
 def _elegir_receta(todas, especialidad_pedida=None, receta_pedida=None, estab_requerido=ESTAB_REQUERIDO):
@@ -157,7 +179,8 @@ def _elegir_receta(todas, especialidad_pedida=None, receta_pedida=None, estab_re
     receta vigente del RUT está prescrita en estab_requerido."""
     candidatas = todas
     if estab_requerido:
-        candidatas = [r for r in todas if estab_requerido in _norm_texto(r.get("estab_digita"))]
+        candidatas = [r for r in candidatas if estab_requerido in _norm_texto(r.get("estab_digita"))]
+    candidatas = [r for r in candidatas if _es_ambulatoria(r)]
     if not candidatas:
         return None, None
 

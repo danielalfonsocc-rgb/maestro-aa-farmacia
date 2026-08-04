@@ -78,9 +78,14 @@ def _es_vigente(estado):
     igualdad exacta contra ESTADOS_NO_VIGENTES no capturaba, así que se
     colaban recetas vencidas al combinado para despachar. Cualquier estado
     que empiece con CERRADA, o sea ENTREGADA/ANULADA, se considera no
-    vigente."""
+    vigente.
+
+    Corregido 04-08-2026 (pedido del usuario): mismo problema con
+    'ANULADO POR SISTEMA' — variante de anulada que la igualdad exacta
+    tampoco capturaba. Cualquier estado que empiece con ANULAD también se
+    considera no vigente."""
     e = (estado or "").strip().upper()
-    return e not in ESTADOS_NO_VIGENTES and not e.startswith("CERRADA")
+    return e not in ESTADOS_NO_VIGENTES and not e.startswith("CERRADA") and not e.startswith("ANULAD")
 
 
 def _leer_ruts_de_feedback(path):
@@ -115,6 +120,77 @@ def _leer_ruts_de_feedback(path):
         paciente = row[col_pac] if col_pac is not None and col_pac < len(row) else ""
         out.append((rut, str(paciente or "").strip()))
     return out
+
+
+_OBS_SIN_NOVEDAD = {"SOLICITUD RECIBIDA (PLANILLA ESTABLECIMIENTO)", "SOLICITUD RECIBIDA (PDF ADJUNTO)"}
+
+
+def _leer_observaciones_de_feedback(path):
+    """RUT -> texto de la columna "Observación" de un Feedback_Solicitud_*.xlsx
+    (alertas de duplicado de gt_maestro + notas de sustitución de
+    revision_solicitudes._elegir_receta, ej. "Receta indicada por el
+    establecimiento (X) no válida — ... se reemplazó..."). Pedido por el
+    usuario 04-08-2026: estampar esa observación en el PDF de la receta que
+    se termina enviando, para que quede registrada junto al documento y no
+    solo en la planilla. Devuelve "" para los casos sin novedad (no se
+    estampa nada en ese caso)."""
+    wb = openpyxl.load_workbook(path, data_only=True)
+    ws = wb.active
+    header_idx = None
+    for i, row in enumerate(ws.iter_rows(values_only=True), start=1):
+        if row and any(str(c).strip() == "RUT" for c in row if c):
+            header_idx = i
+            break
+    if header_idx is None:
+        return {}
+    header = [str(c).strip() if c else "" for c in list(ws.iter_rows(values_only=True))[header_idx - 1]]
+    col_rut = header.index("RUT")
+    col_obs = header.index("Observación") if "Observación" in header else None
+    if col_obs is None:
+        return {}
+    out = {}
+    for row in list(ws.iter_rows(values_only=True))[header_idx:]:
+        rut = row[col_rut] if col_rut < len(row) else None
+        if not rut:
+            continue
+        obs = str(row[col_obs] or "").strip() if col_obs < len(row) else ""
+        out[str(rut).strip()] = "" if obs.upper() in _OBS_SIN_NOVEDAD else obs
+    return out
+
+
+def _estampar_pdf(path, lineas):
+    """Escribe `lineas` de texto en la esquina inferior izquierda de cada
+    página del PDF en `path` (letra chica, no tapa el contenido oficial de
+    la receta) — sello informativo con la última Fecha Entrega vista en
+    SSASUR y, si aplica, la Observación de la revisión. Pedido por el
+    usuario 04-08-2026."""
+    if not lineas:
+        return
+    import io
+    from reportlab.pdfgen import canvas as rl_canvas
+    from pypdf import PdfReader as _PdfReader
+
+    reader = _PdfReader(str(path))
+    writer = PdfWriter()
+    for page in reader.pages:
+        w = float(page.mediabox.width)
+        h = float(page.mediabox.height)
+        buf = io.BytesIO()
+        c = rl_canvas.Canvas(buf, pagesize=(w, h))
+        c.setFillColorRGB(0.55, 0, 0)
+        c.setFont("Helvetica-Bold", 7.5)
+        y = 12
+        for linea in reversed(lineas):
+            texto = linea if len(linea) <= 150 else linea[:147] + "..."
+            c.drawString(12, y, texto)
+            y += 9
+        c.save()
+        buf.seek(0)
+        overlay = _PdfReader(buf).pages[0]
+        page.merge_page(overlay)
+        writer.add_page(page)
+    with open(str(path), "wb") as fh:
+        writer.write(fh)
 
 
 def _split_rut(rut):
@@ -286,6 +362,21 @@ async def _buscar_vigentes_por_rut(page, rut, origen_filtro="PITRUFQUEN HOSP.", 
             continue
         if origen_filtro and origen_filtro.upper() not in origen.upper():
             continue
+        # Pedido por el usuario 04-08-2026 (caso Elier Ruben Sanhueza
+        # Garces, CESFAM Teodoro Schmidt): una receta de un episodio de
+        # hospitalización, su alta, o una urgencia NO es para retiro por
+        # Gestión Territorial aunque esté vigente (SOLICITADA/PENDIENTE) —
+        # GT es solo para el control crónico ambulatorio del paciente. Se
+        # detecta por "Procedencia" (índice 15: ATENCION ABIERTA/
+        # HOSPITALIZADO/URGENCIA), con "Tipo Atención" (índice 8, p.ej.
+        # "ALTA HOSPITALIZADO") como respaldo si Procedencia viniera vacía.
+        # Mismo criterio que revision_solicitudes._es_ambulatoria.
+        procedencia = r[15].strip().upper() if len(r) > 15 else ""
+        tipo_atencion = r[8].strip().upper() if len(r) > 8 else ""
+        if procedencia in ("HOSPITALIZADO", "URGENCIA"):
+            continue
+        if tipo_atencion.startswith("ALTA HOSPITAL") or tipo_atencion == "HOSPITALIZADO":
+            continue
         # Pedido por el usuario 03-08-2026: exigir que "Fecha Entrega"
         # (columna índice 13, confirmada por captura de pantalla —
         # inmediatamente después de "Fecha Ingreso") caiga en 2026 — una
@@ -344,7 +435,7 @@ async def _descargar_una(page, n_receta, dest_path, debug):
     return True
 
 
-async def _main_async(estab, recetas, debug, rut=None, ruts=None):
+async def _main_async(estab, recetas, debug, rut=None, ruts=None, obs_por_rut=None):
     carpeta_local = _CARPETA_LOCAL.get(estab.upper())
     if not carpeta_local:
         print(f"[ERROR] '{estab}' no está en el mapeo de establecimientos.")
@@ -398,6 +489,12 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None):
         rut_targets = ([(rut, "")] if rut else []) + list(ruts or [])
         encontrados_por_rut = {}
         fallidos_tecnicos = set()
+        # Nº receta -> (rut, estado, fecha_entrega) vistos en la búsqueda en
+        # vivo — se usa después para estampar cada PDF con la última Fecha
+        # Entrega y, si el RUT tiene una Observación en obs_por_rut, esa
+        # también (pedido por el usuario 04-08-2026).
+        datos_por_receta = {}
+        obs_por_rut = obs_por_rut or {}
         debug_restantes = 3  # capar volcados de debug para no llenar disco
         for rut_i, nombre_i in rut_targets:
             etiqueta = nombre_i or rut_i
@@ -429,6 +526,7 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None):
             encontrados_por_rut[rut_i] = vigentes
             for n_receta, estado, fecha_entrega in vigentes:
                 print(f"  Encontrada: receta {n_receta} — Estado: {estado} — Fecha Entrega: {fecha_entrega}")
+                datos_por_receta[n_receta] = (rut_i, estado, fecha_entrega)
             recetas = list(recetas) + [(n, nombre_i) for n, _, _ in vigentes]
 
         if not recetas:
@@ -453,6 +551,19 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None):
                 exito = False
             if exito:
                 ok += 1
+                lineas_sello = []
+                datos = datos_por_receta.get(n_receta)
+                if datos:
+                    rut_datos, estado_datos, fecha_datos = datos
+                    lineas_sello.append(f"SSASUR — Estado: {estado_datos} — Última Fecha Entrega: {fecha_datos}")
+                    obs = obs_por_rut.get(rut_datos)
+                    if obs:
+                        lineas_sello.append(f"Observación: {obs}")
+                if lineas_sello:
+                    try:
+                        _estampar_pdf(dest, lineas_sello)
+                    except Exception as e:
+                        print(f"  [AVISO] {n_receta}: no se pudo estampar el PDF ({e}).")
                 descargados.append(dest)
             else:
                 fallidos.append(n_receta)
@@ -554,8 +665,10 @@ def main():
     a = ap.parse_args()
 
     ruts = None
+    obs_por_rut = {}
     if a.rut_live_desde_feedback:
         ruts = _leer_ruts_de_feedback(a.rut_live_desde_feedback)
+        obs_por_rut = _leer_observaciones_de_feedback(a.rut_live_desde_feedback)
         recetas = []
     elif a.feedback:
         recetas = _leer_recetas_de_feedback(a.feedback)
@@ -573,7 +686,7 @@ def main():
         print(f"{len(recetas)} receta(s) a descargar.")
     if ruts:
         print(f"{len(ruts)} RUT(s) a buscar en vivo en SSASUR.")
-    asyncio.run(_main_async(a.estab, recetas, a.debug, rut=a.rut, ruts=ruts))
+    asyncio.run(_main_async(a.estab, recetas, a.debug, rut=a.rut, ruts=ruts, obs_por_rut=obs_por_rut))
 
 
 if __name__ == "__main__":
