@@ -28,6 +28,7 @@ import asyncio
 import datetime
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -123,19 +124,89 @@ def _split_rut(rut):
     return numero, dv
 
 
-async def _buscar_vigentes_por_rut(page, rut, origen_filtro="PITRUFQUEN HOSP."):
+DEBUG_DIR = Path(MAESTRO_DIR) / "debug_ssasur_receta"
+
+
+async def _volcar_debug(page, tag):
+    """Guarda screenshot + HTML del estado actual de la página — para
+    diagnosticar con evidencia real un fallo de búsqueda en vivo (SPA de
+    SSASUR) en vez de seguir adivinando selectores a ciegas."""
+    try:
+        DEBUG_DIR.mkdir(exist_ok=True)
+        await page.screenshot(path=str(DEBUG_DIR / f"{tag}.png"), full_page=True)
+        html = await page.content()
+        (DEBUG_DIR / f"{tag}.html").write_text(html, encoding="utf-8")
+        print(f"  [DEBUG] Guardado {tag}.png / {tag}.html en {DEBUG_DIR}")
+    except Exception as e:
+        print(f"  [DEBUG] No pude volcar debug para {tag}: {e}")
+
+
+async def _esperar_tabla_resultados(page, timeout=20_000):
+    """Espera el ciclo de carga AJAX de #tablaResultados (aparece el
+    indicador 'Cargando', luego desaparece).
+
+    04-08-2026: esperar solo a que 'Cargando' DESAPAREZCA es una carrera —
+    si el AJAX todavía no insertó el indicador cuando se evalúa la función,
+    la condición ya es verdadera y la espera termina de inmediato, antes de
+    que la tabla realmente cargue (confirmado con captura: tabla en '0 de 0
+    registros' con el spinner recién apareciendo). Se espera primero a que
+    'Cargando' APAREZCA (timeout corto, se ignora si la respuesta fue tan
+    rápida que nunca se alcanzó a ver) y solo después a que desaparezca."""
+    try:
+        await page.wait_for_function(
+            "() => document.body.innerText.includes('Cargando')",
+            timeout=2_000,
+        )
+    except Exception:
+        pass
+    await page.wait_for_function(
+        "() => !document.body.innerText.includes('Cargando')",
+        timeout=timeout,
+    )
+    await page.wait_for_timeout(500)
+
+
+async def _buscar_vigentes_por_rut(page, rut, origen_filtro="PITRUFQUEN HOSP.", debug_tag=None):
     """Busca por RUN o ID Único de Paciente (pestaña activa por defecto en
     Consultar Receta — confirmado en vivo 23-07-2026) y devuelve las
     recetas NO entregadas del establecimiento de origen indicado — el caso
     de uso real: encontrar la receta más nueva de un RUT que SSASUR aún no
     despachó, cuando ni siquiera aparece todavía en el CSV local. La tabla
     de resultados viene ordenada por Nº de receta descendente (las más
-    nuevas primero), por eso basta con mirar la primera página."""
+    nuevas primero), por eso basta con mirar la primera página.
+
+    03-08-2026: confirmado en vivo con captura de pantalla del usuario — la
+    tabla de resultados SÍ es la esperada (columnas Establecimiento
+    Origen/.../Estado/.../Fecha Ingreso/Fecha Entrega, con "Estado" en el
+    índice 9 tal como asumía este código: n_receta=r[0], origen=r[1],
+    estado=r[9]) y la ruta "Resultados > por Run o ID Único de Paciente" es
+    el destino legítimo tras buscar — no es una "salida" a una pantalla
+    ajena. El fallo real es que, sin clickear explícitamente la pestaña
+    "Run" antes de llenar el formulario, la búsqueda no toma el campo
+    correcto y devuelve 0 filas para prácticamente todos los RUT (probado
+    revirtiendo el clic: mismo patrón de "0 encontrado" que sin el fix).
+    Clickear la pestaña SÍ ayuda (probado: pasa de 0 a encontrar casos
+    reales) — lo que rompía todo en un intento anterior fue exigir que
+    #rut quedara "visible" según el criterio estricto de Playwright antes
+    de llenar; sin esa espera, fill() funciona bien."""
+    for sel in ('a:has-text("Run")', 'button:has-text("Run")', '[role=tab]:has-text("Run")'):
+        try:
+            await page.click(sel, timeout=3_000)
+            await page.wait_for_timeout(300)
+            break
+        except Exception:
+            continue
+    if debug_tag:
+        await _volcar_debug(page, f"{debug_tag}_1_tras_click_run")
     numero, dv = _split_rut(rut)
     await page.fill("#rut", numero)
     await page.fill("#dv", dv)
+    if debug_tag:
+        await _volcar_debug(page, f"{debug_tag}_2_tras_llenar")
     await AS._click_primero(page, ('button:has-text("Buscar"):visible', 'a:has-text("Buscar"):visible'), "Buscar")
     await page.wait_for_load_state("networkidle")
+    if debug_tag:
+        await _volcar_debug(page, f"{debug_tag}_3_tras_buscar")
     try:
         # Corregido 31-07-2026: exigir >=1 fila para dar por "cargada" la
         # tabla es incorrecto — un RUT con CERO recetas vigentes (resultado
@@ -143,14 +214,61 @@ async def _buscar_vigentes_por_rut(page, rut, origen_filtro="PITRUFQUEN HOSP."):
         # agotaba el timeout, disparando el [AVISO] aunque la búsqueda haya
         # funcionado bien. Ahora solo se espera a que desaparezca el
         # indicador "Cargando"; la tabla vacía se lee después como 0 filas.
-        await page.wait_for_function(
-            "() => !document.body.innerText.includes('Cargando')",
-            timeout=20_000,
-        )
+        await _esperar_tabla_resultados(page)
     except Exception:
-        print(f"  [AVISO] RUT {rut}: no cargó la tabla de resultados a tiempo.")
-        return []
-    await page.wait_for_timeout(500)
+        print(f"  [AVISO] RUT {rut}: no cargó la tabla de resultados a tiempo (url={page.url}).")
+        if debug_tag:
+            await _volcar_debug(page, debug_tag)
+        return None
+
+    existe_tabla = await page.evaluate("() => !!document.querySelector('#tablaResultados')")
+    if not existe_tabla:
+        print(f"  [AVISO] RUT {rut}: no encontré #tablaResultados en la página actual (url={page.url}).")
+        if debug_tag:
+            await _volcar_debug(page, debug_tag)
+        return None
+
+    # Pedido por el usuario 04-08-2026: en vez de traer TODAS las filas del
+    # RUT (hasta 300+ recetas, mezclando otros establecimientos de origen
+    # entre medio) y filtrar en Python, usar el propio filtro de columna
+    # "Establecimiento Origen" del sitio (select2 sobre un <select> oculto
+    # con opciones fijas como "PITRUFQUEN HOSP.", confirmado en vivo con
+    # captura de pantalla). Más simple y evita perder una receta vigente de
+    # Pitrufquén que quedara fuera de las primeras filas de una tabla sin
+    # filtrar. Se ubica el <select> por su opción (no por id, que el sitio
+    # genera dinámicamente y cambia entre cargas).
+    if origen_filtro:
+        filtro_aplicado = await page.evaluate(
+            """(valor) => {
+                const t = document.querySelector('#tablaResultados');
+                if (!t) return false;
+                const wrapper = document.querySelector('#tablaResultados_wrapper') || t;
+                const selects = wrapper.querySelectorAll('select');
+                for (const s of selects) {
+                    if ([...s.options].some(o => o.value === valor)) {
+                        s.value = valor;
+                        if (window.jQuery) { window.jQuery(s).trigger('change'); }
+                        s.dispatchEvent(new Event('change', {bubbles: true}));
+                        return true;
+                    }
+                }
+                return false;
+            }""",
+            origen_filtro,
+        )
+        if filtro_aplicado:
+            try:
+                await _esperar_tabla_resultados(page)
+            except Exception:
+                print(f"  [AVISO] RUT {rut}: el filtro de Establecimiento Origen no recargó la tabla a tiempo (url={page.url}).")
+                if debug_tag:
+                    await _volcar_debug(page, debug_tag)
+                return None
+        elif debug_tag:
+            print(f"  [AVISO] RUT {rut}: no encontré el filtro de Establecimiento Origen — se sigue filtrando en Python.")
+
+    if debug_tag:
+        await _volcar_debug(page, f"{debug_tag}_4_tras_filtro_origen")
 
     filas = await page.evaluate(r"""() => {
       const t = document.querySelector('#tablaResultados');
@@ -168,7 +286,14 @@ async def _buscar_vigentes_por_rut(page, rut, origen_filtro="PITRUFQUEN HOSP."):
             continue
         if origen_filtro and origen_filtro.upper() not in origen.upper():
             continue
-        vigentes.append((n_receta, estado))
+        # Pedido por el usuario 03-08-2026: exigir que "Fecha Entrega"
+        # (columna índice 13, confirmada por captura de pantalla —
+        # inmediatamente después de "Fecha Ingreso") caiga en 2026 — una
+        # receta vigente pero con fecha de entrega de otro año no cuenta.
+        fecha_entrega = r[13].strip() if len(r) > 13 else ""
+        if not fecha_entrega.endswith("2026"):
+            continue
+        vigentes.append((n_receta, estado, fecha_entrega))
     return vigentes
 
 
@@ -272,22 +397,39 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None):
 
         rut_targets = ([(rut, "")] if rut else []) + list(ruts or [])
         encontrados_por_rut = {}
+        fallidos_tecnicos = set()
+        debug_restantes = 3  # capar volcados de debug para no llenar disco
         for rut_i, nombre_i in rut_targets:
             etiqueta = nombre_i or rut_i
             print(f"\nBuscando recetas vigentes de {etiqueta} (RUT {rut_i}, origen PITRUFQUEN HOSP.)...")
-            try:
-                await _ir_a_consultar_receta()
-                vigentes = await _buscar_vigentes_por_rut(page, rut_i)
-            except Exception as e:
-                print(f"  [ERROR] {rut_i}: {e}")
-                encontrados_por_rut[rut_i] = []
-                continue
-            if not vigentes:
+            vigentes = None
+            # 3 intentos: el sitio a veces deja la pantalla en un estado
+            # "stale" (campo oculto, tabla anterior, redirección a
+            # resultados) que un solo reintento no siempre alcanza a
+            # limpiar — confirmado en vivo 03-08-2026, mismo caso.
+            for intento in (1, 2, 3):
+                try:
+                    await _ir_a_consultar_receta()
+                    tag = None
+                    if debug_restantes > 0:
+                        tag = re.sub(r"[^A-Za-z0-9]+", "_", f"{rut_i}_{nombre_i}_i{intento}")
+                        debug_restantes -= 1
+                    vigentes = await _buscar_vigentes_por_rut(page, rut_i, debug_tag=tag)
+                except Exception as e:
+                    print(f"  [ERROR] {rut_i}: {e}")
+                    vigentes = None
+                if vigentes is not None:
+                    break
+            if vigentes is None:
+                print(f"  [ERROR] {rut_i}: la búsqueda no se completó tras {intento} intentos — requiere revisión manual.")
+                vigentes = []
+                fallidos_tecnicos.add(rut_i)
+            elif not vigentes:
                 print("  No se encontraron recetas vigentes (no ENTREGADA/CERRADA/ANULADA) para ese RUT.")
             encontrados_por_rut[rut_i] = vigentes
-            for n_receta, estado in vigentes:
-                print(f"  Encontrada: receta {n_receta} — Estado: {estado}")
-            recetas = list(recetas) + [(n, nombre_i) for n, _ in vigentes]
+            for n_receta, estado, fecha_entrega in vigentes:
+                print(f"  Encontrada: receta {n_receta} — Estado: {estado} — Fecha Entrega: {fecha_entrega}")
+            recetas = list(recetas) + [(n, nombre_i) for n, _, _ in vigentes]
 
         if not recetas:
             print("No hay recetas para descargar.")
@@ -337,27 +479,56 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None):
     if ruts:
         fecha_str = datetime.date.today().strftime("%Y-%m-%d")
         resumen_path = os.path.join(salida_dir, f"Resumen_Busqueda_SSASUR_{carpeta_local}_{fecha_str}.xlsx")
-        _escribir_resumen_busqueda(resumen_path, rut_targets, encontrados_por_rut)
+        _escribir_resumen_busqueda(resumen_path, rut_targets, encontrados_por_rut, fallidos_tecnicos)
         print(f"Guardado: {resumen_path}")
+        if fallidos_tecnicos:
+            print(f"[AVISO] {len(fallidos_tecnicos)} RUT no se pudieron buscar por falla técnica del sitio "
+                  f"(no es un '0 recetas' real) — quedan marcados en el Resumen para reintentar.")
+
+    # Pedido por el usuario 04-08-2026: subir a Drive en la MISMA corrida —
+    # antes había que acordarse de correr publicar_drive.py --solo-gt a
+    # mano y el caso real fue que no se subió nada. Mismo patrón que usa
+    # Clozapina/Centinela en AUTO_SSASUR.py.
+    if descargados:
+        pub_py = os.path.join(MAESTRO_DIR, "publicar_drive.py")
+        if os.path.exists(pub_py) and os.path.exists(os.path.join(MAESTRO_DIR, "token_drive.json")):
+            print("\n[Drive] Sincronizando Revisión de Solicitudes a Drive...")
+            pret = subprocess.run(
+                [sys.executable, pub_py, "--solo-gt"],
+                cwd=MAESTRO_DIR,
+                env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+            )
+            if pret.returncode != 0:
+                print(f"  [aviso] publicar_drive.py --solo-gt terminó con código {pret.returncode}")
 
 
-def _escribir_resumen_busqueda(path, rut_targets, encontrados_por_rut):
+def _escribir_resumen_busqueda(path, rut_targets, encontrados_por_rut, fallidos_tecnicos=None):
     """Feedback de la búsqueda EN VIVO por RUT en SSASUR — una fila por
     paciente con las recetas vigentes (no ENTREGADA/CERRADA/ANULADA)
     encontradas en origen Pitrufquén, o el aviso de que no se encontró
-    ninguna (para revisión manual del QF)."""
+    ninguna (para revisión manual del QF).
+
+    Corregido 03-08-2026: distingue "se buscó y no había ninguna vigente"
+    (resultado real) de "la búsqueda no se completó por falla técnica del
+    sitio" (fallidos_tecnicos) — antes ambos casos se escribían con el mismo
+    texto de "sin recetas vigentes", lo que hacía indistinguible un
+    resultado confiable de uno que había que reintentar."""
+    fallidos_tecnicos = fallidos_tecnicos or set()
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Resumen"
-    ws.append(["Paciente", "RUT", "Recetas vigentes encontradas (Nº — Estado)", "Observación"])
+    ws.append(["Paciente", "RUT", "Recetas vigentes encontradas (Nº — Estado — Fecha Entrega)", "Observación"])
     for cell in ws[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="4472C4")
     for rut_i, nombre_i in rut_targets:
         vigentes = encontrados_por_rut.get(rut_i, [])
         if vigentes:
-            texto = "; ".join(f"{n} — {e}" for n, e in vigentes)
+            texto = "; ".join(f"{n} — {e} — {fe}" for n, e, fe in vigentes)
             obs = "PDF descargado y combinado." if len(vigentes) == 1 else "Varias vigentes — se descargaron todas, revisar cuál corresponde."
+        elif rut_i in fallidos_tecnicos:
+            texto = ""
+            obs = "FALLA TÉCNICA: la búsqueda en SSASUR no se completó — reintentar, NO asumir que no tiene receta vigente."
         else:
             texto = ""
             obs = "Sin recetas vigentes en SSASUR (origen Pitrufquén) — revisar manualmente."

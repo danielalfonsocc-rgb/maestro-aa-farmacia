@@ -19,6 +19,9 @@ _gt_arbol_sync.json
 # ── Debug y temporales ────────────────────────────────────────────────────────
 debug_*.png
 _tmp_*.png
+# descargar_recetas_pdf.py --debug vuelca capturas/HTML con nombre de paciente
+# en el nombre de archivo (Ley 19.628) — NUNCA subir a este repo público.
+debug_ssasur_receta/
 ~$*.xlsx
 ~$*.xls
 
