@@ -2,6 +2,11 @@
 informe_completo_recetas*.csv
 reporte_de_stock_*.xlsx
 cantidad_de_productos_consumidos_en_centro_de_costo_farmacia*.xlsx
+# reporte_listado_actividades: crudo de Agenda Médica, 1 fila por atención de
+# paciente (trae RUT, Ley 19.628) — igual criterio que las 3 líneas de arriba.
+# El agregado sin RUT vive en Servicios_Farmaceuticos/ (ver línea de abajo).
+reporte_listado_actividades*.csv
+reporte_listado_actividades*.xlsx
 
 # ── GT crudo: su lugar es ../04_Farmacia_Gestion_Territorial/, no el repo.
 # Red de seguridad por si algún download manual/con nombre mal formado queda
@@ -53,6 +58,7 @@ token_sheets.json
 out_gt/
 Documentos_Generados/
 Centinela_Reportes/
+Servicios_Farmaceuticos/
 Programacion_AA/
 Conteo_Controlados/
 Informes_Controlados_AA/

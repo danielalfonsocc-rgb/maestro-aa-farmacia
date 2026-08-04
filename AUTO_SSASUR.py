@@ -50,6 +50,15 @@ Modos (CLI):
   · --no-stock-controlados  no baja el stock del día anterior para el conteo de
                        controlados (PASO 4d → Conteo_Controlados/stock_sistema.json)
   · --no-publicar      no publica en GitHub (debug)
+  · --servicios-farmaceuticos  fuerza el PASO 4e (recuento mensual QF, Agenda
+                       Médica) ignorando el gatillo de "primeros días hábiles
+                       del mes" — úsalo para la 1ª prueba supervisada o para
+                       reprocesar un mes puntual junto con --mes-servicios.
+  · --no-servicios-farmaceuticos  omite el PASO 4e por completo
+  · --mes-servicios MM-AAAA  mes objetivo del PASO 4e (default: mes calendario
+                       anterior a hoy)
+  · --debug-agenda     vuelca el formulario [DESCUBRIR …] y guarda screenshots
+                       del PASO 4e (Agenda Médica)
 
 El registro ISP de recetas cheque (recetas_cheque.py) corre como PASO 5d: usa
 la MISMA sábana ya descargada para agregar los folios cheque nuevos de Farmacia
@@ -75,6 +84,24 @@ YA lo corre solo, al final de su propio main() — agregarlo lo duplicaba.)
 NOTA: agente_duplicados.py y auditoria_duplicados_profunda.py (llaman a la API
 de Claude) NO corren aquí — se mantienen en sus .bat propios para ejecutarse
 a demanda y no gastar tokens en cada corrida de AUTO_SSASUR.
+
+PASO 4e — Servicios Farmacéuticos (recuento mensual QF): módulo NUEVO y
+separado (Agenda Médica, araucaniasur/agenda_medica) — no comparte sesión con
+RECETA/ABASTECIMIENTO. Dispara solo, con marcador + catch-up (mismo patrón que
+Centinela), en los primeros ~5 días corridos de cada mes: baja el listado de
+actividades del mes ANTERIOR completo (Proceso_nuevo → Hoja Diaria de
+Profesional → Tipo Reporte "Principalmente Actividades"), corre
+servicios_farmaceuticos.py (filtra ESPECIALIDAD='QUIMICO FARMACEUTICO', arma
+el recuento QF × actividad) y sube el agregado a Drive (SIN RUT — el reporte
+crudo con RUT de paciente NUNCA se publica, igual que la sábana de recetas).
+
+IMPORTANTE — 1ª corrida en vivo pendiente: los selectores del PASO 4e
+(entrar_agenda_medica, _fijar_establecimiento_hosp, _fijar_tipo_profesional_aps,
+_marcar_tipo_reporte_actividades) son heurísticos por TEXTO, nunca verificados
+contra el DOM real de Agenda Médica. Antes de dejarlo corriendo desatendido,
+corre una vez con `py AUTO_SSASUR.py --servicios-farmaceuticos --debug-agenda`
+delante de una persona y ajusta lo que no calce leyendo los volcados
+[DESCUBRIR] — mismo protocolo de bootstrap que ya se usó para GT y Controlados.
 ═══════════════════════════════════════════════════════════════
 """
 import asyncio
@@ -155,6 +182,241 @@ CONTROLADOS_URL = "https://www.ssasur.cl/receta/informes/controlados"
 CONTROLADOS_DIR = MAESTRO_DIR / "Informes_Controlados_AA"
 
 
+# ── SERVICIOS FARMACÉUTICOS · Agenda Médica (recuento mensual de actividades QF) ─
+# Módulo NUEVO y separado de RECETA/ABASTECIMIENTO: vive en otra app dentro de
+# SSASUR (araucaniasur/agenda_medica), con su propio menú "Proceso_nuevo" →
+# "Hoja Diaria de Profesional". A diferencia de los demás pasos, este NUNCA se
+# probó en vivo — los selectores de abajo son heurísticos (por TEXTO, mismo
+# patrón que _marcar_origen/_seleccionar_bodega_at_abierta) para maximizar la
+# chance de acertar a la primera, pero la 1ª corrida real DEBE hacerse con
+# --debug-agenda delante de una persona para leer los volcados [DESCUBRIR] y
+# ajustar lo que no calce — exactamente el mismo protocolo de bootstrap que ya
+# se usó para GT y Controlados (ver sus comentarios arriba).
+AGENDA_MEDICA_URL = "https://www.ssasur.cl/araucaniasur/agenda_medica/index_menu.php"
+SERVICIOS_MARCADOR = MAESTRO_DIR / "Servicios_Farmaceuticos" / "_ultimo_mes.json"
+SELS_PROCESO_NUEVO = ('a:has-text("Proceso_nuevo")', 'button:has-text("Proceso_nuevo")',
+                       ':text("Proceso_nuevo")', 'a:has-text("Proceso Nuevo")')
+SELS_HOJA_DIARIA = ('a:has-text("Hoja Diaria de Profesional")', ':text("Hoja Diaria de Profesional")',
+                     'a:has-text("Hoja Diaria")', ':text("Hoja Diaria")')
+
+
+async def entrar_agenda_medica(page):
+    """Dashboard → tarjeta AGENDA MÉDICA. Si no aparece ninguna tarjeta con ese
+    texto (el dashboard de SSASUR agrupa módulos por texto de botón, ver
+    entrar_modulo), cae a navegar directo por URL — con el mismo riesgo de
+    rebote/403 que ya se documentó para RCE si la sesión no queda acuñada al
+    proyecto correcto (ver notas de entrar_receta)."""
+    try:
+        await entrar_modulo(page, "AGENDA")
+        return
+    except Exception:
+        pass
+    print("  [info] No encontré tarjeta 'AGENDA' en el dashboard — navego directo por URL.")
+    await page.goto(AGENDA_MEDICA_URL)
+    await _networkidle(page)
+    await page.wait_for_timeout(1_500)
+    print(f"  ✓ En Agenda Médica: {page.url}")
+
+
+async def _abrir_hoja_diaria_profesional(page, debug=False):
+    """Proceso_nuevo → Hoja Diaria de Profesional. Devuelve True si el
+    formulario (Fecha Inicio/Termino, Tipo Profesional, Establecimiento, Tipo
+    Reporte) quedó visible."""
+    try:
+        await _click_primero(page, SELS_PROCESO_NUEVO, "Proceso_nuevo")
+        await page.wait_for_timeout(800)
+    except Exception:
+        if debug:
+            await _dump_formulario(page, "agenda-sin-proceso_nuevo")
+    try:
+        await _click_primero(page, SELS_HOJA_DIARIA, "Hoja Diaria de Profesional")
+    except Exception:
+        if debug:
+            await _dump_formulario(page, "agenda-sin-hoja_diaria")
+        return False
+    await _networkidle(page)
+    await page.wait_for_timeout(1_500)
+    ok = await page.evaluate(
+        "() => !!document.querySelector('select') && "
+        "/fecha\\s*inicio/i.test(document.body.innerText)"
+    )
+    if debug:
+        await _dump_formulario(page, "agenda-hoja_diaria")
+    return ok
+
+
+async def _fijar_establecimiento_hosp(page):
+    """Si el <select> de Establecimiento quedó en 'CESFAM PITRUFQUEN', lo
+    cambia a la opción 'PITRUFQUEN HOSP.'. Primero intenta elegirla
+    directamente en el MISMO select (funciona si es un <select> normal con
+    ambas opciones); si no está ahí, asume que es un widget con filtro de
+    texto y escribe 'HOSP.' en el input en blanco más cercano al select antes
+    de reintentar. Devuelve una etiqueta de lo que hizo, o None si no hizo falta
+    (ya estaba en HOSP.) — lanza aviso desde el llamador si no encontró nada."""
+    estado = await page.evaluate(r"""() => {
+      const isEstablecimiento = s => /establecimiento/i.test(
+        (s.id||'') + ' ' + (s.name||'') + ' ' +
+        (s.previousElementSibling ? s.previousElementSibling.textContent : '')
+      );
+      const selects = [...document.querySelectorAll('select')].filter(isEstablecimiento);
+      if (!selects.length) return {found: false};
+      const s = selects[0];
+      const actual = s.options[s.selectedIndex] ? s.options[s.selectedIndex].textContent : '';
+      if (/hosp/i.test(actual)) return {found: true, yaOk: true, actual};
+      const destino = [...s.options].find(o => /pitrufquen/i.test(o.textContent) && /hosp/i.test(o.textContent));
+      if (destino) {
+        s.value = destino.value;
+        s.dispatchEvent(new Event('change', {bubbles: true}));
+        return {found: true, cambiado: true, via: 'select-directo', actual: destino.textContent.trim()};
+      }
+      return {found: true, necesitaFiltro: true, selId: s.id || s.name, actual};
+    }""")
+    if not estado.get("found"):
+        return None
+    if estado.get("yaOk"):
+        return f"ya en HOSP. ({estado['actual'].strip()})"
+    if estado.get("cambiado"):
+        return f"cambiado directo → {estado['actual']}"
+    if estado.get("necesitaFiltro"):
+        # Widget con filtro de texto: escribe "HOSP." en el input en blanco más
+        # cercano al select de Establecimiento (heurística: el <input type=text>
+        # visible sin valor, más próximo en el DOM al select identificado).
+        try:
+            sel_id = estado.get("selId")
+            loc = page.locator(f"#{sel_id}") if sel_id else None
+            filtro = page.locator(
+                'xpath=//select[contains(translate(@id,"ESTABLECIMIENTO","establecimiento"),"establecimiento") '
+                'or contains(translate(@name,"ESTABLECIMIENTO","establecimiento"),"establecimiento")]'
+                '/following::input[@type="text" or not(@type)][1]'
+            )
+            if await filtro.count() == 0:
+                filtro = page.locator('input[type=text]:visible').first
+            await filtro.click()
+            await filtro.press("Control+A")
+            await filtro.type("HOSP.", delay=40)
+            await page.wait_for_timeout(600)
+        except Exception as e:
+            return f"[AVISO] necesitaba filtro de texto pero no pude escribirlo: {e}"
+        estado2 = await page.evaluate(r"""() => {
+          const s = [...document.querySelectorAll('select')].find(
+            s => /establecimiento/i.test((s.id||'') + ' ' + (s.name||''))
+          );
+          if (!s) return {found: false};
+          const destino = [...s.options].find(o => /pitrufquen/i.test(o.textContent) && /hosp/i.test(o.textContent));
+          if (destino) {
+            s.value = destino.value;
+            s.dispatchEvent(new Event('change', {bubbles: true}));
+            return {found: true, actual: destino.textContent.trim()};
+          }
+          return {found: true, actual: null};
+        }""")
+        if estado2.get("actual"):
+            return f"cambiado vía filtro de texto → {estado2['actual']}"
+        return "[AVISO] escribí 'HOSP.' pero no encontré la opción PITRUFQUEN HOSP. tras filtrar"
+    return None
+
+
+async def _fijar_tipo_profesional_aps(page):
+    """<select> Tipo Profesional → opción 'APS' (valor visto en la captura del
+    formulario que dio el usuario — puede haber otras opciones tipo
+    'ESPECIALIDAD'; se deja tal cual si no encuentra 'APS')."""
+    return await page.evaluate(r"""() => {
+      const isTipoProf = s => /tipo\s*profesional/i.test(
+        (s.id||'') + ' ' + (s.name||'') + ' ' +
+        (s.previousElementSibling ? s.previousElementSibling.textContent : '')
+      );
+      const s = [...document.querySelectorAll('select')].find(isTipoProf);
+      if (!s) return null;
+      const o = [...s.options].find(o => /^\s*aps\s*$/i.test(o.textContent));
+      if (!o) return {found: true, cambiado: false};
+      if (s.value !== o.value) {
+        s.value = o.value;
+        s.dispatchEvent(new Event('change', {bubbles: true}));
+      }
+      return {found: true, cambiado: true, actual: o.textContent.trim()};
+    }""")
+
+
+async def _marcar_tipo_reporte_actividades(page):
+    """Radio 'Tipo Reporte' → 'Principalmente Actividades' (según la captura
+    del formulario provista por el usuario)."""
+    return await page.evaluate(r"""() => {
+      for (const r of document.querySelectorAll('input[type=radio]')) {
+        const lbl = (r.labels && r.labels[0]) ? r.labels[0].textContent : '';
+        const meta = `${lbl} ${r.value || ''} ${r.id || ''}`;
+        if (/principalmente\s*actividades/i.test(meta)) {
+          if (!r.checked) r.click();
+          r.dispatchEvent(new Event('change', {bubbles: true}));
+          return true;
+        }
+      }
+      return false;
+    }""")
+
+
+async def paso_agenda_actividades(page, desde: str, hasta: str, debug=False):
+    """Agenda Médica → Proceso_nuevo → Hoja Diaria de Profesional. Fija fechas
+    (mes objetivo), Tipo Profesional=APS, Establecimiento=PITRUFQUEN HOSP.,
+    Tipo Reporte=Principalmente Actividades, Buscar, descarga Excel.
+    Devuelve (archivo|None, n_filas): n=0 sin datos; n=-1 error."""
+    print(f"\n[Servicios Farmacéuticos] Agenda Médica — Hoja Diaria de Profesional ({desde} → {hasta})")
+    await entrar_agenda_medica(page)
+    if not await _abrir_hoja_diaria_profesional(page, debug):
+        print("  [ERROR] No cargó el formulario Hoja Diaria de Profesional.")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_agenda.png"))
+        return (None, -1)
+
+    await _set_fechas(page, desde, hasta)
+    print(f"  Fechas: {desde} → {hasta}")
+    await page.wait_for_timeout(500)
+
+    estab = await _fijar_establecimiento_hosp(page)
+    print(f"  Establecimiento → {estab}" if estab else "  [AVISO] No encontré el select de Establecimiento.")
+
+    tipo_prof = await _fijar_tipo_profesional_aps(page)
+    if tipo_prof and tipo_prof.get("cambiado"):
+        print(f"  Tipo Profesional → {tipo_prof['actual']}")
+    elif not tipo_prof:
+        print("  [AVISO] No encontré el select de Tipo Profesional — sigo con el default.")
+
+    marcado = await _marcar_tipo_reporte_actividades(page)
+    print("  Tipo Reporte → Principalmente Actividades" if marcado
+          else "  [AVISO] No encontré el radio 'Principalmente Actividades'.")
+    await page.wait_for_timeout(500)
+
+    if debug:
+        await _dump_formulario(page, "agenda-pre-buscar")
+
+    try:
+        await _click_primero(page, SELS_BUSCAR, "Buscar")
+    except Exception as e:
+        print(f"  [ERROR] No encontré el botón Buscar: {e}")
+        await _dump_formulario(page, "agenda-sin-buscar")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_agenda.png"))
+        return (None, -1)
+    await _networkidle(page)
+    await page.wait_for_timeout(2_500)
+    if debug:
+        await _dump_formulario(page, "agenda-post-buscar")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_agenda.png"))
+
+    n = await _filas_resultado(page)
+    if n == 0:
+        print("  (sin actividades en el rango — no hay Excel que bajar)")
+        return (None, 0)
+
+    d, h = desde.replace("/", "-"), hasta.replace("/", "-")
+    dest = MAESTRO_DIR / f"reporte_listado_actividades_{d}_{h}.xlsx"
+    try:
+        await descargar_como(page, dest,
+                             lambda: _click_primero(page, SELS_EXCEL, "Excel", force=True))
+    except Exception as e:
+        print(f"  [ERROR] No se pudo bajar el Excel: {e}")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_agenda.png"))
+        return (None, -1)
+    return (dest, _contar_filas_xlsx(dest))
+
+
 def fmt(d: date) -> str:
     return d.strftime("%d/%m/%Y")
 
@@ -185,6 +447,28 @@ def dia_habil_anterior(d: date) -> date:
     while ant.weekday() >= 5 or ant in fer:
         ant -= timedelta(days=1)
     return ant
+
+
+def primer_dia_habil(anio: int, mes: int) -> date:
+    """Primer día hábil (lunes-viernes, sin feriado chileno) de un mes."""
+    fer = _feriados_chile()
+    d = date(anio, mes, 1)
+    while d.weekday() >= 5 or d in fer:
+        d += timedelta(days=1)
+    return d
+
+
+def _mes_anterior(hoy: date) -> tuple[int, int]:
+    """(año, mes) del mes calendario anterior a `hoy`."""
+    if hoy.month == 1:
+        return hoy.year - 1, 12
+    return hoy.year, hoy.month - 1
+
+
+def _ultimo_dia_mes(anio: int, mes: int) -> date:
+    if mes == 12:
+        return date(anio, 12, 31)
+    return date(anio, mes + 1, 1) - timedelta(days=1)
 
 
 def rango_backlog_gt(hoy: date) -> tuple[date, date] | None:
@@ -864,6 +1148,14 @@ async def main():
     # que alimenta conteo_controlados_app.py, con --no-stock-controlados.
     no_stock_controlados = "--no-stock-controlados" in sys.argv
     debug_gt = "--debug-gt" in sys.argv        # volcados [DESCUBRIR …] + screenshots
+    # Servicios Farmacéuticos (Agenda Médica): dispara solo en los primeros días
+    # hábiles del mes (catch-up si el 1er día hábil no corrió), o forzado con
+    # --servicios-farmaceuticos (ignora el gatillo — sirve para la 1ª prueba
+    # supervisada y para reprocesar un mes puntual con --mes-servicios).
+    forzar_servicios = "--servicios-farmaceuticos" in sys.argv
+    no_servicios = "--no-servicios-farmaceuticos" in sys.argv
+    debug_agenda = "--debug-agenda" in sys.argv or debug_gt
+    _mes_servicios_arg = _arg_val("--mes-servicios")   # "MM-AAAA", opcional
     _fecha   = _arg_val("--fecha")             # atajo: mismo día en desde/hasta
     today = date.today()
     ayer  = today - timedelta(days=1)
@@ -1374,6 +1666,94 @@ async def main():
                     import traceback
                     print(f"  [aviso] Consolidado Clozapina falló: {e}")
                     traceback.print_exc()
+
+        # ── PASO 4e — SERVICIOS FARMACÉUTICOS (mensual, Agenda Médica) ──────────
+        # Recuento de actividades QF del MES ANTERIOR. Igual que Centinela
+        # (semanal): dispara en los primeros días hábiles del mes con un
+        # marcador para no duplicar, y hace catch-up si el 1er día hábil no
+        # corrió (PC apagado, sesión no lista, etc.). --servicios-farmaceuticos
+        # fuerza la corrida ignorando el gatillo (para la 1ª prueba supervisada
+        # o para reprocesar un mes puntual con --mes-servicios MM-AAAA).
+        if no_servicios:
+            print("\n[4e/9] Servicios Farmacéuticos (Agenda Médica) — omitido (--no-servicios-farmaceuticos).")
+        else:
+            import json as _json
+            if _mes_servicios_arg:
+                _mm, _aaaa = _mes_servicios_arg.split("-")
+                anio_srv, mes_srv = int(_aaaa), int(_mm)
+            else:
+                anio_srv, mes_srv = _mes_anterior(today)
+
+            marcador = SERVICIOS_MARCADOR
+            ya_generado = False
+            if marcador.exists():
+                try:
+                    prev = _json.loads(marcador.read_text(encoding="utf-8"))
+                    ya_generado = (prev.get("anio") == anio_srv and prev.get("mes") == mes_srv)
+                except Exception:
+                    ya_generado = False
+
+            primer_habil = primer_dia_habil(today.year, today.month)
+            dentro_ventana = today <= primer_habil + timedelta(days=4)   # catch-up: primeros ~5 días hábiles/corridos del mes
+
+            if forzar_servicios:
+                disparar = True
+                motivo = "forzado (--servicios-farmaceuticos)"
+            elif ya_generado:
+                disparar = False
+                motivo = f"ya generado para {mes_srv:02d}-{anio_srv} — omitido"
+            elif not dentro_ventana:
+                disparar = False
+                motivo = f"fuera de ventana mensual (1er día hábil fue {fmt(primer_habil)}) — se generará el próximo mes"
+            else:
+                disparar = True
+                motivo = "catch-up" if today != primer_habil else "1er día hábil del mes (ciclo normal)"
+
+            if not disparar:
+                print(f"\n[4e/9] Servicios Farmacéuticos — {motivo}.")
+            else:
+                print(f"\n[4e/9] Servicios Farmacéuticos — {motivo}...")
+                desde_srv = fmt(date(anio_srv, mes_srv, 1))
+                hasta_srv = fmt(_ultimo_dia_mes(anio_srv, mes_srv))
+                try:
+                    dest_srv, n_srv = await paso_agenda_actividades(page, desde_srv, hasta_srv, debug_agenda)
+                except Exception as e:
+                    print(f"  [ERROR] Agenda Médica falló: {e}")
+                    dest_srv, n_srv = None, -1
+
+                if dest_srv:
+                    print(f"  ✓ {dest_srv.name} ({n_srv} filas)")
+                    env_utf8_srv = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+                    resumen_py = MAESTRO_DIR / "servicios_farmaceuticos.py"
+                    sret = subprocess.run(
+                        [sys.executable, str(resumen_py), str(dest_srv), "--mes", f"{mes_srv:02d}-{anio_srv}"],
+                        cwd=str(MAESTRO_DIR), env=env_utf8_srv,
+                    )
+                    if sret.returncode == 0:
+                        try:
+                            marcador.parent.mkdir(parents=True, exist_ok=True)
+                            marcador.write_text(_json.dumps(
+                                {"anio": anio_srv, "mes": mes_srv, "fecha": today.isoformat()},
+                                ensure_ascii=False, indent=2), encoding="utf-8")
+                        except Exception as e:
+                            print(f"  [aviso] no se pudo escribir el marcador mensual: {e}")
+                        pub_py_srv = MAESTRO_DIR / "publicar_drive.py"
+                        if pub_py_srv.exists() and (MAESTRO_DIR / "token_drive.json").exists():
+                            print("  [Servicios Farmacéuticos] Sincronizando reporte a Drive...")
+                            pret_srv = subprocess.run(
+                                [sys.executable, str(pub_py_srv), "--solo-servicios"],
+                                cwd=str(MAESTRO_DIR), env=env_utf8_srv,
+                            )
+                            if pret_srv.returncode != 0:
+                                print(f"  [aviso] publicar_drive.py --solo-servicios terminó con código {pret_srv.returncode}")
+                    else:
+                        print(f"  [aviso] servicios_farmaceuticos.py terminó con código {sret.returncode} — no se marca el mes como hecho")
+                elif n_srv == 0:
+                    print(f"  · Sin actividades en Agenda Médica para {desde_srv} → {hasta_srv}.")
+                else:
+                    print("  [AVISO] No se generó el Excel de Agenda Médica — revisa debug_agenda.png.")
+                    print("  Si es la 1ª corrida: vuelve a intentar con --servicios-farmaceuticos --debug-agenda")
+                    print("  y revisa los volcados [DESCUBRIR] para ajustar los selectores en AUTO_SSASUR.py.")
 
         await browser.close()
 
