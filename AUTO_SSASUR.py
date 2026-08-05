@@ -1582,71 +1582,93 @@ async def main():
                         cargar_despachos_clozapina, extraer_hemograma_pdf,
                         construir_fila, guardar_excel, FilaConsolidada, ruta_archivo_mes,
                     )
-                    despachos_cloz = cargar_despachos_clozapina(str(MAESTRO_DIR), desde=date(today.year, today.month, 1))
-                    por_paciente_cloz = despachos_cloz.sort_values("fecha_despacho").groupby("run_normalizado").last()
-                    por_paciente_cloz = por_paciente_cloz.reset_index().sort_values("fecha_despacho")
-                    print(f"  {len(por_paciente_cloz)} paciente(s) con Clozapina este mes.")
-
                     def _run_sin_guion_cloz(run):
                         return run.replace("-", "").replace(".", "")
 
-                    _hay_pendientes = any(
-                        not (HEMOGRAMAS_DIR / f"{_run_sin_guion_cloz(r)}.pdf").exists()
-                        for r in por_paciente_cloz["run_normalizado"]
-                    )
-                    if not _hay_pendientes:
-                        # Mismo criterio que clozapina_hce_hemogramas.py standalone:
-                        # si TODOS los pacientes ya tienen hemograma cacheado, no hace
-                        # falta entrar a HCE ni esperar Firma Electrónica (que puede
-                        # quedar colgada o fallar si no hay nadie frente al equipo).
-                        print("  Sin despachos nuevos — todos cacheados. No se entra a HCE.")
-                        filas_minsal_cloz, filas_obs_cloz, _fallidos_cloz = _construir_filas_desde_cache(por_paciente_cloz)
-                        _ruta_cloz = ruta_archivo_mes(today)
-                        guardar_excel(filas_minsal_cloz, filas_obs_cloz, str(_ruta_cloz))
-                        print(f"  ✓ {_ruta_cloz.name} ({len(por_paciente_cloz)} pacientes"
-                              f" — 0 nuevos buscados en HCE, {len(por_paciente_cloz)} ya cacheados)")
-                    else:
-                        await entrar_hce(page)
-                        await esperar_firma_electronica(page)
-                        filas_minsal_cloz, filas_obs_cloz = [], []
-                        nuevos_cloz = 0
-                        for _, prow in por_paciente_cloz.iterrows():
-                            run = prow["run_normalizado"]
-                            run_sin_guion = run.replace("-", "").replace(".", "")
-                            run_num, dv = _run_a_partes(run)
-                            nombre = f"{prow['Nombre']} {prow['Apellido Paterno']} {prow['Apellido Materno']}"
-                            hemograma = None
-                            pdf_cacheado = HEMOGRAMAS_DIR / f"{run_sin_guion}.pdf"
-                            if pdf_cacheado.exists():
-                                # Ya se descargó en una corrida anterior — solo se busca
-                                # en HCE lo de los despachos NUEVOS (sin PDF todavía).
-                                try:
-                                    hemograma = extraer_hemograma_pdf(pdf_cacheado)
-                                except Exception:
-                                    hemograma = None
-                            if hemograma is None:
-                                nuevos_cloz += 1
-                                if await buscar_paciente(page, run_num, dv):
-                                    pdf_path = await descargar_hemograma_mas_reciente(context, page, run_sin_guion)
-                                    if pdf_path:
-                                        try:
-                                            hemograma = extraer_hemograma_pdf(pdf_path)
-                                        except Exception as e:
-                                            print(f"    [aviso] no se pudo leer PDF de {run_sin_guion}: {e}")
-                                await limpiar_busqueda(page)
-                            fc = FilaConsolidada(
-                                run=run, nombre=nombre,
-                                fecha_despacho=prow["fecha_despacho"].date() if prow["fecha_despacho"] == prow["fecha_despacho"] else None,
-                                dosis_mg_dia=prow["dosis_mg_dia"], cuota_receta=prow["cuota_receta"] or "",
-                                posologia_texto=prow["posologia_texto"] or "", hemograma=hemograma,
-                            )
-                            fm, fo = construir_fila(fc, today)
-                            filas_minsal_cloz.append(fm)
-                            filas_obs_cloz.append(fo)
-                        _ruta_cloz = ruta_archivo_mes(today)
-                        guardar_excel(filas_minsal_cloz, filas_obs_cloz, str(_ruta_cloz))
-                        print(f"  ✓ {_ruta_cloz.name} ({len(por_paciente_cloz)} pacientes"
-                              f" — {nuevos_cloz} nuevos buscados en HCE, {len(por_paciente_cloz) - nuevos_cloz} ya cacheados)")
+                    async def _procesar_mes_clozapina(anio, mes):
+                        desde_mes = date(anio, mes, 1)
+                        hasta_mes = (date(anio + (mes == 12), (mes % 12) + 1, 1) - timedelta(days=1))
+                        despachos_cloz = cargar_despachos_clozapina(str(MAESTRO_DIR), desde=desde_mes, hasta=hasta_mes)
+                        if despachos_cloz.empty:
+                            return
+                        por_paciente_cloz = despachos_cloz.sort_values("fecha_despacho").groupby("run_normalizado").last()
+                        por_paciente_cloz = por_paciente_cloz.reset_index().sort_values("fecha_despacho")
+                        print(f"  {len(por_paciente_cloz)} paciente(s) con Clozapina en {desde_mes.strftime('%m/%Y')}.")
+
+                        _hay_pendientes = any(
+                            not (HEMOGRAMAS_DIR / f"{_run_sin_guion_cloz(r)}.pdf").exists()
+                            for r in por_paciente_cloz["run_normalizado"]
+                        )
+                        if not _hay_pendientes:
+                            # Mismo criterio que clozapina_hce_hemogramas.py standalone:
+                            # si TODOS los pacientes ya tienen hemograma cacheado, no hace
+                            # falta entrar a HCE ni esperar Firma Electrónica (que puede
+                            # quedar colgada o fallar si no hay nadie frente al equipo).
+                            print("  Sin despachos nuevos — todos cacheados. No se entra a HCE.")
+                            filas_minsal_cloz, filas_obs_cloz, _fallidos_cloz = _construir_filas_desde_cache(por_paciente_cloz)
+                            _ruta_cloz = ruta_archivo_mes(desde_mes)
+                            guardar_excel(filas_minsal_cloz, filas_obs_cloz, str(_ruta_cloz))
+                            print(f"  ✓ {_ruta_cloz.name} ({len(por_paciente_cloz)} pacientes"
+                                  f" — 0 nuevos buscados en HCE, {len(por_paciente_cloz)} ya cacheados)")
+                        else:
+                            await entrar_hce(page)
+                            await esperar_firma_electronica(page)
+                            filas_minsal_cloz, filas_obs_cloz = [], []
+                            nuevos_cloz = 0
+                            for _, prow in por_paciente_cloz.iterrows():
+                                run = prow["run_normalizado"]
+                                run_sin_guion = run.replace("-", "").replace(".", "")
+                                run_num, dv = _run_a_partes(run)
+                                nombre = f"{prow['Nombre']} {prow['Apellido Paterno']} {prow['Apellido Materno']}"
+                                hemograma = None
+                                pdf_cacheado = HEMOGRAMAS_DIR / f"{run_sin_guion}.pdf"
+                                if pdf_cacheado.exists():
+                                    # Ya se descargó en una corrida anterior — solo se busca
+                                    # en HCE lo de los despachos NUEVOS (sin PDF todavía).
+                                    try:
+                                        hemograma = extraer_hemograma_pdf(pdf_cacheado)
+                                    except Exception:
+                                        hemograma = None
+                                if hemograma is None:
+                                    nuevos_cloz += 1
+                                    if await buscar_paciente(page, run_num, dv):
+                                        pdf_path = await descargar_hemograma_mas_reciente(context, page, run_sin_guion)
+                                        if pdf_path:
+                                            try:
+                                                hemograma = extraer_hemograma_pdf(pdf_path)
+                                            except Exception as e:
+                                                print(f"    [aviso] no se pudo leer PDF de {run_sin_guion}: {e}")
+                                    await limpiar_busqueda(page)
+                                fc = FilaConsolidada(
+                                    run=run, nombre=nombre,
+                                    fecha_despacho=prow["fecha_despacho"].date() if prow["fecha_despacho"] == prow["fecha_despacho"] else None,
+                                    dosis_mg_dia=prow["dosis_mg_dia"], cuota_receta=prow["cuota_receta"] or "",
+                                    posologia_texto=prow["posologia_texto"] or "", hemograma=hemograma,
+                                )
+                                fm, fo = construir_fila(fc, today)
+                                filas_minsal_cloz.append(fm)
+                                filas_obs_cloz.append(fo)
+                            _ruta_cloz = ruta_archivo_mes(desde_mes)
+                            guardar_excel(filas_minsal_cloz, filas_obs_cloz, str(_ruta_cloz))
+                            print(f"  ✓ {_ruta_cloz.name} ({len(por_paciente_cloz)} pacientes"
+                                  f" — {nuevos_cloz} nuevos buscados en HCE, {len(por_paciente_cloz) - nuevos_cloz} ya cacheados)")
+
+                    # Bug real 31-07/03-08-2026: un despacho del ÚLTIMO día del mes
+                    # puede no estar todavía en la sábana de recetas cuando corre
+                    # AUTO_SSASUR ese mismo día (rezago de reporte SSASUR). Si nadie
+                    # vuelve a correr --clozapina antes de que cambie el mes, ese
+                    # despacho queda fuera para siempre: el filtro "este mes" arranca
+                    # el día 1 y nunca vuelve a mirar el mes anterior. Por eso, en los
+                    # primeros 5 días calendario del mes, se reprocesa TAMBIÉN el mes
+                    # anterior (barato: si ya no hay despachos nuevos ahí, los PDF
+                    # están cacheados y ni siquiera entra a HCE).
+                    meses_cloz = [(today.year, today.month)]
+                    if today.day <= 5:
+                        mes_ant = today.month - 1 or 12
+                        anio_ant = today.year - (today.month == 1)
+                        meses_cloz.insert(0, (anio_ant, mes_ant))
+                    for _anio_cloz, _mes_cloz in meses_cloz:
+                        await _procesar_mes_clozapina(_anio_cloz, _mes_cloz)
 
                     # Sube el Consolidado a su carpeta Drive privada en ESTA misma
                     # corrida — antes quedaba pendiente de --solo-clozapina manual,
