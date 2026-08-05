@@ -75,6 +75,12 @@ _debug_*_*.txt
 # está versionado) para que el nombre "Clozapina - CONFIDENCIAL" no aparezca
 # en el repo público.
 _drive_folders_clozapina.json
+
+# ── GT Confidencial: copias de recetas SELLADAS (ANULAR/pendientes/ya
+# enviada/observación) con RUT + nombre + detalle clínico — mismo motivo que
+# Clozapina, nunca al repo público.
+GT_Confidencial/
+_drive_folders_gt_confidencial.json
 Auditoria_Duplicados_Profunda*.xlsx
 Auditoria_Insulinas_*.xlsx
 Auditoria_Cantidad_Posologia_*.xlsx

@@ -26,8 +26,10 @@ Uso:
 import argparse
 import asyncio
 import datetime
+import glob
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -158,12 +160,81 @@ def _leer_observaciones_de_feedback(path):
     return out
 
 
+def _buscar_envio_reciente(carpeta_local, n_receta, dias=15):
+    """Pedido por el usuario 04-08-2026: antes de mandar una receta, revisar
+    las Nóminas de Envío ya generadas (04_Farmacia_Gestion_Territorial/
+    <carpeta_local>/Nóminas de Envío/<MES AÑO>/<DD-MM-YYYY>/*Planilla*.xlsx)
+    de los últimos `dias` días — si esta receta ya se mandó en ese período,
+    hay que avisar en el PDF en vez de reenviarla como si fuera nueva.
+    También rescata la columna "Pendiente" de esa nómina, por si quedó algo
+    anotado ahí. Devuelve (fecha_envio: date, texto_pendiente_o_None) del
+    envío más reciente que la contenga, o None si no aparece en la ventana."""
+    base = os.path.join(GT_SOLICITUDES_DIR, carpeta_local, "Nóminas de Envío")
+    if not os.path.isdir(base):
+        return None
+    hoy = datetime.date.today()
+    limite = hoy - datetime.timedelta(days=dias)
+    encontrados = []
+    for mes_dir in glob.glob(os.path.join(base, "*")):
+        if not os.path.isdir(mes_dir):
+            continue
+        for fecha_dir in glob.glob(os.path.join(mes_dir, "*")):
+            if not os.path.isdir(fecha_dir):
+                continue
+            try:
+                fecha = datetime.datetime.strptime(os.path.basename(fecha_dir), "%d-%m-%Y").date()
+            except ValueError:
+                continue
+            if not (limite <= fecha <= hoy):
+                continue
+            for xlsx in glob.glob(os.path.join(fecha_dir, "*Planilla*.xlsx")):
+                try:
+                    wb = openpyxl.load_workbook(xlsx, data_only=True)
+                except Exception:
+                    continue
+                for ws in wb.worksheets:
+                    filas = list(ws.iter_rows(values_only=True))
+                    header_idx = None
+                    for i, row in enumerate(filas, start=1):
+                        if row and any(str(c).strip() == "N° Receta" for c in row if c):
+                            header_idx = i
+                            break
+                    if header_idx is None:
+                        continue
+                    header = [str(c).strip() if c else "" for c in filas[header_idx - 1]]
+                    if "N° Receta" not in header:
+                        continue
+                    col_receta = header.index("N° Receta")
+                    col_pend = header.index("Pendiente") if "Pendiente" in header else None
+                    for row in filas[header_idx:]:
+                        if col_receta >= len(row):
+                            continue
+                        if str(row[col_receta] or "").strip() != str(n_receta).strip():
+                            continue
+                        pend = None
+                        if col_pend is not None and col_pend < len(row) and row[col_pend]:
+                            pend = str(row[col_pend]).strip()
+                        encontrados.append((fecha, pend))
+    if not encontrados:
+        return None
+    encontrados.sort(key=lambda t: t[0], reverse=True)
+    return encontrados[0]
+
+
 def _estampar_pdf(path, lineas):
     """Escribe `lineas` de texto en la esquina inferior izquierda de cada
     página del PDF en `path` (letra chica, no tapa el contenido oficial de
     la receta) — sello informativo con la última Fecha Entrega vista en
     SSASUR y, si aplica, la Observación de la revisión. Pedido por el
-    usuario 04-08-2026."""
+    usuario 04-08-2026 ("arriba de donde dice impreso por").
+
+    Corregido 05-08-2026 (caso Marta Elisabeth Sandoval Carcamo, 5 líneas
+    de sello): el pie de página nativo de SSASUR ("Impreso por... /
+    PITRUFQUEN HOSP., IP...") ocupa aprox. Y=26–45 pt (confirmado
+    extrayendo coordenadas de texto del PDF) — arrancar el sello en Y=12 lo
+    pisaba directo con 3+ líneas. Ahora arranca en Y=50, claramente arriba
+    de ese pie, con margen de sobra antes de la tabla de Digitación/
+    Entrega (~Y=150) para casos con muchos medicamentos pendientes."""
     if not lineas:
         return
     import io
@@ -179,7 +250,7 @@ def _estampar_pdf(path, lineas):
         c = rl_canvas.Canvas(buf, pagesize=(w, h))
         c.setFillColorRGB(0.55, 0, 0)
         c.setFont("Helvetica-Bold", 7.5)
-        y = 12
+        y = 50
         for linea in reversed(lineas):
             texto = linea if len(linea) <= 150 else linea[:147] + "..."
             c.drawString(12, y, texto)
@@ -343,6 +414,29 @@ async def _buscar_vigentes_por_rut(page, rut, origen_filtro="PITRUFQUEN HOSP.", 
         elif debug_tag:
             print(f"  [AVISO] RUT {rut}: no encontré el filtro de Establecimiento Origen — se sigue filtrando en Python.")
 
+    # Corregido 04-08-2026 (caso Silvia Elisabeth Vasquez Teran, CESFAM
+    # Teodoro Schmidt): la tabla muestra por defecto solo 10 filas por
+    # página ("Mostrar 10 registros") — un paciente crónico con varias
+    # series de receta a la vez (ej. 138 filas de origen Pitrufquén) deja
+    # recetas vigentes fuera de la primera página, invisibles para este
+    # scraper (confirmado en vivo: receta 45022872, SOLICITADA, quedaba en
+    # la página 2). Se sube "Mostrar" al máximo (100) antes de leer filas.
+    subido_a_100 = await page.evaluate("""() => {
+        const s = document.querySelector('select[name="tablaResultados_length"]');
+        if (!s) return false;
+        s.value = '100';
+        if (window.jQuery) { window.jQuery(s).trigger('change'); }
+        s.dispatchEvent(new Event('change', {bubbles: true}));
+        return true;
+    }""")
+    if subido_a_100:
+        try:
+            await _esperar_tabla_resultados(page)
+        except Exception:
+            print(f"  [AVISO] RUT {rut}: no se pudo confirmar el cambio a 100 registros por página a tiempo (url={page.url}).")
+    elif debug_tag:
+        print(f"  [AVISO] RUT {rut}: no encontré el selector 'Mostrar N registros' — se sigue leyendo solo la primera página.")
+
     if debug_tag:
         await _volcar_debug(page, f"{debug_tag}_4_tras_filtro_origen")
 
@@ -384,8 +478,184 @@ async def _buscar_vigentes_por_rut(page, rut, origen_filtro="PITRUFQUEN HOSP.", 
         fecha_entrega = r[13].strip() if len(r) > 13 else ""
         if not fecha_entrega.endswith("2026"):
             continue
-        vigentes.append((n_receta, estado, fecha_entrega))
+        # Pedido por el usuario 04-08-2026: "Fecha Modificación" (índice 14,
+        # confirmada por captura de pantalla — inmediatamente después de
+        # "Fecha Entrega") es la base para comparar cuál de 2 recetas con la
+        # misma prescripción es la más actual (la de fecha más reciente) y
+        # cuál quedó obsoleta (se marca para anular).
+        fecha_modificacion = r[14].strip() if len(r) > 14 else ""
+        # Corregido 04-08-2026 (caso Pilar Ana Cardenas Avila, CESFAM
+        # Teodoro Schmidt): "Cuenta Corriente" (índice 16, "Número Documento
+        # Procedencia" en el encabezado real — confirmada contra el modal
+        # "Ver Detalle", que rotula la misma columna "Cuenta Corriente")
+        # identifica la serie/episodio de la receta. 2 recetas vigentes de
+        # la MISMA cuenta corriente comparten medicamentos por diseño (son
+        # cuotas mensuales del mismo tratamiento crónico) — eso NO es un
+        # duplicado a anular. El duplicado real dentro de una misma cuenta
+        # es tener 2 recetas vigentes con la MISMA cuota (Tipo Atención) —
+        # confirmado en vivo: 43936939 y 43936691, ambas "CRONICO (6/12)" de
+        # la cuenta 120279858.
+        cuenta_corriente = r[16].strip() if len(r) > 16 else ""
+        # Corregido 04-08-2026 (aclarado por el usuario tras revisar el caso
+        # de Pilar): cuando el MISMO profesional (índice 17, "Persona
+        # Digita") abre una cuenta corriente NUEVA, la anterior queda
+        # obsoleta — el médico actualizó la terapia en el último control,
+        # aunque los medicamentos de la receta vieja y la nueva sean
+        # distintos. "Fecha Ingreso" (índice 12) identifica qué cuenta es
+        # más antigua (es la misma para todas las cuotas de una cuenta).
+        fecha_ingreso = r[12].strip() if len(r) > 12 else ""
+        persona_digita = r[17].strip().upper() if len(r) > 17 else ""
+        # Corregido 04-08-2026 (caso Silvia Elisabeth Vasquez Teran): dentro
+        # de una misma cuenta corriente y cuota, NORMAL y CONTROLADA son 2
+        # series paralelas intencionales (recetas de fármacos controlados
+        # van aparte por norma, ver recetas_cheque.py) — no un duplicado.
+        # "Tipo Receta" (índice 7) se guarda para que Regla B exija también
+        # que coincida antes de marcar.
+        tipo_receta = r[7].strip().upper() if len(r) > 7 else ""
+        vigentes.append((n_receta, estado, fecha_entrega, fecha_modificacion, cuenta_corriente, tipo_atencion,
+                          fecha_ingreso, persona_digita, tipo_receta))
     return vigentes
+
+
+async def _leer_detalle_receta(page, n_receta):
+    """Abre el modal "Ver Detalle" de una receta ya listada en la tabla de
+    resultados actual y lee su tabla de prescripciones
+    (#productos_prescritos, confirmada en vivo 04-08-2026 con RUT
+    9933903-9 / receta 47369472) — cada receta puede traer medicamentos en
+    distinto estado por línea (algunos ENTREGADO, otros SOLICITADO) aunque
+    el estado general de la receta sea uno solo. Devuelve una lista de
+    dicts {producto, pendiente, total, estado} o [] si no se pudo abrir."""
+    try:
+        await page.click(f'button.btn_detalle[data-receta-id="{n_receta}"]', timeout=5_000)
+    except Exception:
+        return []
+    try:
+        await page.wait_for_function(
+            "(n) => { const c = document.querySelector('.celda_receta_detalle.celda_id'); "
+            "return !!c && c.innerText.trim() === n; }",
+            arg=n_receta,
+            timeout=10_000,
+        )
+    except Exception:
+        pass
+    await page.wait_for_timeout(300)
+    filas = await page.evaluate("""() => {
+        const t = document.querySelector('#productos_prescritos');
+        if (!t) return [];
+        return [...t.querySelectorAll('tbody tr')]
+            .map(tr => [...tr.querySelectorAll('td')].map(td => td.innerText.trim()))
+            .filter(r => r.length >= 7 && r[1]);
+    }""")
+    detalle = [{"producto": r[1], "pendiente": r[3], "total": r[4], "estado": r[6]} for r in filas]
+    for sel in ('#modalDetalleLeReceta .close', '#modalDetalleLeReceta button:has-text("Cerrar")'):
+        try:
+            await page.click(sel, timeout=2_000)
+            break
+        except Exception:
+            continue
+    await page.wait_for_timeout(300)
+    return detalle
+
+
+def _marcar_recetas_a_anular(vigentes, detalle_por_receta):
+    """Pedido por el usuario 04-08-2026, corregido el mismo día tras revisar
+    el caso real de Pilar Ana Cardenas Avila (CESFAM Teodoro Schmidt) — tres
+    reglas distintas de "receta obsoleta, anular", en orden de prioridad:
+
+    Regla A (MISMO profesional, cuenta corriente DISTINTA): si el mismo
+    médico (Persona Digita) tiene 2 recetas vigentes de cuentas corrientes
+    distintas, la cuenta más nueva (por Fecha Ingreso) reemplaza a la
+    vieja COMPLETA — se marca la receta de la cuenta más antigua, aunque
+    los medicamentos sean distintos entre una y otra (el médico actualizó
+    la terapia en el control más reciente). Aclarado por el usuario
+    04-08-2026 tras revisar el caso real: 46318090 (cuenta 124501314,
+    Fecha Ingreso 26/05/2026) reemplaza a 43936691 (cuenta 120279858,
+    Fecha Ingreso 29/01/2026) — mismo profesional (Fabián Gallegos
+    Bizama), aunque compartan varios medicamentos eso NO es lo que decide
+    acá, es la cuenta corriente más nueva del mismo médico.
+
+    Regla B (MISMA cuenta corriente, misma cuota): dentro de una misma
+    cuenta, compartir medicamentos entre cuotas es NORMAL (es el mismo
+    tratamiento crónico repitiéndose mes a mes). El duplicado real ahí es
+    tener 2 recetas vigentes con la MISMA cuota (Tipo Atención, ej.
+    "CRONICO (6/12)") — la receta se digitó dos veces para el mismo mes.
+    Confirmado en vivo: 43936939 y 43936691, ambas "CRONICO (6/12)" de la
+    cuenta 120279858 (el usuario ya había anulado 43936939 manualmente al
+    detectar esto).
+
+    Regla C (profesional Y cuenta corriente DISTINTOS): 2 médicos distintos
+    con recetas vigentes de cuentas distintas que comparten un medicamento
+    todavía SOLICITADO en ambas — 2 prescripciones independientes pisándose
+    el mismo fármaco. Se marca la más vieja por Fecha Modificación.
+    Confirmado en vivo con Silvia Elisabeth Vasquez Teran: receta 41462375
+    (Dra. Isaura Monje) y 45022872 (Dr. Nicolás Saavedra) comparten
+    LEVOTIROXINA SOLICITADO en ambas.
+
+    En toda regla, sin fecha confiable para desempatar (falta o son
+    iguales) no se marca nada, para no arriesgar un falso positivo.
+    Devuelve el set de Nº de receta a marcar."""
+    from datetime import datetime as _dt
+
+    def _fecha(s):
+        try:
+            return _dt.strptime(s, "%d/%m/%Y")
+        except Exception:
+            return None
+
+    productos_por_receta = {}
+    fecha_mod_por_receta = {}
+    fecha_ing_por_receta = {}
+    cuenta_por_receta = {}
+    cuota_por_receta = {}
+    profesional_por_receta = {}
+    tipo_receta_por_receta = {}
+    for n_receta, _estado, _fe, fecha_mod, cuenta, tipo_atencion, fecha_ing, persona_dig, tipo_receta in vigentes:
+        meds = detalle_por_receta.get(n_receta) or []
+        productos_por_receta[n_receta] = {
+            m["producto"].strip().upper() for m in meds
+            if m.get("producto") and (m.get("estado") or "").strip().upper() == "SOLICITADO"
+        }
+        fecha_mod_por_receta[n_receta] = _fecha(fecha_mod)
+        fecha_ing_por_receta[n_receta] = _fecha(fecha_ing)
+        cuenta_por_receta[n_receta] = cuenta
+        cuota_por_receta[n_receta] = tipo_atencion
+        profesional_por_receta[n_receta] = persona_dig
+        tipo_receta_por_receta[n_receta] = tipo_receta
+
+    a_anular = set()
+    recetas = [n for n, *_ in vigentes]
+    for i, n1 in enumerate(recetas):
+        for n2 in recetas[i + 1:]:
+            misma_cuenta = cuenta_por_receta.get(n1) and cuenta_por_receta.get(n1) == cuenta_por_receta.get(n2)
+            mismo_profesional = profesional_por_receta.get(n1) and profesional_por_receta.get(n1) == profesional_por_receta.get(n2)
+
+            if not misma_cuenta and mismo_profesional:
+                # Regla A: misma cuota clínica, cuenta corriente renovada.
+                fi1, fi2 = fecha_ing_por_receta.get(n1), fecha_ing_por_receta.get(n2)
+                if fi1 is None or fi2 is None or fi1 == fi2:
+                    continue
+                a_anular.add(n1 if fi1 < fi2 else n2)
+                continue
+
+            fm1, fm2 = fecha_mod_por_receta.get(n1), fecha_mod_por_receta.get(n2)
+            if fm1 is None or fm2 is None or fm1 == fm2:
+                continue
+
+            if misma_cuenta:
+                # Regla B: misma cuota Y mismo Tipo Receta digitada 2 veces
+                # — NORMAL y CONTROLADA son series paralelas intencionales
+                # dentro de la misma cuota, no cuentan como duplicado.
+                misma_cuota = cuota_por_receta.get(n1) and cuota_por_receta.get(n1) == cuota_por_receta.get(n2)
+                mismo_tipo_receta = tipo_receta_por_receta.get(n1) == tipo_receta_por_receta.get(n2)
+                if misma_cuota and mismo_tipo_receta:
+                    a_anular.add(n1 if fm1 < fm2 else n2)
+                continue
+
+            # Regla C: profesional y cuenta distintos, medicamento SOLICITADO compartido.
+            comunes = productos_por_receta.get(n1, set()) & productos_por_receta.get(n2, set())
+            if comunes:
+                a_anular.add(n1 if fm1 < fm2 else n2)
+    return a_anular
 
 
 PDF_ENDPOINT = "https://www.ssasur.cl/receta/impresion/pdf/{n_receta}/undefined"
@@ -489,11 +759,16 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None, obs_por_rut=No
         rut_targets = ([(rut, "")] if rut else []) + list(ruts or [])
         encontrados_por_rut = {}
         fallidos_tecnicos = set()
-        # Nº receta -> (rut, estado, fecha_entrega) vistos en la búsqueda en
-        # vivo — se usa después para estampar cada PDF con la última Fecha
-        # Entrega y, si el RUT tiene una Observación en obs_por_rut, esa
-        # también (pedido por el usuario 04-08-2026).
+        # Nº receta -> (rut, estado, fecha_entrega, fecha_modificacion) vistos
+        # en la búsqueda en vivo — se usa después para estampar cada PDF con
+        # la última Fecha Entrega y, si el RUT tiene una Observación en
+        # obs_por_rut, esa también (pedido por el usuario 04-08-2026).
         datos_por_receta = {}
+        # Nº receta -> lista de medicamentos del detalle de prescripción
+        # (solo se consulta para recetas Estado=PENDIENTE, o cuando el
+        # paciente tiene 2+ vigentes para poder comparar duplicados).
+        detalle_por_receta = {}
+        recetas_a_anular = set()
         obs_por_rut = obs_por_rut or {}
         debug_restantes = 3  # capar volcados de debug para no llenar disco
         for rut_i, nombre_i in rut_targets:
@@ -524,10 +799,34 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None, obs_por_rut=No
             elif not vigentes:
                 print("  No se encontraron recetas vigentes (no ENTREGADA/CERRADA/ANULADA) para ese RUT.")
             encontrados_por_rut[rut_i] = vigentes
-            for n_receta, estado, fecha_entrega in vigentes:
-                print(f"  Encontrada: receta {n_receta} — Estado: {estado} — Fecha Entrega: {fecha_entrega}")
-                datos_por_receta[n_receta] = (rut_i, estado, fecha_entrega)
-            recetas = list(recetas) + [(n, nombre_i) for n, _, _ in vigentes]
+            for n_receta, estado, fecha_entrega, fecha_mod, cuenta, tipo_atencion, fecha_ing, persona_dig, _tr in vigentes:
+                print(f"  Encontrada: receta {n_receta} — Estado: {estado} — Fecha Entrega: {fecha_entrega} — "
+                      f"Fecha Modificación: {fecha_mod} — Cuenta: {cuenta} — {tipo_atencion} — "
+                      f"Fecha Ingreso: {fecha_ing} — {persona_dig}")
+                datos_por_receta[n_receta] = (rut_i, estado, fecha_entrega, fecha_mod)
+
+            # Pedido por el usuario 04-08-2026: se abre "Ver Detalle" de cada
+            # receta vigente del paciente — necesario para 1) detectar
+            # duplicados por prescripción entre las recetas de este mismo
+            # paciente y 2) listar los medicamentos SOLICITADO de las
+            # recetas Estado=PENDIENTE (una receta PENDIENTE puede tener
+            # medicamentos ya ENTREGADO mezclados con otros aún SOLICITADO,
+            # confirmado en vivo con RUT 9933903-9 / receta 47369472).
+            if vigentes:
+                for n_receta, *_resto in vigentes:
+                    try:
+                        detalle_por_receta[n_receta] = await _leer_detalle_receta(page, n_receta)
+                    except Exception as e:
+                        print(f"  [AVISO] {n_receta}: no se pudo leer el detalle de prescripción ({e}).")
+                        detalle_por_receta[n_receta] = []
+                if len(vigentes) > 1:
+                    nuevas = _marcar_recetas_a_anular(vigentes, detalle_por_receta)
+                    if nuevas:
+                        print(f"  [AVISO] receta(s) con prescripción repetida — marcada(s) para anular: "
+                              f"{', '.join(sorted(nuevas))}")
+                        recetas_a_anular |= nuevas
+
+            recetas = list(recetas) + [(n, nombre_i) for n, *_ in vigentes]
 
         if not recetas:
             print("No hay recetas para descargar.")
@@ -539,7 +838,19 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None, obs_por_rut=No
         # consulta" entre una receta y otra como antes. Ya trae su propio
         # reintento de red; igual se envuelve en try/except para que una
         # falla imprevista en una receta puntual no tumbe el resto del lote.
-        ok, fallidos, descargados = 0, [], []
+        #
+        # Pedido por el usuario 04-08-2026: la carpeta normal de Gestión
+        # Territorial (Revisión de Solicitudes → sync a Drive) debe recibir
+        # las recetas TAL COMO las devuelve SSASUR, sin escritura encima —
+        # eso es lo que se le entrega al establecimiento. Los sellos
+        # (ANULAR, pendientes, ya enviada, observación) van SOLO a una copia
+        # aparte en una carpeta confidencial (mismo patrón que Clozapina:
+        # carpeta propia fuera de "Farmacia AA", NUNCA se sube con la
+        # sincronización general). Un PDF sin nada que avisar no genera
+        # copia confidencial.
+        confidencial_dir = os.path.join(MAESTRO_DIR, "GT_Confidencial", carpeta_local,
+                                         datetime.date.today().strftime("%Y-%m-%d"))
+        ok, fallidos, descargados, descargados_confidencial = 0, [], [], []
         for n_receta, paciente in recetas:
             nombre_archivo = re.sub(r"\s+", "", paciente) or "Paciente"
             dest = Path(os.path.join(salida_dir, f"Receta_{n_receta}_{nombre_archivo}.pdf"))
@@ -552,18 +863,60 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None, obs_por_rut=No
             if exito:
                 ok += 1
                 lineas_sello = []
+                # Pedido por el usuario 04-08-2026: si esta receta quedó
+                # obsoleta frente a otra vigente del mismo paciente con la
+                # misma prescripción (ver _marcar_recetas_a_anular), el
+                # aviso de anular va primero y bien visible.
+                if n_receta in recetas_a_anular:
+                    lineas_sello.append("*** TIENE RECETA ACTUALIZADA — ANULAR ***")
                 datos = datos_por_receta.get(n_receta)
                 if datos:
-                    rut_datos, estado_datos, fecha_datos = datos
-                    lineas_sello.append(f"SSASUR — Estado: {estado_datos} — Última Fecha Entrega: {fecha_datos}")
+                    rut_datos, estado_datos, fecha_datos, fecha_mod_datos = datos
+                    lineas_sello.append(f"SSASUR — Estado: {estado_datos} — Última Fecha Entrega: {fecha_datos} — "
+                                         f"Fecha Modificación: {fecha_mod_datos}")
                     obs = obs_por_rut.get(rut_datos)
                     if obs:
                         lineas_sello.append(f"Observación: {obs}")
+                    # Pedido por el usuario 04-08-2026: solo en recetas
+                    # Estado=PENDIENTE se listan los medicamentos que en el
+                    # detalle de prescripción figuran como SOLICITADO (una
+                    # receta SOLICITADA está completa vigente, no tiene
+                    # mezcla; PENDIENTE sí puede traer algunos ya
+                    # ENTREGADO y otros aún SOLICITADO).
+                    if estado_datos.strip().upper() == "PENDIENTE":
+                        pendientes = [
+                            m for m in detalle_por_receta.get(n_receta, [])
+                            if (m.get("estado") or "").strip().upper() == "SOLICITADO"
+                        ]
+                        for m in pendientes:
+                            cantidad = m.get("pendiente") or m.get("total") or "?"
+                            lineas_sello.append(f"PENDIENTE: {m['producto']} — cant. {cantidad}")
+                # Pedido por el usuario 04-08-2026: comparar contra las
+                # Nóminas de Envío ya generadas (últimos 15 días) — evita
+                # reenviar una receta que ya se mandó, y rescata si esa
+                # nómina anterior dejó algo anotado como pendiente.
+                try:
+                    envio = _buscar_envio_reciente(carpeta_local, n_receta)
+                except Exception as e:
+                    envio = None
+                    print(f"  [AVISO] {n_receta}: no se pudo revisar Nóminas de Envío ({e}).")
+                if envio:
+                    fecha_envio, pend_nomina = envio
+                    dias_desde = (datetime.date.today() - fecha_envio).days
+                    lineas_sello.append(f"AVISO: RECETA YA ENVIADA el {fecha_envio.strftime('%d/%m/%Y')} "
+                                         f"(hace {dias_desde} día{'s' if dias_desde != 1 else ''}) — revisar antes de reenviar.")
+                    if pend_nomina:
+                        lineas_sello.append(f"Pendiente registrado en ese envío: {pend_nomina}")
                 if lineas_sello:
                     try:
-                        _estampar_pdf(dest, lineas_sello)
+                        os.makedirs(confidencial_dir, exist_ok=True)
+                        dest_confidencial = Path(os.path.join(confidencial_dir, dest.name))
+                        shutil.copyfile(str(dest), str(dest_confidencial))
+                        _estampar_pdf(dest_confidencial, lineas_sello)
+                        descargados_confidencial.append(dest_confidencial)
+                        print(f"  [CONFIDENCIAL] {len(lineas_sello)} aviso(s) — copia sellada en {dest_confidencial}")
                     except Exception as e:
-                        print(f"  [AVISO] {n_receta}: no se pudo estampar el PDF ({e}).")
+                        print(f"  [AVISO] {n_receta}: no se pudo generar la copia confidencial sellada ({e}).")
                 descargados.append(dest)
             else:
                 fallidos.append(n_receta)
@@ -586,6 +939,19 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None, obs_por_rut=No
         for p in descargados:
             os.replace(str(p), os.path.join(pdfs_dir, p.name))
         print(f"{len(descargados)} PDF individual(es) movido(s) a 'PDFs individuales'.")
+
+    # Pedido por el usuario 04-08-2026: combinado APARTE solo con las
+    # recetas que llevan algún sello (ANULAR/pendientes/ya enviada/
+    # observación) — vive en GT_Confidencial, no en la carpeta normal.
+    if descargados_confidencial:
+        fecha_str = datetime.date.today().strftime("%Y-%m-%d")
+        combinado_conf = os.path.join(confidencial_dir, f"Recetas_CON_AVISOS_{carpeta_local}_{fecha_str}.pdf")
+        writer_conf = PdfWriter()
+        for p in descargados_confidencial:
+            writer_conf.append(str(p))
+        with open(combinado_conf, "wb") as fh:
+            writer_conf.write(fh)
+        print(f"Guardado (confidencial): {combinado_conf}  ({len(descargados_confidencial)} receta(s) con aviso)")
 
     if ruts:
         fecha_str = datetime.date.today().strftime("%Y-%m-%d")
@@ -612,6 +978,21 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None, obs_por_rut=No
             if pret.returncode != 0:
                 print(f"  [aviso] publicar_drive.py --solo-gt terminó con código {pret.returncode}")
 
+    # Pedido por el usuario 04-08-2026: las copias selladas van a su PROPIA
+    # carpeta Drive privada (fuera de "Farmacia AA", mismo patrón que
+    # Clozapina) — sync SEPARADO y explícito, nunca junto con --solo-gt.
+    if descargados_confidencial:
+        pub_py = os.path.join(MAESTRO_DIR, "publicar_drive.py")
+        if os.path.exists(pub_py) and os.path.exists(os.path.join(MAESTRO_DIR, "token_drive.json")):
+            print("\n[Drive] Sincronizando GT_Confidencial (privada) a Drive...")
+            pret_conf = subprocess.run(
+                [sys.executable, pub_py, "--solo-gt-confidencial"],
+                cwd=MAESTRO_DIR,
+                env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+            )
+            if pret_conf.returncode != 0:
+                print(f"  [aviso] publicar_drive.py --solo-gt-confidencial terminó con código {pret_conf.returncode}")
+
 
 def _escribir_resumen_busqueda(path, rut_targets, encontrados_por_rut, fallidos_tecnicos=None):
     """Feedback de la búsqueda EN VIVO por RUT en SSASUR — una fila por
@@ -635,7 +1016,7 @@ def _escribir_resumen_busqueda(path, rut_targets, encontrados_por_rut, fallidos_
     for rut_i, nombre_i in rut_targets:
         vigentes = encontrados_por_rut.get(rut_i, [])
         if vigentes:
-            texto = "; ".join(f"{n} — {e} — {fe}" for n, e, fe in vigentes)
+            texto = "; ".join(f"{n} — {e} — {fe}" for n, e, fe, *_ in vigentes)
             obs = "PDF descargado y combinado." if len(vigentes) == 1 else "Varias vigentes — se descargaron todas, revisar cuál corresponde."
         elif rut_i in fallidos_tecnicos:
             texto = ""

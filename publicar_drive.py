@@ -29,6 +29,10 @@ Estructura en Drive:
     4 - Auditoria Prescripcion/  Auditoria_Prescripcion_Resumen.xlsx
     6 - Centinela/<Sxx>/      centinela_Sxx.json + centinela_Sxx.pdf por semana
     7 - Programacion AA/      Resumen_Programacion_AA.xlsx (conteo vs programación)
+    8 - Servicios Farmaceuticos/<MES AÑO>/  Resumen_Servicios_Farmaceuticos_<mes>_<año>.xlsx
+                              (agregado QF × actividad, SIN RUT — el reporte crudo de
+                              Agenda Médica con RUT de paciente nunca se sube, igual que
+                              informe_completo_recetas*.csv y reporte_de_stock*.xlsx)
 
 Primera vez (requiere Google Cloud credentials.json):
   py publicar_drive.py --setup
@@ -59,6 +63,7 @@ SUB_PEDIDO  = "3 - Pedido Fusionado"
 SUB_AUDIT   = "4 - Auditoria Prescripcion"
 SUB_CENTINELA = "6 - Centinela"
 SUB_PROG    = "7 - Programacion AA"
+SUB_SERVICIOS = "8 - Servicios Farmaceuticos"
 
 # Clozapina: RUT + nombre + diagnóstico psiquiátrico implícito (más sensible
 # que el RUT genérico de Recetas Cheque/GT) — por eso NO va dentro de la
@@ -75,6 +80,16 @@ NOMBRE_RAIZ_CLOZAPINA = "Clozapina - CONFIDENCIAL"
 # versionado en el repo público (revelaría que se maneja data psiquiátrica).
 _FOLDER_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_drive_folders.json")
 _FOLDER_CACHE_FILE_CLOZAPINA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_drive_folders_clozapina.json")
+
+# Pedido por el usuario 04-08-2026: copias SELLADAS de recetas GT (con
+# anotaciones de anular/pendientes/observación escritas encima) van a su
+# PROPIA carpeta Drive privada, fuera de "Farmacia AA" — mismo patrón que
+# Clozapina. Solo corre con --solo-gt-confidencial, NUNCA con la
+# sincronización general ni junto con --solo-gt (que sube las recetas
+# limpias, sin escritura, a la carpeta normal).
+NOMBRE_RAIZ_GT_CONFIDENCIAL = "Gestion Territorial - CONFIDENCIAL (anotado)"
+_FOLDER_CACHE_FILE_GT_CONFIDENCIAL = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                   "_drive_folders_gt_confidencial.json")
 
 _RANGO_RE = re.compile(r"^\d{2}-\d{2}-\d{4}_\d{2}-\d{2}-\d{4}$")
 
@@ -632,6 +647,32 @@ def sync_programacion(service, raiz_id, stats, cache=None):
         print("  Programacion_AA: no encontrado, omitido (corre programacion_aa.py)")
 
 
+def sync_servicios(service, raiz_id, stats, cache=None):
+    """Sube Servicios_Farmaceuticos/<MES AÑO>/Resumen_Servicios_Farmaceuticos_*.xlsx
+    — el agregado QF × actividad (sin RUT). Una subcarpeta por mes, mismo
+    patrón que sync_centinela (una subcarpeta por semana)."""
+    fid = _obtener_o_crear_carpeta(service, SUB_SERVICIOS, raiz_id, cache)
+    src_base = os.path.join(WORK_DIR, "Servicios_Farmaceuticos")
+    if not os.path.isdir(src_base):
+        print("  [Servicios Farmaceuticos] sin Servicios_Farmaceuticos/ todavía")
+        return
+    meses = sorted(
+        d for d in glob.glob(os.path.join(src_base, "*")) if os.path.isdir(d)
+    )
+    if not meses:
+        print("  [Servicios Farmaceuticos] sin meses en Servicios_Farmaceuticos/")
+        return
+    for d in meses:
+        nombre_mes = os.path.basename(d)
+        fid_mes = _obtener_o_crear_carpeta(service, nombre_mes, fid, cache)
+        for f in sorted(glob.glob(os.path.join(d, "Resumen_Servicios_Farmaceuticos_*.xlsx"))):
+            r = _subir(service, f, fid_mes, stats=stats)
+            if r != "skip":
+                print(f"  {nombre_mes}/{os.path.basename(f)}: {r}")
+    print(f"  [Servicios Farmaceuticos] {len(meses)} mes(es): "
+          f"{', '.join(os.path.basename(d) for d in meses)}")
+
+
 def sync_clozapina(service, stats, cache=None):
     """Sube los reportes mensuales de Clozapina (Clozapina_Reportes/*.xlsx) a su
     PROPIA carpeta de nivel superior en Drive (NOMBRE_RAIZ_CLOZAPINA) — no
@@ -650,6 +691,24 @@ def sync_clozapina(service, stats, cache=None):
         print(f"  {os.path.basename(f)}: {r}")
 
 
+def sync_gt_confidencial(service, stats, cache=None):
+    """Sube GT_Confidencial/ (copias SELLADAS de recetas GT — con ANULAR/
+    pendientes/ya enviada/observación escritos encima por
+    descargar_recetas_pdf.py) a su PROPIA carpeta de nivel superior en Drive
+    (NOMBRE_RAIZ_GT_CONFIDENCIAL) — no dentro de 'Farmacia AA'. Preserva la
+    estructura <carpeta_local>/<fecha>/ vía _subir_arbol. Solo corre con
+    --solo-gt-confidencial (ver main()); la carpeta normal de GT
+    (--solo-gt) sube las recetas LIMPIAS, sin escritura."""
+    src_dir = os.path.join(WORK_DIR, "GT_Confidencial")
+    if not os.path.isdir(src_dir):
+        print("  [GT Confidencial] sin GT_Confidencial/ todavía — nada que subir")
+        return
+    fid = _obtener_o_crear_carpeta(service, NOMBRE_RAIZ_GT_CONFIDENCIAL, parent_id=None, cache=cache)
+    subidos = _subir_arbol(service, src_dir, fid, stats, cache, NOMBRE_RAIZ_GT_CONFIDENCIAL)
+    if subidos == 0:
+        print("  [GT Confidencial] nada nuevo que subir")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="Sube salidas Farmacia AA a Google Drive")
@@ -661,10 +720,16 @@ def main():
     ap.add_argument("--solo-auditoria",action="store_true")
     ap.add_argument("--solo-centinela",action="store_true")
     ap.add_argument("--solo-programacion", action="store_true")
+    ap.add_argument("--solo-servicios", action="store_true")
     ap.add_argument("--solo-clozapina", action="store_true",
                     help="Sube Clozapina_Reportes/ a su PROPIA carpeta Drive (privada, fuera de "
                          "'Farmacia AA') — NUNCA corre como parte de una sincronización general, "
                          "solo con este flag explícito.")
+    ap.add_argument("--solo-gt-confidencial", action="store_true",
+                    help="Sube GT_Confidencial/ (copias SELLADAS de recetas GT) a su PROPIA carpeta "
+                         "Drive privada, fuera de 'Farmacia AA' — NUNCA corre como parte de una "
+                         "sincronización general ni junto con --solo-gt (que sube las recetas "
+                         "limpias, sin escritura, a la carpeta normal).")
     a = ap.parse_args()
 
     if a.setup and os.path.exists(TOKEN_FILE):
@@ -694,16 +759,30 @@ def main():
     if NOMBRE_RAIZ_CLOZAPINA in known_clozapina:
         cache[(NOMBRE_RAIZ_CLOZAPINA, None)] = known_clozapina[NOMBRE_RAIZ_CLOZAPINA]
 
+    # Caché de GT Confidencial APARTE (gitignored) — mismo motivo que Clozapina.
+    known_gt_confidencial = {}
+    if os.path.exists(_FOLDER_CACHE_FILE_GT_CONFIDENCIAL):
+        try:
+            with open(_FOLDER_CACHE_FILE_GT_CONFIDENCIAL, encoding="utf-8") as _f:
+                known_gt_confidencial = json.load(_f)
+        except Exception:
+            pass
+    if NOMBRE_RAIZ_GT_CONFIDENCIAL in known_gt_confidencial:
+        cache[(NOMBRE_RAIZ_GT_CONFIDENCIAL, None)] = known_gt_confidencial[NOMBRE_RAIZ_GT_CONFIDENCIAL]
+
     stats = {"ok": 0, "skip": 0, "fail": 0}
 
     todos = not any([a.solo_app, a.solo_gt, a.solo_pedido, a.solo_auditoria,
-                     a.solo_centinela, a.solo_programacion, a.solo_clozapina])
-    # Clozapina vive en su PROPIA carpeta (fuera de "Farmacia AA") — si es la
-    # ÚNICA cosa que se pidió subir, no hace falta resolver/imprimir la raíz
-    # "Farmacia AA" en absoluto (evita el mensaje engañoso "Subiendo a
-    # «Farmacia AA»" cuando en realidad va a una carpeta totalmente distinta).
+                     a.solo_centinela, a.solo_programacion, a.solo_servicios,
+                     a.solo_clozapina, a.solo_gt_confidencial])
+    # Clozapina y GT Confidencial viven en su PROPIA carpeta (fuera de
+    # "Farmacia AA") — si son lo ÚNICO que se pidió subir, no hace falta
+    # resolver/imprimir la raíz "Farmacia AA" en absoluto (evita el mensaje
+    # engañoso "Subiendo a «Farmacia AA»" cuando en realidad va a una
+    # carpeta totalmente distinta).
     necesita_raiz_farmacia = todos or any([a.solo_app, a.solo_gt, a.solo_pedido,
-                                            a.solo_auditoria, a.solo_centinela, a.solo_programacion])
+                                            a.solo_auditoria, a.solo_centinela,
+                                            a.solo_programacion, a.solo_servicios])
 
     raiz_id = None
     if necesita_raiz_farmacia:
@@ -711,7 +790,7 @@ def main():
         if NOMBRE_RAIZ in known:
             raiz_id = known[NOMBRE_RAIZ]
             # Pre-carga sub-carpetas fijas para evitar búsquedas API
-            for sub in (SUB_APP, SUB_GT, SUB_PEDIDO, SUB_AUDIT, SUB_CENTINELA, SUB_PROG):
+            for sub in (SUB_APP, SUB_GT, SUB_PEDIDO, SUB_AUDIT, SUB_CENTINELA, SUB_PROG, SUB_SERVICIOS):
                 if sub in known:
                     cache[(sub, raiz_id)] = known[sub]
         else:
@@ -772,6 +851,14 @@ def main():
             print(f"  [error] {SUB_PROG}: {e}")
             stats["fail"] += 1
 
+    if todos or a.solo_servicios:
+        print(f"\n  ── {SUB_SERVICIOS} ──")
+        try:
+            sync_servicios(svc, raiz_id, stats, cache)
+        except Exception as e:
+            print(f"  [error] {SUB_SERVICIOS}: {e}")
+            stats["fail"] += 1
+
     # Clozapina: EXPLÍCITAMENTE fuera de "todos" — solo sube con --solo-clozapina.
     if a.solo_clozapina:
         print(f"\n  ── {NOMBRE_RAIZ_CLOZAPINA} (carpeta separada, privada) ──")
@@ -779,6 +866,15 @@ def main():
             sync_clozapina(svc, stats, cache)
         except Exception as e:
             print(f"  [error] {NOMBRE_RAIZ_CLOZAPINA}: {e}")
+            stats["fail"] += 1
+
+    # GT Confidencial: EXPLÍCITAMENTE fuera de "todos" — solo sube con --solo-gt-confidencial.
+    if a.solo_gt_confidencial:
+        print(f"\n  ── {NOMBRE_RAIZ_GT_CONFIDENCIAL} (carpeta separada, privada) ──")
+        try:
+            sync_gt_confidencial(svc, stats, cache)
+        except Exception as e:
+            print(f"  [error] {NOMBRE_RAIZ_GT_CONFIDENCIAL}: {e}")
             stats["fail"] += 1
 
     total = stats["ok"] + stats["skip"] + stats["fail"]
@@ -792,6 +888,13 @@ def main():
         if known_clozapina.get(NOMBRE_RAIZ_CLOZAPINA) != fid_cloz:
             with open(_FOLDER_CACHE_FILE_CLOZAPINA, "w", encoding="utf-8") as _f:
                 json.dump({NOMBRE_RAIZ_CLOZAPINA: fid_cloz}, _f, ensure_ascii=False, indent=2)
+
+    # Mismo motivo, para GT Confidencial.
+    if (NOMBRE_RAIZ_GT_CONFIDENCIAL, None) in cache:
+        fid_gtc = cache[(NOMBRE_RAIZ_GT_CONFIDENCIAL, None)]
+        if known_gt_confidencial.get(NOMBRE_RAIZ_GT_CONFIDENCIAL) != fid_gtc:
+            with open(_FOLDER_CACHE_FILE_GT_CONFIDENCIAL, "w", encoding="utf-8") as _f:
+                json.dump({NOMBRE_RAIZ_GT_CONFIDENCIAL: fid_gtc}, _f, ensure_ascii=False, indent=2)
 
     # Persiste IDs de carpetas de "Farmacia AA" nuevas descubiertas en esta
     # corrida (solo si de verdad se resolvió esa raíz — ver necesita_raiz_farmacia).
