@@ -823,6 +823,11 @@ function renderConteo() {
           <input type="file" accept=".json" style="display:none"
                  onchange="cargarStockJSON(this)">
         </label>
+        <label class="btn btn-primary" style="cursor:pointer">
+          📋 Cargar Acta/Vencimiento (JSON)
+          <input type="file" accept=".json" style="display:none"
+                 onchange="cargarActaVencimientoJSON(this)">
+        </label>
         <button class="btn btn-success" onclick="guardarConteo()">💾 Guardar en historial</button>
         <button class="btn btn-outline" onclick="exportarJSON()">📤 Exportar JSON</button>
         <button class="btn btn-primary" onclick="exportarExcel()">📊 Exportar Excel</button>
@@ -964,6 +969,62 @@ function confirmarEliminar(farmaciaId, idx) {
       renderHistorial();
     }
   );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// CARGAR ACTA/VENCIMIENTO DESDE UN JSON EXPORTADO (📤 Exportar JSON)
+// Bulk-carga la columna Acta/Vencimiento sin tipear fila por fila, para cuando
+// la QF ya tiene un archivo con los vencimientos reales actualizados. Acción
+// EXPLÍCITA (botón + confirmación) — nunca automática — para respetar la regla
+// de que esta columna la maneja la QF. Una vez cargado, el valor queda
+// guardado como cualquier edición manual: "Nuevo conteo" lo preserva igual
+// que siempre (ver confirmarNuevoConteo), así que sobrevive a los conteos
+// posteriores sin volver a importar.
+// ─────────────────────────────────────────────────────────────────
+function cargarActaVencimientoJSON(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      const filasOrigen = (data.conteo && data.conteo.filas) || data.filas;
+      if (!Array.isArray(filasOrigen)) throw new Error('El JSON no tiene "conteo.filas".');
+
+      const farmaciaOrigen = data.farmaciaId || farmaciaActiva;
+      if (farmaciaOrigen !== farmaciaActiva) {
+        const nombreDestino = (FARMACIAS.find(f => f.id === farmaciaActiva) || {}).nombre || farmaciaActiva;
+        const nombreOrigen = data.farmaciaNombre || farmaciaOrigen;
+        if (!confirm(`El archivo es de "${nombreOrigen}" y estás en "${nombreDestino}". ¿Cargar igual?`)) {
+          input.value = '';
+          return;
+        }
+      }
+
+      const origenMap = {};
+      filasOrigen.forEach(f => { origenMap[`${f.nombre}|${f.presentacion}`] = f.actaVencimiento || 0; });
+
+      let cargados = 0; const noEncontrados = [];
+      conteos[farmaciaActiva].filas.forEach(fila => {
+        const key = `${fila.nombre}|${fila.presentacion}`;
+        if (origenMap[key] !== undefined) { fila.actaVencimiento = origenMap[key]; cargados++; }
+        else noEncontrados.push(fila.nombre + ' ' + fila.presentacion);
+      });
+
+      guardar();
+      renderMain();
+
+      let msg = `✅ Acta/Vencimiento cargado: ${cargados} medicamentos actualizados.`;
+      if (noEncontrados.length > 0) {
+        msg += `\n\n⚠️ No encontrados en el archivo (quedan igual):\n${noEncontrados.join('\n')}`;
+      }
+      alert(msg);
+    } catch(err) {
+      alert('❌ Error al leer el archivo de Acta/Vencimiento: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+  input.value = '';
 }
 
 // ─────────────────────────────────────────────────────────────────
