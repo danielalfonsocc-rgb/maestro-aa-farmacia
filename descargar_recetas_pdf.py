@@ -221,6 +221,43 @@ def _buscar_envio_reciente(carpeta_local, n_receta, dias=15):
     return encontrados[0]
 
 
+def _agregar_encabezado_establecimiento(path, nombre_estab):
+    """Estampa el nombre del establecimiento de destino en la esquina
+    superior izquierda de cada página del combinado, a la misma altura de
+    línea que "SERVICIO DE SALUD ARAUCANIA SUR" (esquina superior derecha
+    nativa de la receta SSASUR, Y≈808.8pt baseline en una página A4 de
+    841.89pt) y con el mismo margen izquierdo (X=42.5pt) donde arranca
+    "RECETA MÉDICA N°" — mismo estilo (Helvetica-Bold 8pt, negro) que el
+    texto nativo que imita. Arranca en X=108 (no en X=42.5) para no pisar
+    el logo institucional que SSASUR ya imprime ahí mismo (ocupa X 42.5–
+    101.8 a esa altura). Pedido por el usuario 06-08-2026, para
+    identificar de un vistazo a qué establecimiento va cada receta dentro
+    del combinado."""
+    if not nombre_estab:
+        return
+    import io
+    from reportlab.pdfgen import canvas as rl_canvas
+    from pypdf import PdfReader as _PdfReader
+
+    reader = _PdfReader(str(path))
+    writer = PdfWriter()
+    for page in reader.pages:
+        w = float(page.mediabox.width)
+        h = float(page.mediabox.height)
+        buf = io.BytesIO()
+        c = rl_canvas.Canvas(buf, pagesize=(w, h))
+        c.setFillColorRGB(0, 0, 0)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(108, h - 33.1, nombre_estab.upper())
+        c.save()
+        buf.seek(0)
+        overlay = _PdfReader(buf).pages[0]
+        page.merge_page(overlay)
+        writer.add_page(page)
+    with open(str(path), "wb") as fh:
+        writer.write(fh)
+
+
 def _estampar_pdf(path, lineas):
     """Escribe `lineas` de texto en la esquina inferior izquierda de cada
     página del PDF en `path` (letra chica, no tapa el contenido oficial de
@@ -932,6 +969,7 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None, obs_por_rut=No
             writer.append(str(p))
         with open(combinado, "wb") as fh:
             writer.write(fh)
+        _agregar_encabezado_establecimiento(combinado, carpeta_local.replace("_", " "))
         print(f"Guardado: {combinado}  ({len(descargados)} receta(s))")
 
         pdfs_dir = os.path.join(salida_dir, "PDFs individuales")
@@ -951,6 +989,7 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None, obs_por_rut=No
             writer_conf.append(str(p))
         with open(combinado_conf, "wb") as fh:
             writer_conf.write(fh)
+        _agregar_encabezado_establecimiento(combinado_conf, carpeta_local.replace("_", " "))
         print(f"Guardado (confidencial): {combinado_conf}  ({len(descargados_confidencial)} receta(s) con aviso)")
 
     if ruts:
