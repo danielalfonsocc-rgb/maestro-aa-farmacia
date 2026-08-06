@@ -8,18 +8,26 @@ Sirve el formulario de conteo de stock de medicamentos controlados
   · Conteo_Controlados/stock_sistema.json → stock del DÍA ANTERIOR, que baja
                                         AUTO_SSASUR del "Reporte Stock en Fecha".
                                         Pre-llena la columna "Sistema".
+  · Conteo_Controlados/acta_vencimiento.json → valores reales de Acta/Vencimiento
+                                        por farmacia (la QF los actualiza a mano
+                                        pisando este archivo con un "Exportar
+                                        JSON" reciente). Pre-llena esa columna
+                                        una vez por fecha nueva del archivo —
+                                        ver aplicarActaVencimientoInyectado()
+                                        en conteo_controlados.html.
 
 El HTML es el mismo mockup que ya validó la QF (tabs por farmacia, resumen,
 tabla de conteo físico, historial, consolidado, exportar JSON/Excel/PDF). Esta
 app solo lo envuelve para:
   1. correrlo vía Streamlit (mismo ecosistema que app_maestro.py),
-  2. inyectar el stock del día anterior automáticamente cada día,
-  3. mostrar el estado del stock en la barra lateral.
+  2. inyectar el stock del día anterior y el Acta/Vencimiento automáticamente,
+  3. mostrar el estado de ambos en la barra lateral.
 
-El historial se guarda en el navegador (localStorage), igual que el HTML suelto,
-y NUNCA se toca la columna Acta/Vencimiento (la maneja la QF a mano). El botón
-"Exportar JSON" del formulario genera el archivo que se comparte y se conecta
-con las demás apps del Maestro AA.
+El historial se guarda en el navegador (localStorage), igual que el HTML suelto.
+La columna Acta/Vencimiento la sigue manejando la QF a mano dentro del
+formulario (o pisando acta_vencimiento.json) — la app nunca la inventa, solo
+la pre-carga desde ese archivo. El botón "Exportar JSON" del formulario genera
+el archivo que se comparte y se conecta con las demás apps del Maestro AA.
 
 Correr:  py -m streamlit run conteo_controlados_app.py --server.port 8503
 O:       ABRIR_CONTEO_CONTROLADOS.bat
@@ -37,6 +45,7 @@ MAESTRO_DIR = Path(__file__).parent
 HTML_FILE   = MAESTRO_DIR / "conteo_controlados.html"
 CONFIG_FILE = MAESTRO_DIR / "controlados_config.json"
 STOCK_FILE  = MAESTRO_DIR / "Conteo_Controlados" / "stock_sistema.json"
+ACTA_VENC_FILE = MAESTRO_DIR / "Conteo_Controlados" / "acta_vencimiento.json"
 
 st.set_page_config(page_title="Conteo de Controlados", page_icon="💊", layout="wide")
 
@@ -58,8 +67,9 @@ def _cargar_json(path):
         return None
 
 
-config = _cargar_json(CONFIG_FILE) or {}
-stock  = _cargar_json(STOCK_FILE)   # None si aún no se ha bajado el stock
+config     = _cargar_json(CONFIG_FILE) or {}
+stock      = _cargar_json(STOCK_FILE)       # None si aún no se ha bajado el stock
+acta_venc  = _cargar_json(ACTA_VENC_FILE)   # None si no hay archivo de Acta/Vencimiento
 
 # ── Barra lateral: estado del stock del sistema ────────────────────────────────
 with st.sidebar:
@@ -91,6 +101,25 @@ with st.sidebar:
             "(baja el *Reporte Stock en Fecha*: Cerrada = día actual, Abierta = día anterior)."
         )
     st.divider()
+    st.markdown("**Acta/Vencimiento**")
+    if acta_venc:
+        nombres = {f["id"]: f["nombre"] for f in config.get("farmacias", [])}
+        for fid, entry in acta_venc.items():
+            meta = (entry or {}).get("conteo", {}).get("meta", {})
+            fecha = meta.get("fecha", "?")
+            n = len((entry or {}).get("conteo", {}).get("filas", []))
+            st.caption(f"**{nombres.get(fid, fid)}**: {fecha} — {n} ítems")
+        st.caption(
+            "Se pre-carga UNA vez por fecha del archivo, sin pisar ediciones "
+            "manuales posteriores. Para actualizar: exporta un conteo reciente "
+            "de esa farmacia y reemplaza `Conteo_Controlados/acta_vencimiento.json`."
+        )
+    else:
+        st.caption(
+            "Sin archivo. La columna se llena a mano, o pisa "
+            "`Conteo_Controlados/acta_vencimiento.json` con un \"Exportar JSON\"."
+        )
+    st.divider()
     st.caption(
         "El historial se guarda en **este navegador**. Para compartir un conteo "
         "con las otras apps, usa **📤 Exportar JSON** dentro del formulario."
@@ -108,6 +137,8 @@ if HTML_FILE.exists():
         f"window.CONTROLADOS_CONFIG = {json.dumps(config, ensure_ascii=False)};\n"
         f"window.STOCK_SISTEMA_INYECTADO = "
         f"{json.dumps(stock, ensure_ascii=False) if stock else 'null'};\n"
+        f"window.ACTA_VENCIMIENTO_INYECTADO = "
+        f"{json.dumps(acta_venc, ensure_ascii=False) if acta_venc else 'null'};\n"
         "</script>\n"
     )
     # La inyección va JUSTO tras <body>, antes del <script> principal, para que

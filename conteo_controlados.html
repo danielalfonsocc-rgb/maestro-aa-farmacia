@@ -753,7 +753,8 @@ function renderConteo() {
                  onchange="updateMeta('qfRevisor', this.value)">
         </div>
       </div>
-      ${c.meta.stockSistemaFecha ? `<p class="nota">📥 Columna <b>Sistema</b> pre-cargada automáticamente con el stock del día <b>${formatFecha(c.meta.stockSistemaFecha)}</b> (día anterior, SSASUR). Puedes ajustar cada valor; la columna <b>Acta/Vencimiento</b> nunca se modifica.</p>` : ''}
+      ${c.meta.stockSistemaFecha ? `<p class="nota">📥 Columna <b>Sistema</b> pre-cargada automáticamente con el stock del día <b>${formatFecha(c.meta.stockSistemaFecha)}</b> (día anterior, SSASUR). Puedes ajustar cada valor.</p>` : ''}
+      ${c.meta.actaVencimientoFecha ? `<p class="nota">📋 Columna <b>Acta/Vencimiento</b> pre-cargada desde el archivo con fecha <b>${formatFecha(c.meta.actaVencimientoFecha)}</b>. Puedes ajustarla a mano; no se vuelve a pisar sola hasta que el archivo traiga una fecha más nueva.</p>` : ''}
     </div>
 
     <!-- Resumen -->
@@ -1609,6 +1610,43 @@ function aplicarStockInyectado() {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// ACTA/VENCIMIENTO INYECTADO (vía Streamlit) — Conteo_Controlados/acta_vencimiento.json
+// conteo_controlados_app.py lo lee y lo deja en window.ACTA_VENCIMIENTO_INYECTADO.
+// Formato: { <farmaciaId>: { conteo: { meta: {fecha}, filas: [{nombre,presentacion,actaVencimiento}] } } }
+// — el mismo formato que produce "📤 Exportar JSON" para esa farmacia. Para
+// actualizar los vencimientos: exporta un conteo reciente y reemplaza ese
+// archivo (o pide que se automatice).
+// Se aplica UNA vez por fecha nueva (meta.fecha del archivo, comparado con
+// c.meta.actaVencimientoFecha) — así se ve apenas se abre el .bat, pero no
+// pisa ediciones manuales hechas después en el navegador ni obliga a recargar
+// el JSON en cada conteo. Para forzar una carga puntual sin tocar el archivo
+// fijo, está el botón "📋 Cargar Acta/Vencimiento (JSON)" (cargarActaVencimientoJSON).
+// ─────────────────────────────────────────────────────────────────
+function aplicarActaVencimientoInyectado() {
+  const inj = (typeof window !== 'undefined' && window.ACTA_VENCIMIENTO_INYECTADO) || null;
+  if (!inj) return;
+  let algo = false;
+  FARMACIAS.forEach(f => {
+    const entry = inj[f.id];
+    const filasOrigen = entry && entry.conteo && entry.conteo.filas;
+    if (!Array.isArray(filasOrigen)) return;
+    const fecha = (entry.conteo.meta && entry.conteo.meta.fecha) || entry.exportadoEn || '';
+    const c = conteos[f.id];
+    if (!c) return;
+    if (fecha && c.meta.actaVencimientoFecha === fecha) return;  // ya aplicado esta versión del archivo
+    const origenMap = {};
+    filasOrigen.forEach(fo => { origenMap[`${fo.nombre}|${fo.presentacion}`] = fo.actaVencimiento || 0; });
+    c.filas.forEach(fila => {
+      const key = `${fila.nombre}|${fila.presentacion}`;
+      if (origenMap[key] !== undefined) fila.actaVencimiento = origenMap[key];
+    });
+    c.meta.actaVencimientoFecha = fecha;
+    algo = true;
+  });
+  if (algo) guardar();
+}
+
+// ─────────────────────────────────────────────────────────────────
 initState();
 renderTabs();
 renderMain();
@@ -1620,6 +1658,7 @@ if (ONLINE) {
   // el stock del sistema y repinto.
   onlineCargarEstado().then(() => {
     aplicarStockInyectado();
+    aplicarActaVencimientoInyectado();
     renderTabs();
     renderMain();
   });
@@ -1628,6 +1667,7 @@ if (ONLINE) {
   document.addEventListener('focusout', e => { if (e.target.tagName === 'INPUT') pausarPoll = false; });
 } else {
   aplicarStockInyectado();
+  aplicarActaVencimientoInyectado();
   renderTabs();
   renderMain();
 }
