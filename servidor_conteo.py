@@ -40,6 +40,7 @@ MAESTRO_DIR = Path(__file__).parent
 HTML_FILE   = MAESTRO_DIR / "conteo_controlados.html"
 CONFIG_FILE = MAESTRO_DIR / "controlados_config.json"
 STOCK_FILE  = MAESTRO_DIR / "Conteo_Controlados" / "stock_sistema.json"
+ACTA_VENC_FILE = MAESTRO_DIR / "Conteo_Controlados" / "acta_vencimiento.json"
 ESTADO_FILE = MAESTRO_DIR / "Conteo_Controlados" / "estado_compartido.json"
 
 _lock = threading.Lock()  # protege lectura/escritura de ESTADO_FILE entre hilos
@@ -112,12 +113,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         config = _cargar_json(CONFIG_FILE, {})
         stock = _cargar_json(STOCK_FILE, None)
+        acta_venc = _cargar_json(ACTA_VENC_FILE, None)
         html = HTML_FILE.read_text(encoding="utf-8")
         inyeccion = (
             "<script>\n"
             f"window.CONTROLADOS_CONFIG = {json.dumps(config, ensure_ascii=False)};\n"
             f"window.STOCK_SISTEMA_INYECTADO = "
             f"{json.dumps(stock, ensure_ascii=False) if stock else 'null'};\n"
+            f"window.ACTA_VENCIMIENTO_INYECTADO = "
+            f"{json.dumps(acta_venc, ensure_ascii=False) if acta_venc else 'null'};\n"
             "window.CONTEO_ONLINE = true;\n"
             "</script>\n"
         )
