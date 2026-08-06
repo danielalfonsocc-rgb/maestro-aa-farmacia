@@ -33,6 +33,12 @@
         "--server.port", "8503"
       ],
       "port": 8503
+    },
+    {
+      "name": "servidor_conteo",
+      "runtimeExecutable": "py",
+      "runtimeArgs": ["servidor_conteo.py", "--port", "8504"],
+      "port": 8504
     }
   ]
 }
