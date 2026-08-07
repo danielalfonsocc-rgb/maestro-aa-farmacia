@@ -177,43 +177,108 @@ def cargar_despachos_clozapina(csv_recetas: str, desde: Optional[date] = None, h
 # 3) EXTRACCIÓN DE HEMOGRAMA DESDE PDF
 # ============================================================
 
-_LABELS_DIFERENCIAL = ["BASOFILOS", "EOSINOFILOS", "NEUTROFILOS", "LINFOCITOS", "MONOCITOS"]
+# Alias por campo: distintos laboratorios de la red usan distinta etiqueta para el mismo
+# analito ("NEUTROFILOS" en el Sysmex propio del hospital, "SEGMENTADOS" en el formato
+# antiguo de CESFAM Freire). Se prueba cada alias en orden hasta encontrar uno que matchee.
+_ALIAS_DIFERENCIAL = {
+    "basofilos": ["BASOFILOS"],
+    "eosinofilos": ["EOSINOFILOS"],
+    "neutrofilos": ["NEUTROFILOS", "SEGMENTADOS"],
+    "linfocitos": ["LINFOCITOS"],
+    "monocitos": ["MONOCITOS"],
+}
 
 
 def _num_pdf(s: str) -> float:
     return float(s.replace(",", "."))
 
 
+def _quitar_tildes(s: str) -> str:
+    """Normaliza tildes ('Basófilos' -> 'Basofilos') para que los regex (escritos sin tilde)
+    matcheen también el formato del laboratorio PROPIO del hospital, que a diferencia de los
+    laboratorios de la red usa etiquetas acentuadas (ej. 'Neutrófilos %' en vez de
+    'NEUTROFILOS %'). Sin esto, el hemograma más común (el del propio hospital) se leía a
+    medias: LEUCO/HTO/HB/GLOB ROJOS salían bien (esas etiquetas no llevan tilde) pero
+    BAS/EOS/SEG/LINFO/MONO y la fecha de toma de muestra quedaban en blanco."""
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+
+
+# Relleno entre la etiqueta y el número: absorbe flechas de alarma ↑/↓, espacios, asteriscos
+# u otros glifos que el PDF real pueda usar — pero NO puede cruzar la palabra "PENDIENTE"
+# (examen aún sin resultado del laboratorio). Sin ese bloqueo, "Hematocrito Pendiente % 35.0
+# - 44.0" saltaba "Pendiente" entero y capturaba 35.0 (el LÍMITE del rango de referencia) como
+# si fuera el resultado real — un valor clínico inventado con apariencia normal, peor que
+# dejarlo en blanco. Detectado en vivo (29-07, paciente con examen "Pendiente").
+_RELLENO = r"(?:(?!PENDIENTE)[^\d\n])*"
+_RELLENO_NG = r"(?:(?!PENDIENTE)[^\d\n])*?"
+
+
+def _buscar(texto: str, patron: str) -> Optional[float]:
+    m = re.search(patron, texto, re.IGNORECASE)
+    return _num_pdf(m.group(1)) if m else None
+
+
 def extraer_hemograma_texto(texto: str) -> dict:
     """Parsea el texto plano del PDF de resultados HCE (sección
-    'HEMOGRAMA FORMULA DIFERENCIAL AUTOMATIZADA') y devuelve un dict con los campos
-    que necesita motor_reglas_clozapina_v3 + la planilla MINSAL."""
+    'HEMOGRAMA FORMULA DIFERENCIAL AUTOMATIZADA' u homóloga) y devuelve un dict con los
+    campos que necesita motor_reglas_clozapina_v3 + la planilla MINSAL. Reconoce el formato
+    del laboratorio propio del hospital (Sysmex, etiquetas acentuadas) y el de laboratorios
+    de la red con layout más antiguo (ej. CESFAM Freire: sin filas de conteo absoluto,
+    'SEGMENTADOS' en vez de 'NEUTROFILOS', recuentos ya en escala absoluta '/mm3')."""
     out: dict = {}
+    texto = _quitar_tildes(texto)
 
-    # [^\d\n]* absorbe cualquier relleno entre la etiqueta y el número (flechas de alarma
-    # ↑/↓, espacios, u otros glifos que el PDF real pueda usar que no sean dígitos ni salto
-    # de línea) — más robusto que anclarse a caracteres de flecha específicos.
-    simples = {
-        "leucocitos": r"RECUENTO DE LEUCOCITOS[^\d\n]*([\d]+(?:[.,]\d+)?)",
-        "eritrocitos": r"RECUENTO DE ERITROCITOS[^\d\n]*([\d]+(?:[.,]\d+)?)",
-        "hematocrito": r"\bHEMATOCRITO[^\d\n]*([\d]+(?:[.,]\d+)?)",
-        "hemoglobina": r"\bHEMOGLOBINA[^\d\n]*([\d]+(?:[.,]\d+)?)",
-        "plaquetas": r"RECUENTO DE PLAQUETAS[^\d\n]*([\d]+(?:[.,]\d+)?)",
-    }
-    for campo, patron in simples.items():
-        m = re.search(patron, texto, re.IGNORECASE)
-        out[campo] = _num_pdf(m.group(1)) if m else None
+    out["hematocrito"] = _buscar(texto, rf"\bHEMATOCRITO{_RELLENO}([\d]+(?:[.,]\d+)?)")
+    out["hemoglobina"] = _buscar(texto, rf"\bHEMOGLOBINA{_RELLENO}([\d]+(?:[.,]\d+)?)")
+    out["eritrocitos"] = _buscar(texto, rf"RECUENTO DE ERITROCITOS{_RELLENO}([\d]+(?:[.,]\d+)?)")
 
-    for lab in _LABELS_DIFERENCIAL:
-        m_pct = re.search(rf"{lab}\s*%[^\d\n]*([\d]+(?:[.,]\d+)?)", texto, re.IGNORECASE)
-        out[f"{lab.lower()}_pct"] = _num_pdf(m_pct.group(1)) if m_pct else None
-        m_abs = re.search(rf"{lab}(?!\s*%)[^\d\n]*([\d]+(?:[.,]\d+)?)\s*10", texto, re.IGNORECASE)
-        out[f"{lab.lower()}_abs"] = _num_pdf(m_abs.group(1)) if m_abs else None
+    # LEUCO y PLAQ: el Sysmex propio reporta ya en la escala x1.000 que usa el resto del
+    # script ("RECUENTO DE LEUCOCITOS 6.15 10^3/uL" -> se multiplica x1.000 más abajo). Los
+    # laboratorios de red con formato antiguo (CESFAM Freire) reportan el conteo ABSOLUTO
+    # directo ("REC. LEUCOCITOS 5230 /mm3") — hay que dividir por 1.000 al leerlo para que
+    # quede en la MISMA escala, o el factor x1.000 de construir_fila lo infla 1000 veces.
+    out["leucocitos"] = _buscar(texto, rf"RECUENTO DE LEUCOCITOS{_RELLENO}([\d]+(?:[.,]\d+)?)")
+    if out["leucocitos"] is None:
+        v = _buscar(texto, rf"REC\.?\s*LEUCOCITOS{_RELLENO}([\d]+(?:[.,]\d+)?)\s*/\s*mm3")
+        out["leucocitos"] = v / 1000 if v is not None else None
+    # El laboratorio propio del hospital omite el "DE" en esta etiqueta puntual ("Recuento
+    # plaquetas", a diferencia de "Recuento DE Leucocitos"/"Recuento DE eritrocitos" que sí
+    # lo llevan) — "DE" opcional para cubrir ambos.
+    out["plaquetas"] = _buscar(texto, rf"RECUENTO\s+(?:DE\s+)?PLAQUETAS{_RELLENO}([\d]+(?:[.,]\d+)?)")
+    if out["plaquetas"] is None:
+        v = _buscar(texto, rf"REC\.?\s*PLAQUETAS{_RELLENO}([\d]+(?:[.,]\d+)?)\s*/\s*mm3")
+        out["plaquetas"] = v / 1000 if v is not None else None
 
-    # El PDF real usa GUION en este campo ("17-07-2026"), no barra, a diferencia
-    # de casi todas las otras fechas del documento — confirmado en vivo con un
-    # caso real. Se acepta cualquiera de los dos separadores por robustez.
-    m_fecha = re.search(r"Fecha/Hora de T\. muestra\s*:?\s*(\d{2})[/-](\d{2})[/-](\d{4})", texto)
+    for campo, alias in _ALIAS_DIFERENCIAL.items():
+        pct = abso = None
+        for lab in alias:
+            if pct is None:
+                # Formato de dos filas (Sysmex): "NEUTROFILOS % 27.10 % ..." — el % va
+                # PEGADO a la etiqueta, lo que distingue esta fila de la fila de conteo
+                # absoluto de más abajo (misma etiqueta, sin % después).
+                pct = _buscar(texto, rf"{lab}\s*%{_RELLENO}([\d]+(?:[.,]\d+)?)")
+            if pct is None:
+                # Formato de una sola fila (CESFAM Freire): "SEGMENTADOS 73.5 % 50 - 68" — el
+                # número va ANTES del %, no pegado a la etiqueta.
+                pct = _buscar(texto, rf"{lab}(?!\s*%){_RELLENO_NG}([\d]+(?:[.,]\d+)?)\s*%")
+            if abso is None:
+                abso = _buscar(texto, rf"{lab}(?!\s*%){_RELLENO}([\d]+(?:[.,]\d+)?)\s*10")
+            if pct is not None and abso is not None:
+                break
+        out[f"{campo}_pct"] = pct
+        out[f"{campo}_abs"] = abso
+
+    # El PDF real usa GUION en este campo ("17-07-2026"), no barra, a diferencia de casi
+    # todas las otras fechas del documento — confirmado en vivo con un caso real. Se acepta
+    # cualquiera de los dos separadores por robustez. IGNORECASE porque el laboratorio propio
+    # del hospital capitaliza distinto ("Fecha/hora de T. Muestra" en vez de "Fecha/Hora de
+    # T. muestra").
+    m_fecha = re.search(r"Fecha/Hora de T\.\s*muestra\s*:?\s*(\d{2})[/-](\d{2})[/-](\d{4})", texto, re.IGNORECASE)
+    if not m_fecha:
+        # Formato antiguo de red (CESFAM Freire): sin el prefijo "Fecha/Hora de T.", solo
+        # "Toma muestra : dd/mm/aaaa".
+        m_fecha = re.search(r"\bToma\s+muestra\s*:?\s*(\d{2})[/-](\d{2})[/-](\d{4})", texto, re.IGNORECASE)
     out["fecha_muestra"] = date(int(m_fecha.group(3)), int(m_fecha.group(2)), int(m_fecha.group(1))) if m_fecha else None
 
     m_run = re.search(r"\bRUN\s*:?\s*([\d.]+-?[\dkK])", texto)
