@@ -49,7 +49,16 @@ Modos (CLI):
   · --no-controlados   no baja el informe de medicamentos controlados (PASO 3b)
   · --no-stock-controlados  no baja el stock del día anterior para el conteo de
                        controlados (PASO 4d → Conteo_Controlados/stock_sistema.json)
-  · --no-publicar      no publica en GitHub (debug)
+  · --no-publicar      no publica en GitHub (debug). OJO: SOLO afecta GitHub —
+                       el PASO 7-9 (Escritorio + Google Drive) corre igual, con
+                       datos reales. No existe un flag que frene Escritorio/Drive;
+                       para una corrida de prueba realmente acotada hay que
+                       combinarlo con --no-gt --no-controlados --no-programacion
+                       --no-stock-controlados --no-servicios-farmaceuticos --no-rch,
+                       y aun así el Escritorio y Drive se actualizan de verdad.
+                       Confundido en vivo 07-08-2026 probando el fix de clozapina:
+                       se asumió que --no-publicar frenaba todo, y terminó
+                       corriendo la sincronización completa a Escritorio+Drive.
   · --servicios-farmaceuticos  fuerza el PASO 4e (recuento mensual QF, Agenda
                        Médica) ignorando el gatillo de "primeros días hábiles
                        del mes" — úsalo para la 1ª prueba supervisada o para
@@ -1126,7 +1135,10 @@ async def main():
 
     # Modo prueba: descarga SOLO recetas y termina (sin stock, maestro ni publicar).
     solo_recetas = "--solo-recetas" in sys.argv
-    # No publicar en GitHub al final (útil para corridas de prueba/debug).
+    # No publicar en GitHub al final (útil para corridas de prueba/debug). SOLO
+    # frena GitHub — PASO 7-9 sigue copiando al Escritorio y subiendo a Drive
+    # con datos reales pase lo que pase (ver nota en SINCRONIZAR_TODO.bat más
+    # abajo). No asumir que "no_publicar" == "no toca nada externo".
     no_publicar  = "--no-publicar" in sys.argv
     # Modo GT exclusivo: solo gestión territorial y termina (sin sábana/stock/maestro).
     gt_mode  = ("--gt" in sys.argv) or ("--solo-gt" in sys.argv)
@@ -1884,6 +1896,9 @@ async def main():
         # Incluye Recetas Cheque ISP → Drive (excepción autorizada por el usuario
         # 2026-06-30, confirmada AUTOMÁTICA en cada corrida 2026-07-15 — sube RUT
         # de pacientes sin confirmación puntual; --no-rch la desactiva).
+        # OJO: --no-publicar solo agrega "--no-git" acá abajo — Escritorio y Drive
+        # se sincronizan SIEMPRE que exista SINCRONIZAR_TODO.bat, con datos
+        # reales. No hay flag para saltarse este paso completo.
         sync_bat = MAESTRO_DIR / "SINCRONIZAR_TODO.bat"
         if sync_bat.exists():
             print("\n[7-9/9] Sincronizando todo (Escritorio + GitHub + Drive + Recetas Cheque)...")
