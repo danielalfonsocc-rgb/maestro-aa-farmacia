@@ -508,11 +508,11 @@ def verificar_backlog_gt(hoy: date) -> None:
     """Cruza informe_completo_recetas*.csv (histórico real, no el reporte de
     pendientes) contra gt_maestro.xlsx para encontrar recetas con Gestión
     Territorial='S' y Fecha Entrega Receta dentro del hueco fin de
-    semana/feriado que paso_gt() no pudo ver (ver rango_backlog_gt). Solo
-    IMPRIME lo que encuentra — no escribe nada — para que un QF revise y
-    corra GT_NOMINA_PARTICULAR.bat / agregar_gt_manual.py a mano, mismo
-    patrón que las hojas 'ambiguas' de limpiar_gt_maestro.py: mejor reportar
-    y dejar que una persona decida que auto-aplicar en silencio."""
+    semana/feriado que paso_gt() no pudo ver (ver rango_backlog_gt). Antes
+    esto solo IMPRIMÍA el hallazgo y esperaba que un QF corriera
+    GT_NOMINA_PARTICULAR.bat a mano (en la práctica, no pasaba de forma
+    confiable — ver _generar_backlog_gt). Ahora, además de avisar, GENERA
+    y REGISTRA la(s) Nómina(s) de Envío que faltan automáticamente."""
     rango = rango_backlog_gt(hoy)
     if rango is None:
         return
@@ -520,18 +520,52 @@ def verificar_backlog_gt(hoy: date) -> None:
     fechas_ok = {(desde + timedelta(days=i)).strftime("%d/%m/%Y")
                  for i in range((hasta - desde).days + 1)}
 
+    # Campos que interesan de informe_completo_recetas*.csv. OJO: "Periodo"
+    # aparece DOS VECES en ese CSV — la columna de la receta (tras "Estado",
+    # valores tipo "1 de 1") y la de la dosis/prescripción (tras "Intervalo",
+    # valores "DIAS"/"HORAS"). csv.DictReader se queda con la ÚLTIMA columna
+    # de nombre repetido (la equivocada) — por eso acá se lee por posición y
+    # se usa la PRIMERA ocurrencia de cada nombre, igual que hace
+    # maestro_aa.py con pandas al excluir el sufijo ".1" de read_csv.
+    _CAMPOS_BACKLOG = ("Nombre", "Apellido Paterno", "Apellido Materno", "RUN",
+                        "Establecimiento Retira G. Territorial", "Comuna", "Periodo",
+                        "Especialidad", "Fono 1", "Fecha Entrega Receta")
+
     filas_por_receta = {}
+    conteo_por_receta = {}   # receta -> nº de líneas de prescripción (usado como n_presc del backfill)
     for path in sorted(_glob.glob(str(MAESTRO_DIR / "informe_completo_recetas*.csv"))):
         try:
             with open(path, encoding="latin-1", newline="") as fh:
-                for row in _csv.DictReader(fh, delimiter=";"):
-                    if (row.get("Gestión Territorial") or "").strip().upper() != "S":
+                rd = _csv.reader(fh, delimiter=";")
+                try:
+                    hdr = [h.strip() for h in next(rd)]
+                except StopIteration:
+                    continue
+                idx = {}
+                for i, h in enumerate(hdr):
+                    if h not in idx:   # primera ocurrencia manda (ver nota arriba)
+                        idx[h] = i
+
+                def _get(r, campo, _idx=idx):
+                    i = _idx.get(campo)
+                    return r[i].strip() if (i is not None and i < len(r)) else ""
+
+                i_gt = idx.get("Gestión Territorial")
+                i_fecha = idx.get("Fecha Entrega Receta")
+                i_receta = idx.get("Número Receta")
+                if i_gt is None or i_fecha is None or i_receta is None:
+                    continue
+                for r in rd:
+                    if i_gt >= len(r) or (r[i_gt] or "").strip().upper() != "S":
                         continue
-                    if (row.get("Fecha Entrega Receta") or "").strip() not in fechas_ok:
+                    if i_fecha >= len(r) or (r[i_fecha] or "").strip() not in fechas_ok:
                         continue
-                    n = (row.get("Número Receta") or "").strip()
-                    if n:
-                        filas_por_receta.setdefault(n, row)
+                    n = (r[i_receta] or "").strip() if i_receta < len(r) else ""
+                    if not n:
+                        continue
+                    if n not in filas_por_receta:
+                        filas_por_receta[n] = {campo: _get(r, campo) for campo in _CAMPOS_BACKLOG}
+                    conteo_por_receta[n] = conteo_por_receta.get(n, 0) + 1
         except Exception:
             continue
     if not filas_por_receta:
@@ -559,9 +593,82 @@ def verificar_backlog_gt(hoy: date) -> None:
         nombre = f"{r.get('Nombre','').strip()} {r.get('Apellido Paterno','').strip()} {r.get('Apellido Materno','').strip()}"
         destino = r.get("Establecimiento Retira G. Territorial") or f"(sin destino — comuna: {r.get('Comuna','?')})"
         print(f"    {n} | {nombre} | {destino} | entregada {r.get('Fecha Entrega Receta')}")
-    print("  → Bájate el Informe Modalidad de Despacho actual y corre")
-    print("    GT_NOMINA_PARTICULAR.bat (opción 2) o agregar_gt_manual.py --gt-excel")
-    print("    para generar la(s) nómina(s) que faltan.")
+    print("═" * 62)
+
+    _generar_backlog_gt(faltantes, conteo_por_receta)
+
+
+def _generar_backlog_gt(faltantes, conteo_por_receta) -> None:
+    """Genera y registra AUTOMÁTICAMENTE la(s) Nómina(s) de Envío para las
+    recetas que verificar_backlog_gt() detectó sin fila en el maestro GT.
+
+    Antes esto solo se imprimía en el log (ver git blame) y dependía de que
+    alguien lo viera y corriera GT_NOMINA_PARTICULAR.bat a mano — en la
+    práctica no pasaba: caso real detectado 07-08-2026, 50 recetas
+    entregadas el 06-08-2026 (23 CESFAM QUEPE, 15 TOLTEN HOSP., 8 PSR
+    QUEULE, 4 CESFAM TEODORO SCHMIDT) llevaban acumuladas SIN nómina.
+
+    OJO — la opción 2 de GT_NOMINA_PARTICULAR.bat (agregar_gt_manual.py
+    --gt-excel) NO sirve para este caso: ese flujo lee un Informe Modalidad
+    de Despacho recién bajado, pero estas recetas ya desaparecieron de ese
+    reporte (SSASUR solo lista despachos PENDIENTES — ver rango_backlog_gt).
+    Por eso acá se arman las filas directo desde el histórico real
+    (informe_completo_recetas*.csv, ya leído por verificar_backlog_gt) y se
+    reusa la MISMA lógica de registro + generación de agregar_gt_manual.py
+    (equivalente a su opción 1, "--csv" pero sin el paso manual de Excel)."""
+    try:
+        import agregar_gt_manual as _AGM
+        import gt_maestro as _GM
+    except Exception as e:
+        print(f"  [AVISO] No pude generar automáticamente las nóminas del backlog: {e}")
+        print("  → Corre GT_NOMINA_PARTICULAR.bat (opción 1) a mano con estos datos.")
+        return
+
+    filas, sin_destino = [], []
+    for n, row in faltantes:
+        # "TOLTEN HOSP." trae punto final en el histórico crudo; se saca para calzar
+        # con _CARPETA_LOCAL de agregar_gt_manual.py (mismo tratamiento que --gt-excel).
+        destino = (row.get("Establecimiento Retira G. Territorial") or "").strip().upper().rstrip(".")
+        if not destino:
+            sin_destino.append(n)
+            continue
+        nombre = f"{row.get('Nombre','').strip()} {row.get('Apellido Paterno','').strip()} {row.get('Apellido Materno','').strip()}".strip()
+        filas.append({
+            "receta": n, "paciente": nombre,
+            "rut": (row.get("RUN") or "").strip(),
+            "destino": destino,
+            "periodo": (row.get("Periodo") or "").strip(),
+            "especialidad": (row.get("Especialidad") or "").strip(),
+            "n_presc": str(conteo_por_receta.get(n, 1)),
+            "telefono": (row.get("Fono 1") or "").strip(),
+            "pendiente": "",
+        })
+    if sin_destino:
+        print(f"  [AVISO] {len(sin_destino)} receta(s) del backlog sin 'Establecimiento Retira G. "
+              f"Territorial' informado — quedan SIN generar, revisar a mano: {sin_destino}")
+    if not filas:
+        return
+
+    wb, path = _GM.cargar_maestro()
+    hoy = date.today()
+    hojas_tocadas = {}
+    for f in filas:
+        receta_dict = {k: v for k, v in f.items() if k != "receta" and v} | {"receta": f["receta"]}
+        ws, _resultado, _ = _GM.upsert_receta_maestro(wb, receta_dict, estado="EN PREPARACIÓN", fecha_fallback=hoy)
+        hojas_tocadas[ws.title] = ws
+    for ws in hojas_tocadas.values():
+        _GM.aplicar_formato_maestro(ws)
+    _GM.formatear_historial(wb)
+    _GM.guardar(wb, path)
+
+    por_destino = {}
+    for f in filas:
+        por_destino.setdefault(f["destino"], []).append(f)
+    print(f"\n  [BACKLOG GT] Generando {len(filas)} receta(s) que faltaban en {len(por_destino)} nómina(s):")
+    for destino, filas_destino in por_destino.items():
+        ruta = _AGM._generar_nomina(destino, filas_destino, hoy)
+        print(f"    {destino}: {len(filas_destino)} receta(s) -> {ruta}")
+    print("  (quedaron registradas en el maestro GT y en Nóminas de Envío — despachar cuanto antes)")
     print("═" * 62)
 
 
@@ -1404,9 +1511,12 @@ async def main():
         # El reporte de arriba solo ve PENDIENTES — una receta despachada un
         # día sin corrida (sábado, domingo, feriado) desaparece de ahí para
         # siempre sin dejar nómina. Se cruza el histórico real
-        # (informe_completo_recetas) contra el maestro para no perderlas
-        # (ver rango_backlog_gt/verificar_backlog_gt). Corre siempre — es un
-        # chequeo de solo lectura, no hace nada si no hay hueco que revisar.
+        # (informe_completo_recetas) contra el maestro para no perderlas y,
+        # si encuentra alguna, GENERA y REGISTRA la Nómina de Envío que
+        # falta (ver rango_backlog_gt/verificar_backlog_gt/_generar_backlog_gt).
+        # Corre siempre — no hace nada si no hay hueco/backlog que revisar,
+        # pero cuando SÍ encuentra algo escribe en gt_maestro.xlsx y en
+        # 04_Farmacia_Gestion_Territorial (ya no es de solo lectura).
         if not no_gt:
             try:
                 verificar_backlog_gt(today)
@@ -1822,11 +1932,19 @@ async def main():
             print(f"\n[5c/9] Cruce GT + generando planillas → out_gt/{out_gt.name}/ ...")
             cruce = MAESTRO_DIR / "cruce_gt.py"
             if cruce.exists():
-                subprocess.run(
+                cret = subprocess.run(
                     [sys.executable, str(cruce), str(gt_dest),
                      "--salida", str(out_gt), "--generar"],
                     cwd=str(MAESTRO_DIR), env=env_utf8,
                 )
+                if cret.returncode != 0:
+                    # Antes esto no se chequeaba (a diferencia de 5d/5e/5f, que sí
+                    # avisan) — si cruce_gt.py/generar.py fallaba a medio camino,
+                    # el día se quedaba sin nóminas y no quedaba ningún rastro en
+                    # el log para notarlo (mismo patrón silencioso que el bug de
+                    # backlog GT arreglado arriba).
+                    print(f"  [aviso] cruce_gt.py terminó con código {cret.returncode} — revisa si "
+                          f"out_gt/{out_gt.name}/ quedó con todas las planillas esperadas.")
             else:
                 print(f"  [aviso] cruce_gt.py no encontrado — omitiendo cruce.")
 
