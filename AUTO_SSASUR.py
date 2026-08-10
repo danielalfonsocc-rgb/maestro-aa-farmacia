@@ -533,6 +533,7 @@ def verificar_backlog_gt(hoy: date) -> None:
 
     filas_por_receta = {}
     conteo_por_receta = {}   # receta -> nº de líneas de prescripción (usado como n_presc del backfill)
+    lineas_por_receta = {}   # receta -> [(Prescripción, Cantidad Recetada), ...] (para detectar refrigerados)
     for path in sorted(_glob.glob(str(MAESTRO_DIR / "informe_completo_recetas*.csv"))):
         try:
             with open(path, encoding="latin-1", newline="") as fh:
@@ -553,6 +554,8 @@ def verificar_backlog_gt(hoy: date) -> None:
                 i_gt = idx.get("Gestión Territorial")
                 i_fecha = idx.get("Fecha Entrega Receta")
                 i_receta = idx.get("Número Receta")
+                i_presc = idx.get("Prescripción")
+                i_cant = idx.get("Cantidad Recetada")
                 if i_gt is None or i_fecha is None or i_receta is None:
                     continue
                 for r in rd:
@@ -566,6 +569,10 @@ def verificar_backlog_gt(hoy: date) -> None:
                     if n not in filas_por_receta:
                         filas_por_receta[n] = {campo: _get(r, campo) for campo in _CAMPOS_BACKLOG}
                     conteo_por_receta[n] = conteo_por_receta.get(n, 0) + 1
+                    prod = r[i_presc].strip() if (i_presc is not None and i_presc < len(r)) else ""
+                    if prod:
+                        cant = r[i_cant].strip() if (i_cant is not None and i_cant < len(r)) else ""
+                        lineas_por_receta.setdefault(n, []).append((prod, cant))
         except Exception:
             continue
     if not filas_por_receta:
@@ -595,10 +602,10 @@ def verificar_backlog_gt(hoy: date) -> None:
         print(f"    {n} | {nombre} | {destino} | entregada {r.get('Fecha Entrega Receta')}")
     print("═" * 62)
 
-    _generar_backlog_gt(faltantes, conteo_por_receta)
+    _generar_backlog_gt(faltantes, conteo_por_receta, lineas_por_receta)
 
 
-def _generar_backlog_gt(faltantes, conteo_por_receta) -> None:
+def _generar_backlog_gt(faltantes, conteo_por_receta, lineas_por_receta=None) -> None:
     """Genera y registra AUTOMÁTICAMENTE la(s) Nómina(s) de Envío para las
     recetas que verificar_backlog_gt() detectó sin fila en el maestro GT.
 
@@ -623,6 +630,23 @@ def _generar_backlog_gt(faltantes, conteo_por_receta) -> None:
         print(f"  [AVISO] No pude generar automáticamente las nóminas del backlog: {e}")
         print("  → Corre GT_NOMINA_PARTICULAR.bat (opción 1) a mano con estos datos.")
         return
+    try:
+        import cruce_gt as _CG
+    except Exception:
+        _CG = None   # sin detección de refrigerados — la nómina/letrero se generan igual, sin la lista
+
+    lineas_por_receta = lineas_por_receta or {}
+
+    def _refrigerado_texto(n):
+        """Mismo formato que cruce_gt.clasificar(): 'Nombre xCantidad; ...'."""
+        if _CG is None:
+            return ""
+        vistos = []
+        for prod, cant in lineas_por_receta.get(n, []):
+            lab = _CG.es_refrigerado(prod)
+            if lab:
+                vistos.append(f"{lab} x{cant or '1'}")
+        return "; ".join(dict.fromkeys(vistos))
 
     filas, sin_destino = [], []
     for n, row in faltantes:
@@ -642,6 +666,7 @@ def _generar_backlog_gt(faltantes, conteo_por_receta) -> None:
             "n_presc": str(conteo_por_receta.get(n, 1)),
             "telefono": (row.get("Fono 1") or "").strip(),
             "pendiente": "",
+            "refrigerado": _refrigerado_texto(n),
         })
     if sin_destino:
         print(f"  [AVISO] {len(sin_destino)} receta(s) del backlog sin 'Establecimiento Retira G. "
@@ -666,8 +691,11 @@ def _generar_backlog_gt(faltantes, conteo_por_receta) -> None:
         por_destino.setdefault(f["destino"], []).append(f)
     print(f"\n  [BACKLOG GT] Generando {len(filas)} receta(s) que faltaban en {len(por_destino)} nómina(s):")
     for destino, filas_destino in por_destino.items():
-        ruta = _AGM._generar_nomina(destino, filas_destino, hoy)
-        print(f"    {destino}: {len(filas_destino)} receta(s) -> {ruta}")
+        ruta, ruta_letrero = _AGM._generar_nomina(destino, filas_destino, hoy)
+        if ruta_letrero:
+            print(f"    {destino}: {len(filas_destino)} receta(s) -> {ruta}, {ruta_letrero}")
+        else:
+            print(f"    {destino}: {len(filas_destino)} receta(s) -> {ruta}")
     print("  (quedaron registradas en el maestro GT y en Nóminas de Envío — despachar cuanto antes)")
     print("═" * 62)
 
