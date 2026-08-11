@@ -527,9 +527,20 @@ def verificar_backlog_gt(hoy: date) -> None:
     # de nombre repetido (la equivocada) — por eso acá se lee por posición y
     # se usa la PRIMERA ocurrencia de cada nombre, igual que hace
     # maestro_aa.py con pandas al excluir el sufijo ".1" de read_csv.
+    # Bug real 10-08-2026: "Fecha Entrega Receta" en este CSV NO significa
+    # "ya se entregó" — puede ser una fecha objetivo/agendada que después se
+    # reprograma. La prueba real: la receta 45206882 traía Fecha Entrega
+    # Receta=06/08/2026 con Estado='PENDIENTE', y seguía viva y "EN TRÁNSITO"
+    # en el reporte de Modalidad de Despacho días después con OTRA fecha
+    # (10/08). Sin filtrar por Estado='ENTREGADA', este chequeo generaba
+    # nóminas prematuras/duplicadas para recetas que la corrida normal de
+    # cruce_gt.py iba a procesar de todos modos (6 de 50 casos ese día). Solo
+    # cuenta como "backlog perdido" una receta genuinamente ya despachada por
+    # la farmacia (Estado='ENTREGADA') que además ya no aparece en ningún
+    # reporte de pendientes futuro.
     _CAMPOS_BACKLOG = ("Nombre", "Apellido Paterno", "Apellido Materno", "RUN",
                         "Establecimiento Retira G. Territorial", "Comuna", "Periodo",
-                        "Especialidad", "Fono 1", "Fecha Entrega Receta")
+                        "Especialidad", "Fono 1", "Fecha Entrega Receta", "Estado")
 
     filas_por_receta = {}
     conteo_por_receta = {}   # receta -> nº de líneas de prescripción (usado como n_presc del backfill)
@@ -556,12 +567,18 @@ def verificar_backlog_gt(hoy: date) -> None:
                 i_receta = idx.get("Número Receta")
                 i_presc = idx.get("Prescripción")
                 i_cant = idx.get("Cantidad Recetada")
+                i_estado = idx.get("Estado")
                 if i_gt is None or i_fecha is None or i_receta is None:
                     continue
                 for r in rd:
                     if i_gt >= len(r) or (r[i_gt] or "").strip().upper() != "S":
                         continue
                     if i_fecha >= len(r) or (r[i_fecha] or "").strip() not in fechas_ok:
+                        continue
+                    # Solo Estado=ENTREGADA — PENDIENTE/otros siguen su curso normal
+                    # por cruce_gt.py, que ahora dedupe correctamente contra
+                    # gt_maestro.xlsx (ver cruce_gt._recetas_en_gt_maestro).
+                    if i_estado is None or i_estado >= len(r) or (r[i_estado] or "").strip().upper() != "ENTREGADA":
                         continue
                     n = (r[i_receta] or "").strip() if i_receta < len(r) else ""
                     if not n:
