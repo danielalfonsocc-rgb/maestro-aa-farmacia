@@ -1743,7 +1743,7 @@ async def main():
                     from clozapina_hce_hemogramas import (
                         entrar_hce, esperar_firma_electronica, buscar_paciente,
                         descargar_hemograma_mas_reciente, limpiar_busqueda, _run_a_partes,
-                        HEMOGRAMAS_DIR, _construir_filas_desde_cache,
+                        HEMOGRAMAS_DIR, _construir_filas_desde_cache, _cache_key,
                     )
                     from clozapina_consolidar import (
                         cargar_despachos_clozapina, extraer_hemograma_pdf,
@@ -1752,19 +1752,20 @@ async def main():
                     def _run_sin_guion_cloz(run):
                         return run.replace("-", "").replace(".", "")
 
-                    async def _procesar_mes_clozapina(anio, mes):
-                        desde_mes = date(anio, mes, 1)
-                        hasta_mes = (date(anio + (mes == 12), (mes % 12) + 1, 1) - timedelta(days=1))
-                        despachos_cloz = cargar_despachos_clozapina(str(MAESTRO_DIR), desde=desde_mes, hasta=hasta_mes)
+                    async def _procesar_dia_clozapina(fecha_objetivo):
+                        despachos_cloz = cargar_despachos_clozapina(str(MAESTRO_DIR), desde=fecha_objetivo, hasta=fecha_objetivo)
                         if despachos_cloz.empty:
+                            print(f"  Sin despachos de Clozapina el {fecha_objetivo.strftime('%d-%m-%Y')}.")
                             return
+                        # .last() por seguridad si el mismo paciente aparece dos veces ese
+                        # día (ej. receta fraccionada en cuotas despachadas juntas).
                         por_paciente_cloz = despachos_cloz.sort_values("fecha_despacho").groupby("run_normalizado").last()
                         por_paciente_cloz = por_paciente_cloz.reset_index().sort_values("fecha_despacho")
-                        print(f"  {len(por_paciente_cloz)} paciente(s) con Clozapina en {desde_mes.strftime('%m/%Y')}.")
+                        print(f"  {len(por_paciente_cloz)} paciente(s) con Clozapina despachada el {fecha_objetivo.strftime('%d-%m-%Y')}.")
 
                         _hay_pendientes = any(
-                            not (HEMOGRAMAS_DIR / f"{_run_sin_guion_cloz(r)}.pdf").exists()
-                            for r in por_paciente_cloz["run_normalizado"]
+                            not (HEMOGRAMAS_DIR / f"{_cache_key(_run_sin_guion_cloz(r), f)}.pdf").exists()
+                            for r, f in zip(por_paciente_cloz["run_normalizado"], por_paciente_cloz["fecha_despacho"])
                         )
                         if not _hay_pendientes:
                             # Mismo criterio que clozapina_hce_hemogramas.py standalone:
@@ -1773,7 +1774,7 @@ async def main():
                             # quedar colgada o fallar si no hay nadie frente al equipo).
                             print("  Sin despachos nuevos — todos cacheados. No se entra a HCE.")
                             filas_minsal_cloz, filas_obs_cloz, _fallidos_cloz = _construir_filas_desde_cache(por_paciente_cloz)
-                            _ruta_cloz = ruta_archivo_mes(desde_mes)
+                            _ruta_cloz = ruta_archivo_mes(fecha_objetivo)
                             guardar_excel(filas_minsal_cloz, filas_obs_cloz, str(_ruta_cloz))
                             print(f"  ✓ {_ruta_cloz.name} ({len(por_paciente_cloz)} pacientes"
                                   f" — 0 nuevos buscados en HCE, {len(por_paciente_cloz)} ya cacheados)")
@@ -1788,10 +1789,15 @@ async def main():
                                 run_num, dv = _run_a_partes(run)
                                 nombre = f"{prow['Nombre']} {prow['Apellido Paterno']} {prow['Apellido Materno']}"
                                 hemograma = None
-                                pdf_cacheado = HEMOGRAMAS_DIR / f"{run_sin_guion}.pdf"
+                                cache_key_cloz = _cache_key(run_sin_guion, prow["fecha_despacho"])
+                                pdf_cacheado = HEMOGRAMAS_DIR / f"{cache_key_cloz}.pdf"
                                 if pdf_cacheado.exists():
-                                    # Ya se descargó en una corrida anterior — solo se busca
-                                    # en HCE lo de los despachos NUEVOS (sin PDF todavía).
+                                    # Ya se descargó el hemograma de ESTE despacho puntual
+                                    # (mismo paciente + misma fecha) en una corrida anterior.
+                                    # Un despacho nuevo del mismo paciente en otra fecha
+                                    # siempre vuelve a buscar en HCE (bug real 11-08-2026:
+                                    # cache solo por RUN reutilizaba para siempre el PDF del
+                                    # primer despacho, ignorando exámenes más nuevos).
                                     try:
                                         hemograma = extraer_hemograma_pdf(pdf_cacheado)
                                     except Exception:
@@ -1799,7 +1805,7 @@ async def main():
                                 if hemograma is None:
                                     nuevos_cloz += 1
                                     if await buscar_paciente(page, run_num, dv):
-                                        pdf_path = await descargar_hemograma_mas_reciente(context, page, run_sin_guion)
+                                        pdf_path = await descargar_hemograma_mas_reciente(context, page, run_sin_guion, cache_key_cloz)
                                         if pdf_path:
                                             try:
                                                 hemograma = extraer_hemograma_pdf(pdf_path)
@@ -1815,27 +1821,23 @@ async def main():
                                 fm, fo = construir_fila(fc, today)
                                 filas_minsal_cloz.append(fm)
                                 filas_obs_cloz.append(fo)
-                            _ruta_cloz = ruta_archivo_mes(desde_mes)
+                            _ruta_cloz = ruta_archivo_mes(fecha_objetivo)
                             guardar_excel(filas_minsal_cloz, filas_obs_cloz, str(_ruta_cloz))
                             print(f"  ✓ {_ruta_cloz.name} ({len(por_paciente_cloz)} pacientes"
                                   f" — {nuevos_cloz} nuevos buscados en HCE, {len(por_paciente_cloz) - nuevos_cloz} ya cacheados)")
 
-                    # Bug real 31-07/03-08-2026: un despacho del ÚLTIMO día del mes
-                    # puede no estar todavía en la sábana de recetas cuando corre
-                    # AUTO_SSASUR ese mismo día (rezago de reporte SSASUR). Si nadie
-                    # vuelve a correr --clozapina antes de que cambie el mes, ese
-                    # despacho queda fuera para siempre: el filtro "este mes" arranca
-                    # el día 1 y nunca vuelve a mirar el mes anterior. Por eso, en los
-                    # primeros 5 días calendario del mes, se reprocesa TAMBIÉN el mes
-                    # anterior (barato: si ya no hay despachos nuevos ahí, los PDF
-                    # están cacheados y ni siquiera entra a HCE).
-                    meses_cloz = [(today.year, today.month)]
-                    if today.day <= 5:
-                        mes_ant = today.month - 1 or 12
-                        anio_ant = today.year - (today.month == 1)
-                        meses_cloz.insert(0, (anio_ant, mes_ant))
-                    for _anio_cloz, _mes_cloz in meses_cloz:
-                        await _procesar_mes_clozapina(_anio_cloz, _mes_cloz)
+                    # A pedido del usuario (11-08-2026): cada corrida solo busca en HCE
+                    # los despachos del día hábil ANTERIOR al de hoy — lunes mira el
+                    # viernes (fin de semana no hay despacho), el resto de los días
+                    # mira el día calendario anterior. Reemplaza el barrido de "todo
+                    # el mes" que se usaba antes (más lento, revisaba pacientes que no
+                    # tenían nada nuevo). OJO: si un día se salta la corrida de
+                    # CLOZAPINA.bat, los despachos de ESE día quedan sin buscar en HCE
+                    # (no hay reintento automático más adelante, a diferencia del
+                    # barrido mensual anterior) — correr manualmente con
+                    # --desde/--hasta si se detecta un día saltado.
+                    fecha_objetivo_cloz = today - timedelta(days=3 if today.weekday() == 0 else 1)
+                    await _procesar_dia_clozapina(fecha_objetivo_cloz)
 
                     # Sube el Consolidado a su carpeta Drive privada en ESTA misma
                     # corrida — antes quedaba pendiente de --solo-clozapina manual,
