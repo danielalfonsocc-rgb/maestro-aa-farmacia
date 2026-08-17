@@ -130,43 +130,61 @@ def _leer_programacion(ruta):
 
 
 def _leer_stock(ruta, bodega):
-    """Lee un reporte_de_stock_*.xlsx crudo de SSASUR y devuelve
-    {key: {'Medicamento': nombre_original, 'Stock Sistema': cantidad}} para
-    la bodega indicada, sumando por lote. Si la bodega no aparece, lista las
-    disponibles y aborta."""
+    """Lee un reporte de stock de SSASUR y devuelve
+    {key: {'Medicamento': nombre_original, 'Stock Sistema': cantidad}},
+    sumando por lote si corresponde.
+
+    Soporta dos formatos:
+      - Volcado crudo multi-bodega ("reporte_de_stock_*.xlsx"): columnas
+        Descripción/Bodega/Cantidad — se filtra por `bodega`. Si el nombre
+        no aparece, lista las disponibles y aborta.
+      - Reporte "Existencias" (ya viene acotado a una sola bodega/farmacia
+        al generarlo en SSASUR): columnas Producto/Stock Disponible, sin
+        columna de Bodega — se usa tal cual, sin filtrar.
+    """
     df = pd.read_excel(ruta, header=2, engine='openpyxl')
     df.columns = [str(c).strip() for c in df.columns]
-    try:
-        descr_col = next(c for c in df.columns if 'Descrip' in c)
-        bod_col = next(c for c in df.columns if 'Bodega' in c)
-    except StopIteration:
-        print(f'[ERROR] El reporte de stock no tiene columnas de Descripción/Bodega reconocibles.')
+
+    bod_col = next((c for c in df.columns if 'Bodega' in c), None)
+    descr_col = next((c for c in df.columns if 'Descrip' in c or c == 'Producto'), None)
+    cant_col = next((c for c in df.columns
+                      if c == 'Cantidad' or 'Stock Disponible' in c), None)
+
+    if descr_col is None or cant_col is None:
+        print('[ERROR] El reporte de stock no tiene columnas reconocibles '
+              '(se esperaba Descripción/Bodega/Cantidad, o Producto/Stock Disponible).')
         print(f'  Columnas encontradas: {list(df.columns)}')
         sys.exit(1)
-    if 'Cantidad' not in df.columns:
-        print(f'[ERROR] El reporte de stock no tiene columna "Cantidad". Columnas: {list(df.columns)}')
-        sys.exit(1)
 
-    df[bod_col] = df[bod_col].astype(str).str.strip().str.upper()
-    bodega_norm = bodega.strip().upper()
-    disponibles = sorted(df[bod_col].dropna().unique())
-    if bodega_norm not in disponibles:
-        print(f'[ERROR] No se encontró la bodega "{bodega}" en el reporte de stock.')
-        print('  Bodegas disponibles en el archivo:')
-        for b in disponibles:
-            print(f'    - {b}')
-        print('  Reintenta con --bodega "NOMBRE EXACTO"')
-        sys.exit(1)
+    if bod_col is not None:
+        df[bod_col] = df[bod_col].astype(str).str.strip().str.upper()
+        bodega_norm = bodega.strip().upper()
+        disponibles = sorted(df[bod_col].dropna().unique())
+        if bodega_norm not in disponibles:
+            print(f'[ERROR] No se encontró la bodega "{bodega}" en el reporte de stock.')
+            print('  Bodegas disponibles en el archivo:')
+            for b in disponibles:
+                print(f'    - {b}')
+            print('  Reintenta con --bodega "NOMBRE EXACTO"')
+            sys.exit(1)
+        df = df[df[bod_col] == bodega_norm]
+    else:
+        # Sin columna de Bodega: el reporte "Existencias" ya viene acotado a
+        # una sola bodega/farmacia (la que se eligió al generarlo en SSASUR)
+        # — se usa completo, sin filtrar.
+        print(f'  [aviso] el reporte de stock no trae columna de Bodega — se asume que ya '
+              f'está acotado a "{bodega}" (elegida al generarlo en SSASUR). '
+              f'Verifica que sea así antes de confiar en el instrumento.')
 
-    sub = df[df[bod_col] == bodega_norm].copy()
-    sub['Cantidad'] = pd.to_numeric(sub['Cantidad'], errors='coerce').fillna(0)
+    sub = df.copy()
+    sub['_cantidad'] = pd.to_numeric(sub[cant_col], errors='coerce').fillna(0)
     sub['_key'] = sub[descr_col].astype(str).str.strip().map(_key)
 
     stock = {}
     for row in sub.to_dict('records'):
         k = row['_key']
-        cur = stock.setdefault(k, {'Medicamento': row[descr_col].strip(), 'Stock Sistema': 0.0})
-        cur['Stock Sistema'] += row['Cantidad']
+        cur = stock.setdefault(k, {'Medicamento': str(row[descr_col]).strip(), 'Stock Sistema': 0.0})
+        cur['Stock Sistema'] += row['_cantidad']
     return stock
 
 
