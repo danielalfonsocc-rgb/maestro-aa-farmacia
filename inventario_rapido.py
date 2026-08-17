@@ -20,6 +20,15 @@ Mensual ni Sugerencia de programación (eso requiere el historial completo de
 recetas vía maestro_aa.py) — solo entrega el instrumento de conteo y, tras
 contar físicamente, la Diferencia y una Cantidad a Pedir simple.
 
+Si hay un Consolidado_AA_MAESTRO*.xlsx en la carpeta del proyecto (aunque sea
+de días atrás), se autodetecta y se usa su lista de medicamentos AA (hoja
+Pedido_Repos_Bodega) para acotar el instrumento a lo que Farmacia AA
+realmente dispensa — los reportes crudos de SSASUR traen de todo (inyectables
+de pabellón, hospitalización cerrada, etc.). Lo que quede fuera de ese
+universo se guarda aparte, en la hoja "Fuera_Universo_AA" del mismo Excel,
+no se pierde. Sin Consolidado no hay forma de saber qué es AA y qué no —
+el instrumento queda como la unión cruda de ambos reportes, con aviso.
+
 Uso — paso 1, generar el instrumento de conteo:
     py inventario_rapido.py --programacion reporte_prog.xlsx --stock reporte_stock.xlsx
 
@@ -199,40 +208,96 @@ HDRS = [
 ]
 
 
-def generar(ruta_prog, ruta_stock, bodega):
+def _mas_reciente_consolidado():
+    cand = [f for f in glob.glob(os.path.join(WORK_DIR, 'Consolidado_AA_MAESTRO*.xlsx'))
+            if not os.path.basename(f).startswith('~$')]
+    return max(cand, key=os.path.getmtime) if cand else None
+
+
+def _leer_universo_aa(ruta):
+    """Lee la lista oficial de medicamentos que sí dispensa Farmacia AT
+    Abierta desde Consolidado_AA_MAESTRO (hoja Pedido_Repos_Bodega — la
+    misma que usa programacion_aa.py). Devuelve {key: nombre_original}."""
+    df = pd.read_excel(ruta, sheet_name='Pedido_Repos_Bodega', engine='openpyxl')
+    df['Medicamento'] = df['Medicamento'].astype(str).str.strip()
+    df = df[df['Medicamento'] != '']
+    return {_key(m): m for m in df['Medicamento']}
+
+
+def generar(ruta_prog, ruta_stock, bodega, ruta_consolidado=None):
     prog, meta_txt = _leer_programacion(ruta_prog)
     stock = _leer_stock(ruta_stock, bodega)
 
+    # Si hay un Consolidado_AA_MAESTRO a mano (aunque sea de días atrás), se usa
+    # su lista de 441 medicamentos AA (hoja Pedido_Repos_Bodega) para acotar el
+    # instrumento a lo que Farmacia AA realmente dispensa — los reportes crudos
+    # de SSASUR (Programación/Existencias) traen de todo (inyectables de
+    # pabellón, hospitalización cerrada, etc.) y sin este filtro el instrumento
+    # queda "sucio". Sin Consolidado no hay forma de saber cuáles son AA y
+    # cuáles no — se usa la unión cruda de ambos reportes, con aviso.
+    ruta_consolidado = ruta_consolidado or _mas_reciente_consolidado()
+    universo_aa = None
+    if ruta_consolidado:
+        try:
+            universo_aa = _leer_universo_aa(ruta_consolidado)
+        except (OSError, ValueError, KeyError) as e:
+            print(f'  [aviso] no se pudo leer el universo AA de {os.path.basename(ruta_consolidado)}: {e}')
+
     universo = {}
+    fuera_universo = []
+    if universo_aa is not None:
+        for k, nombre in universo_aa.items():
+            universo[k] = {'Medicamento': nombre, 'Cantidad Programada': None,
+                            'Cantidad Solicitada': None, 'Stock Sistema': None, 'Stock Real': None}
+
     for k, v in prog.items():
-        universo[k] = {'Medicamento': v['Medicamento'],
-                        'Cantidad Programada': v['Cantidad Programada'],
-                        'Cantidad Solicitada': v['Cantidad Solicitada'],
-                        'Stock Sistema': None,
-                        'Stock Real': None}
-    n_solo_stock = 0
+        if universo_aa is not None and k not in universo:
+            fuera_universo.append({'Medicamento': v['Medicamento'], 'Fuente': 'Programación',
+                                    'Cantidad': v['Cantidad Programada']})
+            continue
+        cur = universo.setdefault(k, {'Medicamento': v['Medicamento'], 'Cantidad Programada': None,
+                                       'Cantidad Solicitada': None, 'Stock Sistema': None, 'Stock Real': None})
+        cur['Cantidad Programada'] = v['Cantidad Programada']
+        cur['Cantidad Solicitada'] = v['Cantidad Solicitada']
+
     for k, v in stock.items():
-        if k in universo:
-            universo[k]['Stock Sistema'] = v['Stock Sistema']
-        else:
-            n_solo_stock += 1
-            universo[k] = {'Medicamento': v['Medicamento'],
-                            'Cantidad Programada': None,
-                            'Cantidad Solicitada': None,
-                            'Stock Sistema': v['Stock Sistema'],
-                            'Stock Real': None}
+        if universo_aa is not None and k not in universo:
+            fuera_universo.append({'Medicamento': v['Medicamento'], 'Fuente': 'Stock',
+                                    'Cantidad': v['Stock Sistema']})
+            continue
+        cur = universo.setdefault(k, {'Medicamento': v['Medicamento'], 'Cantidad Programada': None,
+                                       'Cantidad Solicitada': None, 'Stock Sistema': None, 'Stock Real': None})
+        cur['Stock Sistema'] = v['Stock Sistema']
 
     filas = sorted(universo.values(), key=lambda f: f['Medicamento'])
+    fuera_universo.sort(key=lambda f: f['Medicamento'])
+    n_sin_datos = sum(1 for f in filas if f['Cantidad Programada'] is None and f['Stock Sistema'] is None)
 
     hoy = dt.date.today()
     os.makedirs(OUT_DIR, exist_ok=True)
     sal = os.path.join(OUT_DIR, f'Instrumento_Conteo_AA_{hoy.strftime("%Y%m%d")}.xlsx')
     sub = (f'Programación: {os.path.basename(ruta_prog)} ({meta_txt or "sin metadata de mes"})  ·  '
            f'Stock: {os.path.basename(ruta_stock)}  ·  Bodega: {bodega}')
-    _escribir(sal, filas, 'INSTRUMENTO DE CONTEO — Bodega AA', sub, hoy, resumen=False)
+    if ruta_consolidado:
+        sub += f'  ·  Universo AA: {os.path.basename(ruta_consolidado)} ({len(universo_aa)} medicamentos)'
+    extra_sheet = None
+    if fuera_universo:
+        extra_sheet = ('Fuera_Universo_AA', fuera_universo)
+    _escribir(sal, filas, 'INSTRUMENTO DE CONTEO — Bodega AA', sub, hoy, resumen=False, extra_sheet=extra_sheet)
 
     print(f'HOY = {hoy}')
-    print(f'{len(filas)} medicamentos ({len(prog)} en Programación, {n_solo_stock} solo en Stock — sin programar)')
+    if ruta_consolidado:
+        print(f'Universo AA         : {os.path.basename(ruta_consolidado)} ({len(universo_aa)} medicamentos)')
+        print(f'{len(filas)} medicamentos en el instrumento ({n_sin_datos} sin Cantidad Programada ni Stock Sistema este ciclo)')
+        if fuera_universo:
+            print(f'{len(fuera_universo)} fila(s) de los reportes NO pertenecen al universo AA — '
+                  f'quedaron en la hoja "Fuera_Universo_AA" del Excel, no en el instrumento de conteo.')
+    else:
+        n_solo_stock = sum(1 for k in stock if k not in prog)
+        print(f'  [aviso] no se encontró Consolidado_AA_MAESTRO*.xlsx — no se pudo acotar al universo AA real. '
+              f'El instrumento es la unión cruda de ambos reportes y puede incluir medicamentos que Farmacia AA '
+              f'no dispensa (p.ej. inyectables de pabellón, hospitalización cerrada).')
+        print(f'{len(filas)} medicamentos ({len(prog)} en Programación, {n_solo_stock} solo en Stock — sin programar)')
     print(f'\nExcel: {os.path.basename(sal)}  (carpeta {os.path.basename(OUT_DIR)}\\)')
     print('Imprime o abre esta planilla, cuenta físicamente y llena "Stock Real" a mano.')
     print(f'Luego corre: py inventario_rapido.py --aplicar-conteo "{os.path.basename(sal)}"')
@@ -349,7 +414,7 @@ def aplicar_conteo(ruta, ruta_plantilla=None):
 
 # ─────────────── escritura de Excel (instrumento y resumen comparten look) ──
 
-def _escribir(sal, filas, titulo, subtitulo, hoy, resumen):
+def _escribir(sal, filas, titulo, subtitulo, hoy, resumen, extra_sheet=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'Resumen' if resumen else 'Conteo'
@@ -408,6 +473,25 @@ def _escribir(sal, filas, titulo, subtitulo, hoy, resumen):
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
     ws.page_setup.orientation = 'landscape'
+
+    if extra_sheet:
+        titulo_hoja, filas_extra = extra_sheet
+        ws2 = wb.create_sheet(titulo_hoja[:31])
+        ehdrs = [('Medicamento', 46), ('Fuente', 14), ('Cantidad', 12)]
+        ws2.cell(1, 1, 'NO pertenecen al universo AA (Consolidado) — no incluidos en el instrumento de conteo')
+        ws2.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(ehdrs))
+        ws2.cell(1, 1).font = Font(bold=True, size=11, color='7F1D1D', name='Arial')
+        for j, (label, w) in enumerate(ehdrs, 1):
+            c = ws2.cell(2, j, label)
+            c.fill = HFILL; c.font = HFONT; c.border = BRD
+            ws2.column_dimensions[get_column_letter(j)].width = w
+        for i, f in enumerate(filas_extra, 3):
+            for j, key in enumerate(('Medicamento', 'Fuente', 'Cantidad'), 1):
+                c = ws2.cell(i, j, f.get(key))
+                c.border = BRD
+                c.font = Font(name='Arial', size=10)
+        ws2.freeze_panes = 'A3'
+
     wb.save(sal)
 
 
@@ -422,6 +506,10 @@ def main():
                      help='Reporte de stock crudo de SSASUR (reporte_de_stock_*.xlsx)')
     ap.add_argument('--bodega', default=BODEGA_DEFAULT,
                      help=f'Nombre de la bodega a filtrar en el reporte de stock (default: {BODEGA_DEFAULT})')
+    ap.add_argument('--consolidado', default=None, metavar='XLSX',
+                     help='Consolidado_AA_MAESTRO.xlsx a usar para acotar el instrumento al universo AA real '
+                          '(si no, se autodetecta el más reciente en la carpeta del proyecto; si no hay ninguno, '
+                          'el instrumento queda como la unión cruda de los dos reportes)')
     ap.add_argument('--aplicar-conteo', default=None, metavar='XLSX_O_JSON',
                      help='Aplica el conteo: pásale el Instrumento_Conteo_AA_*.xlsx ya lleno, '
                           'o un JSON medicamento→cantidad')
@@ -436,7 +524,7 @@ def main():
         if not args.programacion or not args.stock:
             print('[ERROR] Falta --programacion y/o --stock. Usa --help para ver el uso.')
             sys.exit(1)
-        generar(args.programacion, args.stock, args.bodega)
+        generar(args.programacion, args.stock, args.bodega, args.consolidado)
 
 
 if __name__ == '__main__':
