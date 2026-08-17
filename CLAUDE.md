@@ -20,6 +20,7 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 | `auditoria_prescripcion.py` | Pre-calcula `auditoria_prescripcion.json` (consumido por app_pedidos) |
 | `pedido_fusion.py` | Genera Pedido_Fusion_AA_<fecha>.xlsx (Farm_Bod + Bod_Farmacos + Dialisis + Faltantes_AA) |
 | `programacion_aa.py` | Planilla ciclo Bodega AA: Cantidad Programada/Solicitada (reporte SSASUR) vs Stock Bodega AA vs Stock Real (conteo). `--aplicar-conteo` genera el Resumen final en `Programacion_AA\`. Sin IA |
+| `inventario_rapido.py` | Versión liviana de `programacion_aa.py` sin depender del Consolidado_AA_MAESTRO: solo con el reporte de Programación SSASUR + reporte de stock crudo, genera instrumento de conteo y (`--aplicar-conteo`) el Resumen con Diferencia y Cantidad a Pedir. Usado por la skill `inventario-programacion` para cuando no se tiene el repo/Python local. Sin IA |
 | `sgli_historico.py` | Planilla SGLI histórica — clasificación ABC-XYZ |
 | `centinela_reporte.py` | Reporte semanal centinela campaña invierno (PDF MINSAL) |
 | `AUTO_SSASUR.py` | Descarga automatizada SSASur (recetas + stock + GT) → dedup → Drive |
