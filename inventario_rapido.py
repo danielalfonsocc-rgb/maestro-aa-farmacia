@@ -200,12 +200,14 @@ def _leer_stock(ruta, bodega):
 # ─────────────── modo 1: generar instrumento de conteo ──────────────────────
 
 HDRS = [
-    ('Medicamento',            46),
-    ('Cantidad Programada',    17),
-    ('Cantidad Solicitada',    17),
-    ('Stock Sistema',          15),
-    ('Stock Real',             13),
+    ('Medicamento',            48),
+    ('Cantidad Programada',    18),
+    ('Cantidad Solicitada',    18),
+    ('Stock Sistema',          16),
+    ('Stock Real',             18),
 ]
+FILA_ALTO = 26      # alto de fila (pt) — deja espacio cómodo para escribir a mano
+FUENTE_DATOS = 12   # tamaño de fuente de los datos — legible al imprimir
 
 
 def _mas_reciente_consolidado():
@@ -426,33 +428,36 @@ def _escribir(sal, filas, titulo, subtitulo, hoy, resumen, extra_sheet=None):
 
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncols)
     ws.cell(1, 1, f'{titulo}  ·  {hoy.strftime("%d/%m/%Y")}')
-    ws.cell(1, 1).font = Font(bold=True, size=12, color='065F46', name='Arial')
-    ws.row_dimensions[1].height = 22
+    ws.cell(1, 1).font = Font(bold=True, size=14, color='065F46', name='Arial')
+    ws.row_dimensions[1].height = 26
 
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=ncols)
     ws.cell(2, 1, subtitulo)
-    ws.cell(2, 1).font = Font(italic=True, size=9, color='555555', name='Arial')
+    ws.cell(2, 1).font = Font(italic=True, size=10, color='555555', name='Arial')
     ws.cell(2, 1).alignment = Alignment(wrap_text=True, vertical='center')
-    ws.row_dimensions[2].height = 28
+    ws.row_dimensions[2].height = 30
 
     for j, (label, w) in enumerate(hdrs, 1):
         c = ws.cell(3, j, label)
-        c.fill = HFILL; c.font = HFONT; c.border = BRD
+        c.fill = HFILL; c.font = Font(bold=True, color='065F46', name='Arial', size=12); c.border = BRD
         c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         ws.column_dimensions[get_column_letter(j)].width = w
-    ws.row_dimensions[3].height = 26
+    ws.row_dimensions[3].height = 30
 
     for i, f in enumerate(filas, 4):
         vals = [f['Medicamento'], f['Cantidad Programada'], f['Cantidad Solicitada'],
                 f['Stock Sistema'], f['Stock Real']]
         if resumen:
             vals += [f.get('Diferencia'), f.get('Cantidad a Pedir')]
+        ws.row_dimensions[i].height = FILA_ALTO
         for j, v in enumerate(vals, 1):
             c = ws.cell(i, j, v)
             c.border = BRD
-            c.font = Font(name='Arial', size=10)
+            c.font = Font(name='Arial', size=FUENTE_DATOS)
             if j >= 2:
-                c.alignment = Alignment(horizontal='center')
+                c.alignment = Alignment(horizontal='center', vertical='center')
+            else:
+                c.alignment = Alignment(vertical='center')
         if resumen:
             if f['Stock Real'] is None:
                 for j in range(1, ncols + 1):
@@ -460,19 +465,31 @@ def _escribir(sal, filas, titulo, subtitulo, hoy, resumen, extra_sheet=None):
             else:
                 if f.get('Diferencia'):
                     dc = ws.cell(i, len(HDRS) + 1)
-                    dc.fill = DIFF_FILL; dc.font = DIFF_FONT
+                    dc.fill = DIFF_FILL
+                    dc.font = Font(name='Arial', size=FUENTE_DATOS, color='7F1D1D', bold=True)
                 if f.get('Cantidad a Pedir'):
                     pc = ws.cell(i, len(HDRS) + 2)
-                    pc.fill = PEDIR_FILL; pc.font = PEDIR_FONT
+                    pc.fill = PEDIR_FILL
+                    pc.font = Font(name='Arial', size=FUENTE_DATOS, color='B45309', bold=True)
 
     last = 3 + len(filas)
     ws.freeze_panes = 'A4'
     if filas:
         ws.auto_filter.ref = f'A3:{get_column_letter(ncols)}{last}'
         ws.print_area = f'A1:{get_column_letter(ncols)}{last}'
+
+    # Impresión en Carta (Letter), horizontal, con encabezado repetido en cada
+    # página y filas altas para que sea cómodo escribir a mano el conteo.
     ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
     ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
     ws.page_setup.orientation = 'landscape'
+    ws.page_margins.left = ws.page_margins.right = 0.4
+    ws.page_margins.top = ws.page_margins.bottom = 0.5
+    ws.page_margins.header = ws.page_margins.footer = 0.2
+    ws.print_title_rows = '3:3'
+    ws.oddFooter.center.text = 'Página &P de &N'
+    ws.oddFooter.center.size = 9
 
     if extra_sheet:
         titulo_hoja, filas_extra = extra_sheet
