@@ -36,14 +36,29 @@ SSASUR y que cualquiera puede tener a mano ese día:
 1. **Reporte de Programación**: SSASUR → Reportes → Consumo por centro de
    costo → Centro de Costo = FARMACIA → Generar XLS.
    Da `Cantidad Programada` / `Cantidad Solicitada` del ciclo.
-2. **Reporte de stock**: `reporte_de_stock_*.xlsx` (el mismo que descarga
-   AUTO_SSASUR). Da `Stock Sistema` de la bodega (por defecto BODEGA AT
-   ABIERTA).
+2. **Reporte de stock**: `reporte_de_stock_*.xlsx` (volcado crudo con
+   columna Bodega) o el reporte **"Existencias"** (ya acotado a una sola
+   bodega/farmacia, columnas Producto/Stock Disponible, sin columna Bodega
+   — el script detecta cuál es cuál). Da `Stock Sistema` de la bodega (por
+   defecto BODEGA AT ABIERTA).
 
 El script `inventario_rapido.py` (en la raíz del proyecto) hace el trabajo
 en dos pasos. **No calcula Consumo Promedio Mensual ni Sugerencia de
 programación** — eso requiere el historial completo vía `maestro_aa.py` /
 `sgli.py`, que aquí no está disponible. Lo que sí entrega:
+
+**Importante — universo AA**: los dos reportes crudos de SSASUR traen de
+todo (inyectables de pabellón, hospitalización cerrada, etc.), no solo lo
+que Farmacia AA dispensa. Si en la carpeta del proyecto hay un
+`Consolidado_AA_MAESTRO*.xlsx` (se autodetecta el más reciente, aunque sea
+de días atrás — no hace falta que esté fresco del día), el script lo usa
+para acotar el instrumento a la lista real de medicamentos AA (hoja
+`Pedido_Repos_Bodega`); lo que quede fuera de ese universo se guarda en una
+hoja aparte `Fuera_Universo_AA` del mismo Excel, no se pierde ni se mezcla
+con el conteo. **Si no hay Consolidado disponible, avísale al usuario
+explícitamente** que el instrumento es la unión cruda de ambos reportes y
+puede traer medicamentos que Farmacia AA no dispensa — no lo des por
+"limpio" sin decirlo.
 
 - Un **instrumento de conteo** imprimible/editable, medicamento por
   medicamento, con una columna en blanco para el conteo físico.
