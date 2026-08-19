@@ -27,6 +27,7 @@ from collections import defaultdict
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter, column_index_from_string
+from openpyxl.worksheet.datavalidation import DataValidation
 
 for _s in (sys.stdout, sys.stderr):
     try: _s.reconfigure(encoding="utf-8", errors="replace")
@@ -74,18 +75,6 @@ def es_psiquiatria(especialidad):
     inicial muda — forma habitual en las recetas SSASUR, ej. "Siquiatría Adulto")."""
     u=unicodedata.normalize("NFKD",str(especialidad or "")).encode("ascii","ignore").decode().upper()
     return "SIQUIATR" in u  # cubre tanto PSIQUIATR* como SIQUIATR*
-
-def es_inyectable_antipsicotico(texto):
-    """True si `texto` (nombre del medicamento sujeto a control legal) es un antipsicótico
-    inyectable de depósito: Haloperidol 50 mg (decanoato), Paliperidona o Risperidona inyectables.
-    Exige una señal explícita de vía inyectable/formulación depot para no arrastrar las formas
-    orales de risperidona/paliperidona, mucho más frecuentes."""
-    u=unicodedata.normalize("NFKD",str(texto or "")).encode("ascii","ignore").decode().upper()
-    if not u: return False
-    if "HALOPERIDOL" in u and ("50" in u or "INYECT" in u or "DECANOATO" in u or "AMPOLLA" in u): return True
-    if "PALIPERIDONA" in u and any(k in u for k in ("INYECT","PALMITATO","DEPOT","AMPOLLA","XEPLION","TREVICTA","SUSTENNA")): return True
-    if "RISPERIDONA" in u and any(k in u for k in ("INYECT","CONSTA","MICROESFERAS","DEPOT","AMPOLLA")): return True
-    return False
 
 # ---- inserción de logos centrados verticalmente, con margen interior ----
 def place_logo(ws, path, col_letter, target_h_px, col_off_px, row_off_px, from_row0=0):
@@ -139,8 +128,12 @@ def carta_landscape(ws, fit_height, print_area=None):
 
 def hoja_funcionarios(wb, regs, destino, titulo, subtitulo, modo="normal"):
     ws=wb.active; ws.title="Funcionarios"  # única hoja — sin Maestra
-    col_label="Medicamento Sujeto a Control Legal" if modo=="controlados" else "Refrigerados"
-    col_color=RED if modo=="controlados" else GREEN
+    # modo="todos": normales y controlados van en la misma nómina — la columna
+    # muestra, fila a fila, el controlado si lo hay (rojo) o si no el refrigerado
+    # (verde), en vez de fijar un solo tipo de dato para toda la hoja.
+    if modo=="controlados": col_label="Medicamento Sujeto a Control Legal"
+    elif modo=="todos": col_label="Refrigerados / Controlados"
+    else: col_label="Refrigerados"
     # ✓ Revisado como col A, a la izquierda de N° Receta
     h2=["✓ Revisado","N° Receta","Paciente","RUN","Especialidad","Período","Estado Receta","N° Presc.",col_label,"Modalidad de Entrega","Pendiente"]
     w2=[6,10,30,13,20,8,13,7,26,18,16]; C2={"✓ Revisado","N° Receta","RUN","Período","Estado Receta","N° Presc."}
@@ -178,15 +171,19 @@ def hoja_funcionarios(wb, regs, destino, titulo, subtitulo, modo="normal"):
                       top=Side(style="medium",color="000000"),bottom=Side(style="medium",color="000000"))
     for g in regs:
         est="ÚLTIMA RECETA" if es_ultima(g["periodo"]) else ""; is_v=bool(g.get("ventanilla"))
-        refri=g.get("controlado","") or "" if modo=="controlados" else g.get("refrigerado","") or ""
+        if modo=="controlados": refri,refri_color=g.get("controlado","") or "",RED
+        elif modo=="todos":
+            ctrl=g.get("controlado","") or ""
+            refri,refri_color=(ctrl,RED) if ctrl else (g.get("refrigerado","") or "",GREEN)
+        else: refri,refri_color=g.get("refrigerado","") or "",GREEN
         vals=[None,g["receta"],g["paciente"],fmt_run(g["run"]),g["especialidad"],g["periodo"],est,g["n_presc"],refri,
               V_LABEL if is_v else D_LABEL,g.get("pendiente","") or ""]
         for c,v in enumerate(vals,start=1):
             h=h2[c-1]; cell=ws.cell(row=r,column=c,value=v if v not in ("",None) else None)
             run_bad=(h=="RUN" and dv_correcto(g["run"]) is False)
             bold=h in ("N° Receta","Paciente") or (h=="Modalidad de Entrega" and is_v) or (h==col_label and refri) or (h=="Estado Receta" and est) or run_bad
-            color=RED if ((h=="Modalidad de Entrega" and is_v) or run_bad) else (col_color if (h==col_label and refri) else (ORANGE if (h=="Estado Receta" and est) else "000000"))
-            cell.font=Font(name="Calibri",size=11,bold=bold,color=color)
+            color=RED if ((h=="Modalidad de Entrega" and is_v) or run_bad) else (refri_color if (h==col_label and refri) else (ORANGE if (h=="Estado Receta" and est) else "000000"))
+            cell.font=Font(name="Calibri",size=16 if h=="✓ Revisado" else 11,bold=(h=="✓ Revisado") or bold,color=color)
             cell.border=chk_border if h=="✓ Revisado" else border
             cell.alignment=Alignment(horizontal=("center" if h in C2 else "left"),vertical="center",wrap_text=True)
         fill=VENT if is_v else (GREY if r%2==0 else "FFFFFF")
@@ -194,6 +191,12 @@ def hoja_funcionarios(wb, regs, destino, titulo, subtitulo, modo="normal"):
         if est: ws.cell(row=r,column=COL["Estado Receta"]).fill=PatternFill("solid",fgColor=AMBER)
         ws.row_dimensions[r].height=26; r+=1
     DE=r-1; npc=COL["N° Presc."]
+    # ✓ Revisado: dropdown por celda (✓ = va en la nómina, ✗ = se excluye tras
+    # validación del QF) en vez de casilla en blanco para marcar a mano.
+    if DE>=HR+1:
+        dv=DataValidation(type="list", formula1='"✓,✗"', allow_blank=True, showDropDown=False)
+        ws.add_data_validation(dv)
+        dv.add(f"A{HR+1}:A{DE}")
     ws.cell(row=r,column=COL["N° Receta"],value="TOTAL").font=Font(size=11,bold=True)
     ws.cell(row=r,column=COL["Paciente"],value=f"{len(regs)} pacientes / recetas").font=Font(size=11,bold=True)
     ws.cell(row=r,column=npc,value=sum(int(g["n_presc"]) for g in regs)).font=Font(size=11,bold=True)
@@ -205,10 +208,15 @@ def hoja_funcionarios(wb, regs, destino, titulo, subtitulo, modo="normal"):
     ws.evenFooter.right.text=ws.oddFooter.right.text="Página &P de &N"
 
 # ----------------------------- LETRERO -----------------------------
-def _bloque_letrero(ws, r0, destino, lleva_refri, NCOL):
+def _bloque_letrero(ws, r0, destino, lleva_refri, NCOL, detalle_refri=None):
     """1 etiqueta = media hoja carta vertical.
     Alturas: 15+76+36+28+16+5×40+32 = 383 pts ≈ 5.3" ≈ mitad de carta.
-    Fecha siempre = date.today() (día de uso del skill)."""
+    Fecha siempre = date.today() (día de uso del skill).
+    detalle_refri: lista de dicts {paciente,run,receta,meds} — uno por cada
+    receta del envío que lleva medicamentos termolábiles. Se listan bajo el
+    título REFRIGERADO, uno por línea con nombre/RUN/N° de receta, para que
+    quien recibe pueda verificar cada refrigerado contra la receta física
+    sin tener que abrir el paquete."""
     thick=Side(style="thick",color="000000"); box=Border(left=thick,right=thick,top=thick,bottom=thick)
     L=get_column_letter(2); R=get_column_letter(NCOL-1)
     # Banda de logos — 76 pts de alto
@@ -237,23 +245,50 @@ def _bloque_letrero(ws, r0, destino, lleva_refri, NCOL):
     last=r0+9
     if lleva_refri:
         c1,c2=4,NCOL-3
-        ws.merge_cells(f"{get_column_letter(c1)}{r0+11}:{get_column_letter(c2)}{r0+12}")
-        r=ws.cell(row=r0+11,column=c1,value="❄  REFRIGERADO")
-        r.font=Font(name="Calibri",size=22,bold=True,color="FFFFFF"); r.alignment=Alignment(horizontal="center",vertical="center")
         fill=PatternFill("solid",fgColor="2E75B6")
-        for rr in range(r0+11,r0+13):
-            ws.row_dimensions[rr].height=32
-            for cc in range(c1,c2+1): ws.cell(row=rr,column=cc).border=box; ws.cell(row=rr,column=cc).fill=fill
-        last=r0+12
+        detalle=[d for d in (detalle_refri or []) if d.get("meds")]
+        if detalle:
+            # Título (fila propia) + una línea por paciente con nombre, RUN,
+            # N° de receta y medicamento(s) (fila propia, wrap_text) — así
+            # quien recibe puede calzar cada refrigerado con su receta física.
+            ws.merge_cells(f"{get_column_letter(c1)}{r0+11}:{get_column_letter(c2)}{r0+11}")
+            t=ws.cell(row=r0+11,column=c1,value="❄  REFRIGERADO")
+            t.font=Font(name="Calibri",size=18,bold=True,color="FFFFFF"); t.alignment=Alignment(horizontal="center",vertical="center")
+            ws.row_dimensions[r0+11].height=26
+            lineas=[f'{d["paciente"]} — RUN {d["run"]} — Receta N° {d["receta"]}: {", ".join(d["meds"])}' for d in detalle]
+            texto="\n".join(lineas)
+            ws.merge_cells(f"{get_column_letter(c1)}{r0+12}:{get_column_letter(c2)}{r0+12}")
+            dc=ws.cell(row=r0+12,column=c1,value=texto)
+            dc.font=Font(name="Calibri",size=11,bold=True,color="FFFFFF"); dc.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
+            # Alto dinámico: cada línea de paciente puede envolverse en más de
+            # una línea visual (columna angosta, ~38 caracteres por línea con
+            # este ancho/fuente) — hay que sumar las líneas envueltas de cada
+            # una, no solo contar 1 línea por paciente, o el texto queda
+            # cortado por el borde de la caja.
+            CHARS_POR_LINEA=38
+            n_visual=sum(-(-len(l)//CHARS_POR_LINEA) for l in lineas)  # ceil(len/CHARS_POR_LINEA) c/u
+            ws.row_dimensions[r0+12].height=max(32, 15*n_visual+8)
+            for rr in (r0+11, r0+12):
+                for cc in range(c1,c2+1): ws.cell(row=rr,column=cc).border=box; ws.cell(row=rr,column=cc).fill=fill
+            last=r0+12
+        else:
+            # Sin nombres resueltos (fallback) — banner genérico, igual que antes.
+            ws.merge_cells(f"{get_column_letter(c1)}{r0+11}:{get_column_letter(c2)}{r0+12}")
+            r=ws.cell(row=r0+11,column=c1,value="❄  REFRIGERADO")
+            r.font=Font(name="Calibri",size=22,bold=True,color="FFFFFF"); r.alignment=Alignment(horizontal="center",vertical="center")
+            for rr in range(r0+11,r0+13):
+                ws.row_dimensions[rr].height=32
+                for cc in range(c1,c2+1): ws.cell(row=rr,column=cc).border=box; ws.cell(row=rr,column=cc).fill=fill
+            last=r0+12
     return last
 
-def letrero(destino, lleva_refri, ruta):
+def letrero(destino, lleva_refri, ruta, detalle_refri=None):
     """1 etiqueta que ocupa media hoja carta vertical. Fecha = hoy (date.today)."""
     wb=Workbook(); ws=wb.active; ws.title="LETRERO"
     NCOL=11
     for c in range(1,NCOL+1): ws.column_dimensions[get_column_letter(c)].width=8.5
     last=get_column_letter(NCOL)
-    fin=_bloque_letrero(ws, 2, destino, lleva_refri, NCOL)
+    fin=_bloque_letrero(ws, 2, destino, lleva_refri, NCOL, detalle_refri)
     # Carta vertical: fitToWidth=1 escala al ancho carta; fitToHeight=0 conserva altura natural
     # Las alturas de fila en _bloque_letrero suman ~375 pts ≈ media hoja carta (5.2")
     ws.page_setup.paperSize=1; ws.page_setup.orientation="portrait"
@@ -367,6 +402,37 @@ def _insulina_label(prod):
     if "INSULINA" in u and "JERINGA" not in u and "AGUJA" not in u:
         return "Insulina"
     return None
+
+def _detalle_refrigerados(regs, refri_map):
+    """Para cada receta del envío que lleva medicamentos termolábiles, arma
+    un dict {paciente,run,receta,meds} — para que el letrero liste, además
+    del nombre del medicamento (con su cantidad, si se conoce), a qué
+    paciente/RUN/receta corresponde, en vez de un genérico '❄ REFRIGERADO'
+    sin detalle.
+    Fuentes: el campo 'refrigerado' de cada registro (cruce_gt.py o el
+    keyword-match de importar_reporte_xlsx(), formato 'Nombre xN' separado
+    por '; ' — la cantidad se conserva) y refri_map (detección adicional vía
+    histórico SIDRA, formato 'Nombre, Nombre' por receta — sin cantidad,
+    ver cargar_sidra)."""
+    detalle=[]
+    for g in regs:
+        items={}  # nombre -> cantidad ("N") o None si no se conoce
+        for item in (g.get("refrigerado","") or "").split(";"):
+            item=item.strip()
+            if not item: continue
+            m=re.match(r"^(.*?)\s*[xX]\s*(\d+)\s*$", item)
+            nombre,cant=(m.group(1).strip(), m.group(2)) if m else (item, None)
+            if nombre and (nombre not in items or items[nombre] is None):
+                items[nombre]=cant
+        for item in refri_map.get(g["receta"],"").split(","):
+            item=item.strip()
+            if item and item not in items: items[item]=None
+        if items:
+            meds=sorted((f"{n} x{c}" if c else n for n,c in items.items()),
+                        key=lambda s: unicodedata.normalize("NFKD",s).encode("ascii","ignore").decode().upper())
+            detalle.append({"paciente":g["paciente"],"run":fmt_run(g["run"]),"receta":g["receta"],"meds":meds})
+    detalle.sort(key=lambda d: unicodedata.normalize("NFKD",d["paciente"]).encode("ascii","ignore").decode().upper())
+    return detalle
 
 def cargar_sidra(path):
     """Lee el SIDRA una sola vez y devuelve (idx_identidad, mapa_refrigerados).
@@ -622,42 +688,27 @@ def main():
     for destino, regs in grupos.items():
         titulo=f"GESTIÓN TERRITORIAL - {destino.upper()}"
         subtitulo=f"Origen: {origen}   |   Destino: {destino}   |   Fecha de entrega: {FECHA}"
-        # Salud mental: recetas prescritas por siquiatra van en nómina aparte del resto. Dentro
-        # de esas, los antipsicóticos inyectables de depósito (Haloperidol 50, Paliperidona y
-        # Risperidona inyectables) van en una nómina todavía más separada. Ambas, igual que las
-        # demás, se generan por establecimiento de destino.
+        # Salud mental: recetas prescritas por siquiatra van en nómina aparte del resto
+        # (misma lógica clínica que antes). Dentro de cada grupo (resto / salud mental),
+        # normales y controladas ahora van juntas en UNA sola nómina — antes salían en
+        # archivos separados y eso generaba hasta 4 planillas por destino cada mañana.
         regs_sm=[g for g in regs if es_psiquiatria(g.get("especialidad",""))]
         regs_resto=[g for g in regs if not es_psiquiatria(g.get("especialidad",""))]
-        regs_sm_iny=[g for g in regs_sm if es_inyectable_antipsicotico(g.get("controlado","") or "")]
-        regs_sm_gen=[g for g in regs_sm if not es_inyectable_antipsicotico(g.get("controlado","") or "")]
-        regs_ctrl=[g for g in regs_resto if (g.get("controlado","") or "").strip()]
-        regs_norm=[g for g in regs_resto if not (g.get("controlado","") or "").strip()]
         archivos_dest=[]
-        if regs_norm:
+        if regs_resto:
             wb=Workbook()
-            hoja_funcionarios(wb, regs_norm, destino, titulo, subtitulo, modo="normal")
+            hoja_funcionarios(wb, regs_resto, destino, titulo, subtitulo, modo="todos")
             pl=os.path.join(a.salida, f"{slug(destino)}_Planilla.xlsx"); wb.save(pl); archivos_dest.append(os.path.basename(pl))
             # Planilla: solo xlsx (editable para tick manual), sin PDF
-        if regs_ctrl:
-            titulo_ctrl=f"GESTIÓN TERRITORIAL (CONTROLADOS) - {destino.upper()}"
-            wb=Workbook()
-            hoja_funcionarios(wb, regs_ctrl, destino, titulo_ctrl, subtitulo, modo="controlados")
-            pl_ctrl=os.path.join(a.salida, f"{slug(destino)}_Controlados_Planilla.xlsx"); wb.save(pl_ctrl); archivos_dest.append(os.path.basename(pl_ctrl))
-            # Controlados: solo xlsx, sin PDF
-        if regs_sm_gen:
+        if regs_sm:
             titulo_sm=f"GESTIÓN TERRITORIAL SALUD MENTAL - {destino.upper()}"
             wb=Workbook()
-            hoja_funcionarios(wb, regs_sm_gen, destino, titulo_sm, subtitulo, modo="controlados")
+            hoja_funcionarios(wb, regs_sm, destino, titulo_sm, subtitulo, modo="todos")
             pl_sm=os.path.join(a.salida, f"{slug(destino)}_SaludMental_Planilla.xlsx"); wb.save(pl_sm); archivos_dest.append(os.path.basename(pl_sm))
             # Salud Mental: solo xlsx, sin PDF
-        if regs_sm_iny:
-            titulo_sm_iny=f"GESTIÓN TERRITORIAL SALUD MENTAL (INYECTABLES) - {destino.upper()}"
-            wb=Workbook()
-            hoja_funcionarios(wb, regs_sm_iny, destino, titulo_sm_iny, subtitulo, modo="controlados")
-            pl_sm_iny=os.path.join(a.salida, f"{slug(destino)}_SaludMental_Inyectables_Planilla.xlsx"); wb.save(pl_sm_iny); archivos_dest.append(os.path.basename(pl_sm_iny))
-            # Salud Mental Inyectables: solo xlsx, sin PDF
         lleva=any(((g.get("refrigerado","") or "").strip() or (g["receta"] in refri_map)) for g in regs)
-        le=os.path.join(a.salida, f"{slug(destino)}_Letrero.xlsx"); letrero(destino, lleva, le)
+        detalle_refri=_detalle_refrigerados(regs, refri_map) if lleva else []
+        le=os.path.join(a.salida, f"{slug(destino)}_Letrero.xlsx"); letrero(destino, lleva, le, detalle_refri)
         # Letrero: solo PDF (xlsx temporal se elimina)
         if not a.no_pdf:
             if to_pdf(le, a.salida):
@@ -669,10 +720,8 @@ def main():
                 print(f"  (Letrero: PDF no generado, se conserva {os.path.basename(le)})")
         else:
             archivos_dest.append(os.path.basename(le))
-        resumen=f"{len(regs_norm)} normales"
-        if regs_ctrl: resumen+=f" + {len(regs_ctrl)} controlados"
-        if regs_sm_gen: resumen+=f" + {len(regs_sm_gen)} salud mental"
-        if regs_sm_iny: resumen+=f" + {len(regs_sm_iny)} SM inyectables"
+        resumen=f"{len(regs_resto)} generales"
+        if regs_sm: resumen+=f" + {len(regs_sm)} salud mental"
         print(f"OK {destino}: {len(regs)} recetas ({resumen}) | refrigerado={lleva} -> {', '.join(archivos_dest)}")
         # Dígito verificador (módulo 11) - siempre
         malos=[(g["receta"],g["paciente"],g["run"]) for g in regs if dv_correcto(g["run"]) is False]
