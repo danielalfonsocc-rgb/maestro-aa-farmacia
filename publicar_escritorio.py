@@ -26,8 +26,10 @@ sin entrar a la carpeta del repositorio.
     │                             generado por programacion_aa.py --aplicar-conteo)
     ├── 9 - Clozapina\          Accesos a carpetas locales de reportes/hemogramas
     │                             (RUT pacientes, NO se copian a la nube)
-    └── 10 - Servicios Farmaceuticos\  Servicios_Farmaceuticos\<MES AÑO>\ (agregado
-                                    QF x actividad, SIN RUT — sí se copia a la nube)
+    ├── 10 - Servicios Farmaceuticos\  Servicios_Farmaceuticos\<MES AÑO>\ (agregado
+    │                             QF x actividad, SIN RUT — sí se copia a la nube)
+    └── 11 - Centinela Inyectables SM\  Centinela_Inyectables_SM\<fecha>\ (stock
+                                    de antipsicóticos de depósito, SIN RUT — sí se copia)
 
 IMPORTANTE: este script COPIA, no mueve. El repositorio sigue siendo la fuente de
 verdad — la app Streamlit lee el Consolidado del repo y PUBLICAR_DATOS.bat publica
@@ -44,6 +46,7 @@ Uso:
     py publicar_escritorio.py --duplicados   # solo accesos de Agente/Auditoria Duplicados
     py publicar_escritorio.py --programacion # solo Resumen_Programacion_AA.xlsx
     py publicar_escritorio.py --servicios    # solo Servicios_Farmaceuticos\ (recuento QF)
+    py publicar_escritorio.py --centinela-sm # solo Centinela_Inyectables_SM\ (antipsicóticos depósito)
     py publicar_escritorio.py --enlaces      # solo (re)crea carpetas, LEEME y accesos
 """
 import os
@@ -89,6 +92,7 @@ SUB_DUP    = "7 - Auditoria Duplicados"
 SUB_PROG   = "8 - Programacion AA"
 SUB_CLOZAPINA = "9 - Clozapina"
 SUB_SERVICIOS = "10 - Servicios Farmaceuticos"
+SUB_CENTINELA_SM = "11 - Centinela Inyectables SM"
 
 # Iconos para distinguir los accesos directos (shell32.dll, índices clásicos).
 _SHELL32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "shell32.dll")
@@ -498,6 +502,21 @@ def sync_servicios():
             f"{', '.join(meses) if meses else '(ninguno)'} → «{SUB_SERVICIOS}»")
 
 
+def sync_centinela_sm():
+    """Espejo de Centinela_Inyectables_SM/ (stock de antipsicóticos de depósito
+    de salud mental ambulatoria — SIN RUT ni nombre de paciente, solo cifras
+    agregadas de stock) — mismo patrón que sync_centinela()/sync_servicios()."""
+    dst = os.path.join(BASE, SUB_CENTINELA_SM)
+    src = os.path.join(WORK_DIR, "Centinela_Inyectables_SM")
+    if not os.path.isdir(src):
+        REP.say("[Centinela Inyectables SM] (aún no se ha generado ningún reporte)")
+        return
+    n = _espejo(src, dst)
+    fechas = sorted(d for d in os.listdir(src) if os.path.isdir(os.path.join(src, d)))
+    REP.say(f"[Centinela Inyectables SM] {n} archivo(s) · fechas: "
+            f"{', '.join(fechas) if fechas else '(ninguna)'} → «{SUB_CENTINELA_SM}»")
+
+
 def sync_auditoria():
     dst = os.path.join(BASE, SUB_AUDIT)
     src = os.path.join(WORK_DIR, "auditoria_prescripcion.json")
@@ -619,6 +638,8 @@ cada vez que corres cada proceso.
                             SSASUR del ciclo Bodega AA, generado por programacion_aa.py)
   9 - Clozapina             Accesos a carpetas locales de reportes/hemogramas (RUT pacientes, NO se copian a la nube)
   10 - Servicios Farmaceuticos  Recuento mensual QF x actividad (Agenda Médica), un Excel por mes, SIN RUT
+  11 - Centinela Inyectables SM  Stock de antipsicóticos de depósito (salud mental ambulatoria),
+                            un reporte por fecha en que hubo cambios, SIN RUT
 
 ------------------------------------------------------------------------
 Nota: estas son COPIAS para consulta. El programa original sigue en
@@ -676,7 +697,7 @@ _ACCESOS = [
 
 def crear_estructura(forzar_lnk=False):
     """Crea carpetas, LEEME y (si faltan o forzar_lnk) los accesos directos."""
-    for sub in (SUB_APP, SUB_GT, SUB_RCH, SUB_AUDIT, SUB_PEDIDO, SUB_CENTINELA, SUB_DUP, SUB_PROG, SUB_CLOZAPINA, SUB_SERVICIOS):
+    for sub in (SUB_APP, SUB_GT, SUB_RCH, SUB_AUDIT, SUB_PEDIDO, SUB_CENTINELA, SUB_DUP, SUB_PROG, SUB_CLOZAPINA, SUB_SERVICIOS, SUB_CENTINELA_SM):
         os.makedirs(os.path.join(BASE, sub), exist_ok=True)
     try:
         with open(os.path.join(BASE, "LEEME.txt"), "w", encoding="utf-8") as fh:
@@ -726,7 +747,7 @@ def main():
 
     selectivo = args & {"--app", "--gt", "--rch", "--auditoria", "--pedido",
                          "--centinela", "--duplicados", "--programacion", "--clozapina",
-                         "--servicios"}
+                         "--servicios", "--centinela-sm"}
     todo = not selectivo
 
     if todo or "--app" in args:
@@ -749,6 +770,8 @@ def main():
         sync_clozapina()
     if todo or "--servicios" in args:
         sync_servicios()
+    if todo or "--centinela-sm" in args:
+        sync_centinela_sm()
 
     escribir_log()
     print(f"\nListo ({REP.ok} copiados, {REP.skip} sin cambios). "

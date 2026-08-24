@@ -2449,3 +2449,13 @@ try:
     sgli_historico.main()
 except Exception as _e_sgli:
     print(f"  [WARN] SGLI histórico no generado: {_e_sgli}")
+
+# ─── Centinela de Inyectables de Salud Mental Ambulatoria ────────────────────
+# Revisa en CADA corrida de maestro_aa.py si corresponde regenerar el reporte
+# (cadencia semanal o ingreso de stock detectado); el propio módulo decide si
+# genera o no — ver centinela_inyectables_sm.py.
+try:
+    import centinela_inyectables_sm
+    centinela_inyectables_sm.main(no_pause=True)
+except Exception as _e_cism:
+    print(f"  [WARN] Centinela de inyectables de salud mental no generado: {_e_cism}")

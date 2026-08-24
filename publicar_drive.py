@@ -33,13 +33,15 @@ Estructura en Drive:
                               (agregado QF × actividad, SIN RUT — el reporte crudo de
                               Agenda Médica con RUT de paciente nunca se sube, igual que
                               informe_completo_recetas*.csv y reporte_de_stock*.xlsx)
+    9 - Centinela Inyectables SM/<fecha>/  reporte_inyectables_sm_<fecha>.html
+                              (stock de antipsicóticos de depósito, SIN RUT de paciente)
 
 Primera vez (requiere Google Cloud credentials.json):
   py publicar_drive.py --setup
 
 Uso normal (token ya generado):
   py publicar_drive.py           # sube todo
-  py publicar_drive.py --solo-app  --solo-gt  --solo-pedido  --solo-auditoria  --solo-centinela  --solo-programacion
+  py publicar_drive.py --solo-app  --solo-gt  --solo-pedido  --solo-auditoria  --solo-centinela  --solo-programacion  --solo-centinela-sm
 """
 import argparse, glob, hashlib, json, os, re, sys
 from datetime import datetime
@@ -64,6 +66,7 @@ SUB_AUDIT   = "4 - Auditoria Prescripcion"
 SUB_CENTINELA = "6 - Centinela"
 SUB_PROG    = "7 - Programacion AA"
 SUB_SERVICIOS = "8 - Servicios Farmaceuticos"
+SUB_CENTINELA_SM = "9 - Centinela Inyectables SM"
 
 # Clozapina: RUT + nombre + diagnóstico psiquiátrico implícito (más sensible
 # que el RUT genérico de Recetas Cheque/GT) — por eso NO va dentro de la
@@ -304,6 +307,7 @@ def _guess_mime(path):
         ".json": "application/json",
         ".txt":  "text/plain",
         ".png":  "image/png",
+        ".html": "text/html",
     }
     return table.get(ext, "application/octet-stream"), ext
 
@@ -673,6 +677,34 @@ def sync_servicios(service, raiz_id, stats, cache=None):
           f"{', '.join(os.path.basename(d) for d in meses)}")
 
 
+def sync_centinela_sm(service, raiz_id, stats, cache=None):
+    """Sube Centinela_Inyectables_SM/<fecha>/reporte_inyectables_sm_<fecha>.html
+    — stock de antipsicóticos de depósito (salud mental ambulatoria), SIN RUT
+    ni nombre de paciente (solo cifras agregadas de stock). Una subcarpeta por
+    fecha en que el reporte se regeneró, mismo patrón que sync_centinela()
+    (semanas) / sync_servicios() (meses)."""
+    fid = _obtener_o_crear_carpeta(service, SUB_CENTINELA_SM, raiz_id, cache)
+    src_base = os.path.join(WORK_DIR, "Centinela_Inyectables_SM")
+    if not os.path.isdir(src_base):
+        print("  [Centinela Inyectables SM] sin Centinela_Inyectables_SM/ todavía")
+        return
+    fechas = sorted(
+        d for d in glob.glob(os.path.join(src_base, "*")) if os.path.isdir(d)
+    )
+    if not fechas:
+        print("  [Centinela Inyectables SM] sin fechas en Centinela_Inyectables_SM/")
+        return
+    for d in fechas:
+        nombre_fecha = os.path.basename(d)
+        fid_fecha = _obtener_o_crear_carpeta(service, nombre_fecha, fid, cache)
+        for f in sorted(glob.glob(os.path.join(d, "*.html"))):
+            r = _subir(service, f, fid_fecha, stats=stats)
+            if r != "skip":
+                print(f"  {nombre_fecha}/{os.path.basename(f)}: {r}")
+    print(f"  [Centinela Inyectables SM] {len(fechas)} fecha(s): "
+          f"{', '.join(os.path.basename(d) for d in fechas)}")
+
+
 def sync_clozapina(service, stats, cache=None):
     """Sube los reportes mensuales de Clozapina (Clozapina_Reportes/*.xlsx) a su
     PROPIA carpeta de nivel superior en Drive (NOMBRE_RAIZ_CLOZAPINA) — no
@@ -721,6 +753,7 @@ def main():
     ap.add_argument("--solo-centinela",action="store_true")
     ap.add_argument("--solo-programacion", action="store_true")
     ap.add_argument("--solo-servicios", action="store_true")
+    ap.add_argument("--solo-centinela-sm", action="store_true")
     ap.add_argument("--solo-clozapina", action="store_true",
                     help="Sube Clozapina_Reportes/ a su PROPIA carpeta Drive (privada, fuera de "
                          "'Farmacia AA') — NUNCA corre como parte de una sincronización general, "
@@ -774,7 +807,7 @@ def main():
 
     todos = not any([a.solo_app, a.solo_gt, a.solo_pedido, a.solo_auditoria,
                      a.solo_centinela, a.solo_programacion, a.solo_servicios,
-                     a.solo_clozapina, a.solo_gt_confidencial])
+                     a.solo_centinela_sm, a.solo_clozapina, a.solo_gt_confidencial])
     # Clozapina y GT Confidencial viven en su PROPIA carpeta (fuera de
     # "Farmacia AA") — si son lo ÚNICO que se pidió subir, no hace falta
     # resolver/imprimir la raíz "Farmacia AA" en absoluto (evita el mensaje
@@ -782,7 +815,8 @@ def main():
     # carpeta totalmente distinta).
     necesita_raiz_farmacia = todos or any([a.solo_app, a.solo_gt, a.solo_pedido,
                                             a.solo_auditoria, a.solo_centinela,
-                                            a.solo_programacion, a.solo_servicios])
+                                            a.solo_programacion, a.solo_servicios,
+                                            a.solo_centinela_sm])
 
     raiz_id = None
     if necesita_raiz_farmacia:
@@ -790,7 +824,7 @@ def main():
         if NOMBRE_RAIZ in known:
             raiz_id = known[NOMBRE_RAIZ]
             # Pre-carga sub-carpetas fijas para evitar búsquedas API
-            for sub in (SUB_APP, SUB_GT, SUB_PEDIDO, SUB_AUDIT, SUB_CENTINELA, SUB_PROG, SUB_SERVICIOS):
+            for sub in (SUB_APP, SUB_GT, SUB_PEDIDO, SUB_AUDIT, SUB_CENTINELA, SUB_PROG, SUB_SERVICIOS, SUB_CENTINELA_SM):
                 if sub in known:
                     cache[(sub, raiz_id)] = known[sub]
         else:
@@ -857,6 +891,14 @@ def main():
             sync_servicios(svc, raiz_id, stats, cache)
         except Exception as e:
             print(f"  [error] {SUB_SERVICIOS}: {e}")
+            stats["fail"] += 1
+
+    if todos or a.solo_centinela_sm:
+        print(f"\n  ── {SUB_CENTINELA_SM} ──")
+        try:
+            sync_centinela_sm(svc, raiz_id, stats, cache)
+        except Exception as e:
+            print(f"  [error] {SUB_CENTINELA_SM}: {e}")
             stats["fail"] += 1
 
     # Clozapina: EXPLÍCITAMENTE fuera de "todos" — solo sube con --solo-clozapina.
