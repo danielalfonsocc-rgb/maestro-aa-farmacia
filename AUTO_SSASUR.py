@@ -203,6 +203,12 @@ CONTROLADOS_DIR = MAESTRO_DIR / "Informes_Controlados_AA"
 # se usó para GT y Controlados (ver sus comentarios arriba).
 AGENDA_MEDICA_URL = "https://www.ssasur.cl/araucaniasur/agenda_medica/index_menu.php"
 SERVICIOS_MARCADOR = MAESTRO_DIR / "Servicios_Farmaceuticos" / "_ultimo_mes.json"
+# Última fecha en que AUTO_SSASUR completó el PASO 5 (maestro_aa.py) sin
+# error. Permite detectar huecos REALES (PC apagado, sesión SSASUR caída,
+# feriado no listado, etc.) en vez de asumir que el hueco es siempre
+# "fin de semana/feriado" como hacía dia_habil_anterior() a solas — ver
+# ultima_corrida_ok()/rango_backlog_gt().
+ULTIMA_CORRIDA_JSON = MAESTRO_DIR / "_ultima_corrida_ok.json"
 SELS_PROCESO_NUEVO = ('a:has-text("Proceso_nuevo")', 'button:has-text("Proceso_nuevo")',
                        ':text("Proceso_nuevo")', 'a:has-text("Proceso Nuevo")')
 SELS_HOJA_DIARIA = ('a:has-text("Hoja Diaria de Profesional")', ':text("Hoja Diaria de Profesional")',
@@ -480,24 +486,58 @@ def _ultimo_dia_mes(anio: int, mes: int) -> date:
     return date(anio, mes + 1, 1) - timedelta(days=1)
 
 
+def ultima_corrida_ok() -> date | None:
+    """Fecha de la última vez que AUTO_SSASUR completó el PASO 5 (maestro_aa.py)
+    sin error, según ULTIMA_CORRIDA_JSON. None si no hay marcador (1ª corrida,
+    o archivo borrado)."""
+    if not ULTIMA_CORRIDA_JSON.exists():
+        return None
+    try:
+        import json as _json
+        data = _json.loads(ULTIMA_CORRIDA_JSON.read_text(encoding="utf-8"))
+        return date.fromisoformat(data["fecha"])
+    except Exception:
+        return None
+
+
+def marcar_corrida_ok(d: date) -> None:
+    """Registra `d` como la última corrida completada sin error — ver
+    ultima_corrida_ok()."""
+    try:
+        import json as _json
+        ULTIMA_CORRIDA_JSON.write_text(
+            _json.dumps({"fecha": d.isoformat()}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"  [aviso] no se pudo escribir {ULTIMA_CORRIDA_JSON.name}: {e}")
+
+
 def rango_backlog_gt(hoy: date) -> tuple[date, date] | None:
     """Bug real detectado 30-07-2026 (caso Teodoro Schmidt, 23 recetas GT
     despachadas el viernes 24 y sábado 25 de julio sin nómina): el informe
     'Modalidad de Despacho' que usa paso_gt() solo muestra despachos
     PENDIENTES — una vez que SSASUR procesa/entrega la receta, desaparece del
     listado para siempre. Si no corre AUTO_SSASUR un día (fin de semana,
-    feriado), cualquier receta que se digitó Y despachó ese mismo día queda
-    invisible para SIEMPRE a paso_gt(), sin importar qué tan amplio sea el
-    rango de fechas que se consulte (verificado en vivo: ni ampliando la
-    ventana hacia atrás aparecen).
+    feriado, PC apagado, corrida fallida), cualquier receta que se digitó Y
+    despachó ese mismo día queda invisible para SIEMPRE a paso_gt(), sin
+    importar qué tan amplio sea el rango de fechas que se consulte (verificado
+    en vivo: ni ampliando la ventana hacia atrás aparecen).
+
+    El punto de partida NO asume que el único hueco posible es fin de
+    semana/feriado (dia_habil_anterior): si ULTIMA_CORRIDA_JSON dice que la
+    última corrida exitosa fue anterior a eso — porque se saltó un día hábil
+    normal — el rango se extiende hacia atrás hasta cubrir ese hueco real.
 
     Devuelve el rango de fechas [desde, hasta] a revisar contra el HISTÓRICO
     real (informe_completo_recetas*.csv, no el reporte de pendientes) para
     detectar recetas GT que se despacharon en ese hueco. None si no hay hueco
-    que revisar (día hábil normal sin fin de semana/feriado de por medio)."""
-    ultimo_habil = dia_habil_anterior(hoy)
-    desde = ultimo_habil          # inclusive: el propio último día hábil puede
-                                   # tener despachos posteriores a la corrida de esa mañana
+    que revisar."""
+    desde = dia_habil_anterior(hoy)   # inclusive: el propio último día hábil puede
+                                       # tener despachos posteriores a la corrida de esa mañana
+    ultima_ok = ultima_corrida_ok()
+    if ultima_ok is not None and ultima_ok + timedelta(days=1) < desde:
+        desde = ultima_ok + timedelta(days=1)   # hueco real más amplio que el calendario
     hasta = hoy - timedelta(days=1)   # ayer
     if desde >= hoy:
         return None
@@ -1341,8 +1381,16 @@ async def main():
     # modos). Complementa a verificar_backlog_gt(), que cubre el caso — más
     # grave — de lo que ya se despachó y desapareció del reporte antes de
     # que corriera cualquier ventana.
+    # Si la última corrida exitosa (ULTIMA_CORRIDA_JSON) es más vieja que el
+    # último día hábil — porque se saltó un día hábil normal, no solo fin de
+    # semana/feriado — se extiende el inicio hasta ahí para no dejar un hueco
+    # real sin consultar (ver ultima_corrida_ok()/rango_backlog_gt()).
+    _gt_inicio_base = dia_habil_anterior(today)
+    _ultima_ok = ultima_corrida_ok()
+    if _ultima_ok is not None and _ultima_ok + timedelta(days=1) < _gt_inicio_base:
+        _gt_inicio_base = _ultima_ok + timedelta(days=1)
     # Se puede acotar con --desde dd/mm/yyyy o --fecha dd/mm/yyyy.
-    _gt_inicio = _fecha or fmt(dia_habil_anterior(today))
+    _gt_inicio = _fecha or fmt(_gt_inicio_base)
     desde_gt = _arg_val("--desde", _gt_inicio)
     hasta_gt = _arg_val("--hasta", _fecha or fmt(today + timedelta(days=13)))
 
@@ -1964,6 +2012,11 @@ async def main():
         print("  → Consolidado_AA_MAESTRO.xlsx  actualizado")
         print("  → Resumen_Pedidos_AA.xlsx       actualizado")
         print("═" * 62)
+
+        # Marca HOY como la última corrida exitosa — la próxima corrida usa
+        # esto para detectar huecos reales (no solo fin de semana/feriado) en
+        # el rango GT a revisar. Ver ultima_corrida_ok()/rango_backlog_gt().
+        marcar_corrida_ok(today)
 
         # ── PASO 5b — AUDITORÍA DE PRESCRIPCIÓN ──────────────────────────────
         audit_py = MAESTRO_DIR / "auditoria_prescripcion.py"
