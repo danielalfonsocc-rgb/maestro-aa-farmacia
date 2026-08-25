@@ -45,6 +45,25 @@ CONTROL_INN = {
     "PETIDINA","REMIFENTANILO","TAPENTADOL","ZOLPIDEM",
 }
 
+# Alias de "Estab. Destino" — SSASUR a veces exporta el mismo establecimiento
+# con un string distinto al canónico (confirmado 25-08-2026: la receta
+# 44515366 de María Ernestina Huircan Pichun vino con "SUR TEODORO SCHMIDT"
+# en el reporte de modalidad de despacho, no "CESFAM TEODORO SCHMIDT" — no
+# fue un typo de digitación manual, es lo que SSASUR mismo exportó). Sin
+# esto, generar.py agrupa por el string crudo y genera una Nómina de Envío
+# aparte de 1 paciente para el alias — mismo bug que agregar_gt_manual.py
+# tiene con _CARPETA_LOCAL, pero acá en el pipeline automático. Se normaliza
+# ACÁ (leer_reporte_gt), antes de que el destino se use para agrupar,
+# clasificar o generar planillas — así corrige TODO el pipeline de una vez.
+ALIAS_DESTINO = {
+    "SUR TEODORO SCHMIDT": "CESFAM TEODORO SCHMIDT",
+}
+
+
+def _normalizar_destino(d):
+    d = str(d or "").strip()
+    return ALIAS_DESTINO.get(d.upper(), d)
+
 
 def _key(h):
     h = unicodedata.normalize("NFKD", str(h or "")).encode("ascii","ignore").decode().lower()
@@ -140,7 +159,7 @@ def leer_reporte_gt(path):
                 "edad": int(edad) if edad else None, "direccion": g(r, c_dir),
                 "comuna": g(r, c_com), "telefono": g(r, c_tel),
                 "estab_origen": g(r, c_org) or "Pitrufquén Hosp.",
-                "estab_destino": g(r, c_dst), "fecha_entrega_rep": g(r, c_fen),
+                "estab_destino": _normalizar_destino(g(r, c_dst)), "fecha_entrega_rep": g(r, c_fen),
                 "periodo": g(r, c_per), "especialidad": g(r, c_esp),
                 "n_presc": _num(g(r, c_np)),
                 "ventanilla": g(r, c_tret).upper() == "PACIENTE",
@@ -273,41 +292,53 @@ def _buscar_generar_py():
     return None
 
 
-GT_DIR_DEFAULT = os.path.join(os.path.dirname(MAESTRO_DIR), "04_Farmacia_Gestion_Territorial")
+def _recetas_en_gt_maestro():
+    """Nº de receta de TODAS las hojas de gt_maestro.xlsx (el histórico por
+    mes) — fuente de verdad de qué receta ya tiene Nómina de Envío generada.
 
-
-def _recetas_en_gt_previos(reporte_actual, gt_dir):
-    """Carga los Nº Receta de todos los GT anteriores (excluye el actual).
-    Retorna un set de números ya procesados."""
-    from openpyxl import load_workbook
-    ya = set()
-    patron = os.path.join(gt_dir, "reporteGestionTerritorial_*.xlsx")
-    for fp in glob.glob(patron):
-        if os.path.abspath(fp) == os.path.abspath(reporte_actual):
+    Reemplaza el dedup anterior (_recetas_en_gt_previos, por presencia en
+    reportes reporteGestionTerritorial_*.xlsx ya descargados). Ese dedup
+    daba falsos positivos: una receta podía 'aparecer' en un reporte previo
+    sin que ese reporte hubiera llegado a generar/depositar su nómina (paso
+    fallido, o simplemente porque el reporte de ESE día la mostraba como
+    pendiente sin que aún se procesara) — bug real 10-08-2026: 50+ recetas
+    de Quepe/Tolten/Teodoro Schmidt/PSR Queule seguían PENDIENTES/EN
+    TRÁNSITO en SSASUR pero ya no se les generaba nómina en ninguna corrida
+    posterior porque el número ya figuraba en un reporte anterior. Con
+    gt_maestro.xlsx como fuente, una receta solo se salta si REALMENTE ya
+    quedó registrada (nómina generada), no solo 'vista'."""
+    import gt_maestro as GM
+    wb, _ = GM.cargar_maestro()
+    recetas = set()
+    for ws in wb.worksheets:
+        if ws.title == GM.HOJA_HISTORIAL:
             continue
         try:
-            wb = load_workbook(fp, read_only=True, data_only=True)
-            ws = wb[wb.sheetnames[0]]
-            rows = list(ws.iter_rows(values_only=True))
-            wb.close()
+            fila_header, headers = GM._headers_de_hoja(ws)
         except Exception:
             continue
-        hi = next((i for i, r in enumerate(rows)
-                   if sum(1 for c in r if c not in (None, "")) >= 5), None)
-        if hi is None:
+        idx_receta = GM._col_index(headers, "receta")
+        if idx_receta is None:
             continue
-        hdr_r = [str(c).strip() if c is not None else "" for c in rows[hi]]
-        K = {_key(h): i for i, h in enumerate(hdr_r)}
-        c_rec = next((K[k] for k in ("nreceta", "noreceta", "numeroreceta") if k in K), None)
-        if c_rec is None:
-            continue
-        for r in rows[hi + 1:]:
-            if not r:
-                continue
-            v = str(r[c_rec]).strip() if c_rec < len(r) and r[c_rec] is not None else ""
-            if v and v.upper() not in ("TOTAL", "NONE", ""):
-                ya.add(v)
-    return ya
+        for r in range(fila_header + 1, ws.max_row + 1):
+            v = ws.cell(row=r, column=idx_receta + 1).value
+            if v is not None and str(v).strip():
+                recetas.add(str(v).strip())
+    return recetas
+
+
+def _sincronizar_maestro(reporte, estado_destino="EN PREPARACIÓN"):
+    """Registra en gt_maestro.xlsx todas las recetas del reporte recién
+    procesado (nuevas y ya existentes — upsert idempotente), para que el
+    dedup del día siguiente (_recetas_en_gt_maestro) las vea. Sin esto, el
+    ciclo se rompe: se generan planillas pero gt_maestro nunca se entera,
+    así que el día siguiente cruce_gt.py las vuelve a considerar 'nuevas'
+    (o, con el dedup viejo, las pierde de vista para siempre)."""
+    import gt_maestro as GM
+    wb, path = GM.cargar_maestro()
+    resumen, hojas = GM.sincronizar_gt_report(wb, reporte, estado_destino=estado_destino)
+    GM.guardar(wb, path)
+    return resumen, hojas
 
 
 def main():
@@ -317,24 +348,31 @@ def main():
     ap.add_argument("--hist-glob", default=os.path.join(MAESTRO_DIR, "informe_completo_recetas*.csv"))
     ap.add_argument("--generar", action="store_true", help="Invocar generar.py del skill al terminar el cruce")
     ap.add_argument("--no-pdf", action="store_true", help="No generar PDFs (pasa --no-pdf a generar.py)")
-    ap.add_argument("--no-dedup", action="store_true", help="No filtrar recetas ya procesadas en GT anteriores")
-    ap.add_argument("--gt-dir", default=GT_DIR_DEFAULT,
-                    help="Carpeta con reporteGestionTerritorial_*.xlsx para detectar previos")
+    ap.add_argument("--no-dedup", action="store_true", help="No filtrar recetas ya registradas en gt_maestro.xlsx")
+    ap.add_argument("--no-sync-maestro", action="store_true",
+                     help="No registrar en gt_maestro.xlsx después de generar (debug/pruebas)")
     a = ap.parse_args()
 
     os.makedirs(a.salida, exist_ok=True)
     regs, hdr = leer_reporte_gt(a.reporte)
     print(f"Reporte GT: {len(regs)} recetas únicas | columnas detectadas OK")
 
-    # Dedup: excluir recetas ya listadas en reportes GT anteriores
-    if not a.no_dedup and os.path.isdir(a.gt_dir):
-        ya_procesadas = _recetas_en_gt_previos(a.reporte, a.gt_dir)
+    # Dedup: excluir recetas que YA tienen Nómina de Envío generada, según
+    # gt_maestro.xlsx (ver _recetas_en_gt_maestro — antes se deducía por
+    # presencia en reportes descargados previos, lo que perdía de vista
+    # recetas genuinamente aún pendientes).
+    if not a.no_dedup:
+        try:
+            ya_procesadas = _recetas_en_gt_maestro()
+        except Exception as e:
+            print(f"  [aviso] no pude leer gt_maestro.xlsx para el dedup: {e} — sigo sin dedup")
+            ya_procesadas = set()
         if ya_procesadas:
             antes = len(regs)
             regs = {k: v for k, v in regs.items() if k not in ya_procesadas}
             omitidas = antes - len(regs)
             if omitidas:
-                print(f"  [dedup GT] {omitidas} receta(s) omitidas por ya estar en reportes anteriores")
+                print(f"  [dedup GT] {omitidas} receta(s) omitidas por ya estar en gt_maestro.xlsx")
     recetas_set = set(regs.keys())
 
     archivos = sorted(glob.glob(a.hist_glob))
@@ -408,10 +446,27 @@ def main():
                     cmd.append("--no-pdf")
                 env = os.environ.copy()
                 env["PYTHONUTF8"] = "1"; env["PYTHONIOENCODING"] = "utf-8"
-                _sp.run(cmd, env=env)
+                ret = _sp.run(cmd, env=env)
             finally:
                 try: os.remove(tmp_path)
                 except OSError: pass
+
+            # Registrar en gt_maestro.xlsx SOLO si generar.py terminó bien — si
+            # falló a medio camino, mejor que el día siguiente lo vuelva a
+            # intentar (dedup no las va a saltar) a que queden marcadas como
+            # 'ya enviadas' sin haber salido nunca. Esto cierra el ciclo: sin
+            # esto, cruce_gt.py generaba planillas pero gt_maestro nunca se
+            # enteraba, así que el dedup del día siguiente no tenía cómo
+            # saber que ya se habían procesado (bug real 10-08-2026).
+            if ret.returncode == 0 and regs and not a.no_sync_maestro:
+                try:
+                    resumen, hojas = _sincronizar_maestro(a.reporte)
+                    print(f"  [maestro GT] sincronizado -> {resumen} | hojas: {', '.join(hojas)}")
+                except Exception as e:
+                    print(f"  [aviso] no pude sincronizar con gt_maestro.xlsx: {e}")
+            elif ret.returncode != 0:
+                print(f"  [aviso] generar.py terminó con código {ret.returncode} — "
+                      f"NO se sincronizó con gt_maestro.xlsx (se reintentará mañana).")
 
 
 if __name__ == "__main__":
