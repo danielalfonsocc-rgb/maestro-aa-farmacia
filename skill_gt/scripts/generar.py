@@ -646,9 +646,15 @@ def to_pdf(path, outdir):
         print(f"  (Excel win32com falló: {e})")
     finally:
         if wb is not None:
-            wb.Close(False)
+            try:
+                wb.Close(False)
+            except Exception:
+                pass
         if xl is not None:
-            xl.Quit()
+            try:
+                xl.Quit()
+            except Exception:
+                pass
     if os.path.exists(pdf_path):
         _forzar_carta(pdf_path)
         return True
