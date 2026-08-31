@@ -112,6 +112,7 @@ delante de una persona y ajusta lo que no calce leyendo los volcados
 ═══════════════════════════════════════════════════════════════
 """
 import asyncio
+import ctypes
 import csv as _csv
 import glob as _glob
 import os
@@ -913,8 +914,9 @@ async def descargar_sabana(page, fi: str, ft: str) -> str:
       1) /receta/informes/jsonValidaSabana   (valida; fija contexto)
       2) .../informeCompletoReceta.php        (devuelve el CSV ';' latin-1)
     fi/ft en formato dd/mm/yyyy. Devuelve el CSV como texto latin-1.
+    Timeout de 150 s por bloque (AbortSignal en JS + asyncio.wait_for de respaldo).
     """
-    return await page.evaluate(
+    coro = page.evaluate(
         r"""async ({fi, ft}) => {
           const enc = encodeURIComponent;
           const csrf = (document.querySelector('input[name=csrf_token]')||{}).value || '';
@@ -924,12 +926,14 @@ async def descargar_sabana(page, fi: str, ft: str) -> str:
               headers:{'content-type':'application/x-www-form-urlencoded; charset=UTF-8','x-requested-with':'XMLHttpRequest'},
               body:`csrf_token=${csrf}&fechaInicio=${enc(fi)}&fechaTermino=${enc(ft)}&estadoSolicitadoHidden=F`,
               credentials:'include',
+              signal: AbortSignal.timeout(120_000),
             });
           } catch(e){}
           const r = await fetch('https://www.ssasur.cl/application/sistemas/receta/reportes/informeCompletoReceta.php', {
             method:'POST', headers:{'content-type':'application/x-www-form-urlencoded'},
             body:`fechaInicio=${enc(fi)}&fechaTermino=${enc(ft)}&estadoSolicitadoHidden=F&entregaDomicilio=F&estadoAnulada=N`,
             credentials:'include',
+            signal: AbortSignal.timeout(120_000),
           });
           const buf = await r.arrayBuffer();
           const b = new Uint8Array(buf); let s='';
@@ -938,6 +942,7 @@ async def descargar_sabana(page, fi: str, ft: str) -> str:
         }""",
         {"fi": fi, "ft": ft},
     )
+    return await asyncio.wait_for(coro, timeout=150)
 
 
 # ── GT · Modalidad de despacho (entra por la tarjeta RECETA, igual que la sabana) ─
@@ -1583,7 +1588,17 @@ async def main():
             print("\n[3/9] Modalidad de Despacho (GT) — omitido (--no-gt).")
         else:
             print(f"\n[3/9] Modalidad de Despacho — Informe GT ({desde_gt} → {hasta_gt})...")
-            gt_dest, n_gt = await paso_gt(page, desde_gt, hasta_gt, debug_gt)
+            try:
+                gt_dest, n_gt = await paso_gt(page, desde_gt, hasta_gt, debug_gt)
+            except Exception as e:
+                # A diferencia de los demás pasos, esta llamada no estaba protegida:
+                # un TargetClosedError (browser muerto a mitad de corrida, ver
+                # auto_ssasur_error.log) tumbaba TODO el proceso acá y nunca se
+                # llegaba a PASO 4/maestro_aa.py/publicación — se perdía el reporte
+                # diario completo por un fallo solo del módulo GT (detectado
+                # 31-08-2026: 3 días sin ningún reporte por esta causa).
+                gt_dest, n_gt = None, None
+                print(f"  [ERROR] Informe GT falló: {e} — continúo con el resto.")
             if gt_dest:
                 cnt = f"{n_gt} recetas" if isinstance(n_gt, int) and n_gt >= 0 else "recetas ?"
                 print(f"  ✓ {gt_dest.name}  ({cnt})")
@@ -1636,42 +1651,53 @@ async def main():
         #  PASO 4 — ABASTECIMIENTO  (volver al dashboard → entrar → stock)
         # ════════════════════════════════════════════════════════════════════
         print("\n[4/9] Módulo ABASTECIMIENTO...")
-        await page.goto(DASHBOARD_URL)
-        await _networkidle(page)
-        await page.wait_for_timeout(1_500)
-        await entrar_modulo(page, "ABASTECIMIENTO")
-
-        await page.goto(STOCK_REPORTE)
-        await _networkidle(page)
-        await page.wait_for_timeout(2_500)
-
-        if "login.ssasur.cl" in page.url:
-            # Por si la sesión del módulo no quedó lista: reintentar una vez
-            print("  [AVISO] Rebote al login — reintentando entrar a ABASTECIMIENTO...")
+        bodega_ok = True
+        try:
             await page.goto(DASHBOARD_URL)
             await _networkidle(page)
             await page.wait_for_timeout(1_500)
             await entrar_modulo(page, "ABASTECIMIENTO")
+
             await page.goto(STOCK_REPORTE)
             await _networkidle(page)
             await page.wait_for_timeout(2_500)
+
+            if "login.ssasur.cl" in page.url:
+                # Por si la sesión del módulo no quedó lista: reintentar una vez
+                print("  [AVISO] Rebote al login — reintentando entrar a ABASTECIMIENTO...")
+                await page.goto(DASHBOARD_URL)
+                await _networkidle(page)
+                await page.wait_for_timeout(1_500)
+                await entrar_modulo(page, "ABASTECIMIENTO")
+                await page.goto(STOCK_REPORTE)
+                await _networkidle(page)
+                await page.wait_for_timeout(2_500)
+        except Exception as e:
+            # Igual que paso_gt (ver fix 31-08-2026): la navegación de entrada no
+            # estaba protegida — un fallo transitorio del paso anterior (ej. la
+            # página quedó en chrome-error:// tras un ERR_CONNECTION_TIMED_OUT de
+            # [3b/9]) hacía que este goto() chocara con una navegación aún en
+            # curso y tumbara TODO el resto del pipeline (4b/4c/5-9, sin llegar
+            # nunca a maestro_aa.py). Detectado en vivo el mismo día.
+            print(f"  [ERROR] No se pudo entrar a ABASTECIMIENTO — omito stock: {e}")
+            bodega_ok = False
 
         # Configurar el reporte: bodega = TODAS.
         # IMPORTANTE: NO seleccionar el establecimiento — hacerlo dispara un modal
         # ("Selección Proyecto") cuyo backdrop bloquea el botón Generar XLS.
         # El establecimiento ya viene en "PITRUFQUEN HOSP." (única opción).
-        bodega_ok = True
-        try:
-            await page.select_option("#bodega", BODEGA_TODAS)
-            await page.wait_for_timeout(1_000)
-            valor_actual = await page.eval_on_selector("#bodega", "el => el.value")
-            if valor_actual != BODEGA_TODAS:
-                raise RuntimeError(f"selector #bodega quedó en '{valor_actual}', no en TODAS ('{BODEGA_TODAS}')")
-            print("  Bodega: TODAS")
-        except Exception as e:
-            print(f"  [ERROR] No se pudo seleccionar bodega TODAS — omito stock para no generar reporte parcial: {e}")
-            await page.screenshot(path=str(MAESTRO_DIR / "debug_stock.png"))
-            bodega_ok = False
+        if bodega_ok:
+            try:
+                await page.select_option("#bodega", BODEGA_TODAS)
+                await page.wait_for_timeout(1_000)
+                valor_actual = await page.eval_on_selector("#bodega", "el => el.value")
+                if valor_actual != BODEGA_TODAS:
+                    raise RuntimeError(f"selector #bodega quedó en '{valor_actual}', no en TODAS ('{BODEGA_TODAS}')")
+                print("  Bodega: TODAS")
+            except Exception as e:
+                print(f"  [ERROR] No se pudo seleccionar bodega TODAS — omito stock para no generar reporte parcial: {e}")
+                await page.screenshot(path=str(MAESTRO_DIR / "debug_stock.png"))
+                bodega_ok = False
 
         if bodega_ok:
             print("  Generando XLS de stock... (puede tardar varios minutos)")
@@ -1971,7 +1997,14 @@ async def main():
                     print("  Si es la 1ª corrida: vuelve a intentar con --servicios-farmaceuticos --debug-agenda")
                     print("  y revisa los volcados [DESCUBRIR] para ajustar los selectores en AUTO_SSASUR.py.")
 
-        await browser.close()
+        try:
+            await browser.close()
+        except Exception as e:
+            # Si el browser ya murió a mitad de corrida (TargetClosedError, ver
+            # PASO 3), volver a cerrarlo puede fallar también — no debe impedir
+            # llegar a PASO 5 (maestro_aa.py), que es lo que realmente genera
+            # el reporte diario.
+            print(f"  [aviso] browser.close() falló (probablemente ya estaba cerrado): {e}")
 
     # ── PASO 5 — MAESTRO AA ────────────────────────────────────────────────────
     print("\n[5/9] Actualizando Maestro AA...")
@@ -2186,4 +2219,28 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Impide que el equipo (notebook) suspenda por inactividad durante la
+    # corrida desatendida: la tarea programada no cuenta como "actividad" para
+    # el detector de idle de Windows, y el timeout en batería es de solo 25 min
+    # — bastante menos que lo que tarda la corrida completa. Si el equipo se
+    # suspende a mitad de camino, Chromium queda con la conexión cortada y
+    # cualquier operación posterior de Playwright falla con TargetClosedError
+    # (causa raíz identificada 31-08-2026: 3 días sin reporte diario porque la
+    # corrida de las 9:00 moría así). ES_CONTINUOUS|ES_SYSTEM_REQUIRED|
+    # ES_DISPLAY_REQUIRED se libera siempre al terminar, sea éxito o error.
+    ES_CONTINUOUS       = 0x80000000
+    ES_SYSTEM_REQUIRED  = 0x00000001
+    ES_DISPLAY_REQUIRED = 0x00000002
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+        )
+    except Exception:
+        pass   # no-Windows / entorno sin kernel32 (no debería pasar aquí, pero no es motivo de aborto)
+    try:
+        asyncio.run(main())
+    finally:
+        try:
+            ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+        except Exception:
+            pass
