@@ -116,6 +116,7 @@ import ctypes
 import csv as _csv
 import glob as _glob
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -212,6 +213,32 @@ SELS_PROCESO_NUEVO = ('a:has-text("Proceso_nuevo")', 'button:has-text("Proceso_n
                        ':text("Proceso_nuevo")', 'a:has-text("Proceso Nuevo")')
 SELS_HOJA_DIARIA = ('a:has-text("Hoja Diaria de Profesional")', ':text("Hoja Diaria de Profesional")',
                      'a:has-text("Hoja Diaria")', ':text("Hoja Diaria")')
+# "Hoja Diaria de Profesional" es en realidad un submenú (hover) con dos hijos:
+# "Reporte Hoja Diaria" y "Reporte Procedimientos" — confirmado por screenshot
+# de la 1ª corrida real (03-09-2026, debug_agenda.png): el clic anterior solo
+# abría el submenú y se quedaba ahí, sin navegar nunca al formulario.
+SELS_REPORTE_HOJA_DIARIA = ('a:has-text("Reporte Hoja Diaria")', ':text("Reporte Hoja Diaria")')
+# El formulario en sí NO vive en el documento principal de agenda_medica: es un
+# <iframe> separado (.../hoja_diaria_profesional/reportes/CriterioSabana.php).
+# Confirmado en vivo 03-09-2026 con un probe aparte — por eso el chequeo viejo
+# de "ok" (basado en document.body.innerText del documento top) siempre daba
+# falso aunque el formulario se viera perfecto en la captura. IDs reales del
+# formulario (mismo probe): FechaInicio / FechaTermino (inputs texto,
+# dd/mm/aaaa), t_profesional (<select>, value "1" = APS), establecimiento
+# (<select>, value "59" = PITRUFQUEN HOSP. — SOLO se puebla en cascada DESPUÉS
+# de fijar t_profesional, antes solo trae "SELECCIONE ..."), t_reporte_A
+# (<input type=radio>, "Principalmente Actividades").
+SEL_AGENDA_FECHA_INI = "FechaInicio"
+SEL_AGENDA_FECHA_FIN = "FechaTermino"
+
+
+def _frame_hoja_diaria(page):
+    """Devuelve el Frame del formulario Hoja Diaria (CriterioSabana.php) si ya
+    está montado en la página, o None."""
+    for fr in page.frames:
+        if "hoja_diaria_profesional" in fr.url:
+            return fr
+    return None
 
 
 async def entrar_agenda_medica(page):
@@ -233,9 +260,10 @@ async def entrar_agenda_medica(page):
 
 
 async def _abrir_hoja_diaria_profesional(page, debug=False):
-    """Proceso_nuevo → Hoja Diaria de Profesional. Devuelve True si el
-    formulario (Fecha Inicio/Termino, Tipo Profesional, Establecimiento, Tipo
-    Reporte) quedó visible."""
+    """Proceso_nuevo → Hoja Diaria de Profesional → Reporte Hoja Diaria.
+    Devuelve el Frame del formulario (Fecha Inicio/Termino, Tipo Profesional,
+    Establecimiento, Tipo Reporte) si quedó cargado — vive en un <iframe>
+    propio, no en el documento principal — o None si no se pudo abrir."""
     try:
         await _click_primero(page, SELS_PROCESO_NUEVO, "Proceso_nuevo")
         await page.wait_for_timeout(800)
@@ -244,128 +272,81 @@ async def _abrir_hoja_diaria_profesional(page, debug=False):
             await _dump_formulario(page, "agenda-sin-proceso_nuevo")
     try:
         await _click_primero(page, SELS_HOJA_DIARIA, "Hoja Diaria de Profesional")
+        await page.wait_for_timeout(500)
     except Exception:
         if debug:
             await _dump_formulario(page, "agenda-sin-hoja_diaria")
-        return False
+        return None
+    try:
+        await _click_primero(page, SELS_REPORTE_HOJA_DIARIA, "Reporte Hoja Diaria")
+    except Exception:
+        if debug:
+            await _dump_formulario(page, "agenda-sin-reporte_hoja_diaria")
+        return None
     await _networkidle(page)
     await page.wait_for_timeout(1_500)
-    ok = await page.evaluate(
-        "() => !!document.querySelector('select') && "
-        "/fecha\\s*inicio/i.test(document.body.innerText)"
-    )
+    frm = _frame_hoja_diaria(page)
     if debug:
-        await _dump_formulario(page, "agenda-hoja_diaria")
-    return ok
+        await _dump_formulario(frm or page, "agenda-hoja_diaria")
+    return frm
 
 
-async def _fijar_establecimiento_hosp(page):
-    """Si el <select> de Establecimiento quedó en 'CESFAM PITRUFQUEN', lo
-    cambia a la opción 'PITRUFQUEN HOSP.'. Primero intenta elegirla
-    directamente en el MISMO select (funciona si es un <select> normal con
-    ambas opciones); si no está ahí, asume que es un widget con filtro de
-    texto y escribe 'HOSP.' en el input en blanco más cercano al select antes
-    de reintentar. Devuelve una etiqueta de lo que hizo, o None si no hizo falta
-    (ya estaba en HOSP.) — lanza aviso desde el llamador si no encontró nada."""
-    estado = await page.evaluate(r"""() => {
-      const isEstablecimiento = s => /establecimiento/i.test(
-        (s.id||'') + ' ' + (s.name||'') + ' ' +
-        (s.previousElementSibling ? s.previousElementSibling.textContent : '')
-      );
-      const selects = [...document.querySelectorAll('select')].filter(isEstablecimiento);
-      if (!selects.length) return {found: false};
-      const s = selects[0];
-      const actual = s.options[s.selectedIndex] ? s.options[s.selectedIndex].textContent : '';
-      if (/hosp/i.test(actual)) return {found: true, yaOk: true, actual};
-      const destino = [...s.options].find(o => /pitrufquen/i.test(o.textContent) && /hosp/i.test(o.textContent));
-      if (destino) {
-        s.value = destino.value;
-        s.dispatchEvent(new Event('change', {bubbles: true}));
-        return {found: true, cambiado: true, via: 'select-directo', actual: destino.textContent.trim()};
-      }
-      return {found: true, necesitaFiltro: true, selId: s.id || s.name, actual};
-    }""")
-    if not estado.get("found"):
+async def _fijar_tipo_profesional_aps(frame):
+    """<select id="t_profesional"> → 'APS' (value "1"). IDs y valor
+    confirmados en vivo 03-09-2026 con un probe aparte contra el frame real
+    del formulario. Debe llamarse ANTES que _fijar_establecimiento_hosp: fijar
+    esto dispara el cascade que puebla el <select id="establecimiento">
+    (que si no, solo trae 'SELECCIONE ...')."""
+    try:
+        await frame.select_option("#t_profesional", "1")
+        await frame.wait_for_timeout(800)
+        return {"found": True, "cambiado": True, "actual": "APS"}
+    except Exception:
         return None
-    if estado.get("yaOk"):
-        return f"ya en HOSP. ({estado['actual'].strip()})"
-    if estado.get("cambiado"):
-        return f"cambiado directo → {estado['actual']}"
-    if estado.get("necesitaFiltro"):
-        # Widget con filtro de texto: escribe "HOSP." en el input en blanco más
-        # cercano al select de Establecimiento (heurística: el <input type=text>
-        # visible sin valor, más próximo en el DOM al select identificado).
-        try:
-            sel_id = estado.get("selId")
-            loc = page.locator(f"#{sel_id}") if sel_id else None
-            filtro = page.locator(
-                'xpath=//select[contains(translate(@id,"ESTABLECIMIENTO","establecimiento"),"establecimiento") '
-                'or contains(translate(@name,"ESTABLECIMIENTO","establecimiento"),"establecimiento")]'
-                '/following::input[@type="text" or not(@type)][1]'
-            )
-            if await filtro.count() == 0:
-                filtro = page.locator('input[type=text]:visible').first
-            await filtro.click()
-            await filtro.press("Control+A")
-            await filtro.type("HOSP.", delay=40)
-            await page.wait_for_timeout(600)
-        except Exception as e:
-            return f"[AVISO] necesitaba filtro de texto pero no pude escribirlo: {e}"
-        estado2 = await page.evaluate(r"""() => {
-          const s = [...document.querySelectorAll('select')].find(
-            s => /establecimiento/i.test((s.id||'') + ' ' + (s.name||''))
-          );
-          if (!s) return {found: false};
-          const destino = [...s.options].find(o => /pitrufquen/i.test(o.textContent) && /hosp/i.test(o.textContent));
-          if (destino) {
-            s.value = destino.value;
-            s.dispatchEvent(new Event('change', {bubbles: true}));
-            return {found: true, actual: destino.textContent.trim()};
-          }
-          return {found: true, actual: null};
+
+
+async def _fijar_establecimiento_hosp(frame):
+    """<select id="establecimiento"> → 'PITRUFQUEN HOSP.' (value "59" en vivo
+    03-09-2026, pero se busca por texto por si SSASUR cambia el value). Este
+    select solo tiene opciones DESPUÉS de fijar Tipo Profesional — ver
+    _fijar_tipo_profesional_aps. Devuelve una etiqueta de lo que hizo, o None
+    si no encontró el select o la opción."""
+    try:
+        opts = await frame.evaluate(r"""() => {
+          const s = document.querySelector('#establecimiento');
+          if (!s) return null;
+          return {
+            actual: s.options[s.selectedIndex] ? s.options[s.selectedIndex].textContent.trim() : '',
+            opts: [...s.options].map(o => ({value: o.value, text: (o.textContent || '').trim()})),
+          };
         }""")
-        if estado2.get("actual"):
-            return f"cambiado vía filtro de texto → {estado2['actual']}"
-        return "[AVISO] escribí 'HOSP.' pero no encontré la opción PITRUFQUEN HOSP. tras filtrar"
-    return None
+    except Exception:
+        return None
+    if not opts:
+        return None
+    if re.search(r"hosp", opts["actual"], re.I):
+        return f"ya en HOSP. ({opts['actual']})"
+    destino = next(
+        (o for o in opts["opts"] if re.search(r"pitrufquen", o["text"], re.I) and re.search(r"hosp", o["text"], re.I)),
+        None,
+    )
+    if not destino:
+        return None
+    try:
+        await frame.select_option("#establecimiento", destino["value"])
+        return f"cambiado → {destino['text']}"
+    except Exception as e:
+        return f"[AVISO] encontré la opción pero no pude seleccionarla: {e}"
 
 
-async def _fijar_tipo_profesional_aps(page):
-    """<select> Tipo Profesional → opción 'APS' (valor visto en la captura del
-    formulario que dio el usuario — puede haber otras opciones tipo
-    'ESPECIALIDAD'; se deja tal cual si no encuentra 'APS')."""
-    return await page.evaluate(r"""() => {
-      const isTipoProf = s => /tipo\s*profesional/i.test(
-        (s.id||'') + ' ' + (s.name||'') + ' ' +
-        (s.previousElementSibling ? s.previousElementSibling.textContent : '')
-      );
-      const s = [...document.querySelectorAll('select')].find(isTipoProf);
-      if (!s) return null;
-      const o = [...s.options].find(o => /^\s*aps\s*$/i.test(o.textContent));
-      if (!o) return {found: true, cambiado: false};
-      if (s.value !== o.value) {
-        s.value = o.value;
-        s.dispatchEvent(new Event('change', {bubbles: true}));
-      }
-      return {found: true, cambiado: true, actual: o.textContent.trim()};
-    }""")
-
-
-async def _marcar_tipo_reporte_actividades(page):
-    """Radio 'Tipo Reporte' → 'Principalmente Actividades' (según la captura
-    del formulario provista por el usuario)."""
-    return await page.evaluate(r"""() => {
-      for (const r of document.querySelectorAll('input[type=radio]')) {
-        const lbl = (r.labels && r.labels[0]) ? r.labels[0].textContent : '';
-        const meta = `${lbl} ${r.value || ''} ${r.id || ''}`;
-        if (/principalmente\s*actividades/i.test(meta)) {
-          if (!r.checked) r.click();
-          r.dispatchEvent(new Event('change', {bubbles: true}));
-          return true;
-        }
-      }
-      return false;
-    }""")
+async def _marcar_tipo_reporte_actividades(frame):
+    """<input type=radio id="t_reporte_A" name="t_reporte" value="A"> →
+    'Principalmente Actividades'. ID confirmado en vivo 03-09-2026."""
+    try:
+        await frame.check("#t_reporte_A")
+        return True
+    except Exception:
+        return False
 
 
 async def paso_agenda_actividades(page, desde: str, hasta: str, debug=False):
@@ -375,46 +356,63 @@ async def paso_agenda_actividades(page, desde: str, hasta: str, debug=False):
     Devuelve (archivo|None, n_filas): n=0 sin datos; n=-1 error."""
     print(f"\n[Servicios Farmacéuticos] Agenda Médica — Hoja Diaria de Profesional ({desde} → {hasta})")
     await entrar_agenda_medica(page)
-    if not await _abrir_hoja_diaria_profesional(page, debug):
+    frm = await _abrir_hoja_diaria_profesional(page, debug)
+    if frm is None:
         print("  [ERROR] No cargó el formulario Hoja Diaria de Profesional.")
         await page.screenshot(path=str(MAESTRO_DIR / "debug_agenda.png"))
         return (None, -1)
 
-    await _set_fechas(page, desde, hasta)
+    await _set_fechas(frm, desde, hasta, id_ini=SEL_AGENDA_FECHA_INI, id_fin=SEL_AGENDA_FECHA_FIN)
     print(f"  Fechas: {desde} → {hasta}")
-    await page.wait_for_timeout(500)
+    await frm.wait_for_timeout(500)
 
-    estab = await _fijar_establecimiento_hosp(page)
-    print(f"  Establecimiento → {estab}" if estab else "  [AVISO] No encontré el select de Establecimiento.")
-
-    tipo_prof = await _fijar_tipo_profesional_aps(page)
+    # Tipo Profesional PRIMERO: dispara el cascade que puebla Establecimiento.
+    tipo_prof = await _fijar_tipo_profesional_aps(frm)
     if tipo_prof and tipo_prof.get("cambiado"):
         print(f"  Tipo Profesional → {tipo_prof['actual']}")
     elif not tipo_prof:
         print("  [AVISO] No encontré el select de Tipo Profesional — sigo con el default.")
 
-    marcado = await _marcar_tipo_reporte_actividades(page)
+    estab = await _fijar_establecimiento_hosp(frm)
+    print(f"  Establecimiento → {estab}" if estab else "  [AVISO] No encontré el select de Establecimiento.")
+
+    marcado = await _marcar_tipo_reporte_actividades(frm)
     print("  Tipo Reporte → Principalmente Actividades" if marcado
           else "  [AVISO] No encontré el radio 'Principalmente Actividades'.")
-    await page.wait_for_timeout(500)
+    await frm.wait_for_timeout(500)
+
+    # Escribir en FechaInicio/FechaTermino abre un date-picker emergente que
+    # se queda tapando el botón Buscar (Playwright lo ve "no accionable" y el
+    # clic falla aunque el texto exista en el DOM) — visto en vivo 03-09-2026.
+    # Cerrar el picker (botón "Cerrar" si sigue abierto) y sacar el foco con
+    # Escape antes de buscar.
+    try:
+        await frm.click(':text("Cerrar")', timeout=1_000)
+    except Exception:
+        pass
+    try:
+        await page.keyboard.press("Escape")
+    except Exception:
+        pass
+    await frm.wait_for_timeout(300)
 
     if debug:
-        await _dump_formulario(page, "agenda-pre-buscar")
+        await _dump_formulario(frm, "agenda-pre-buscar")
 
     try:
-        await _click_primero(page, SELS_BUSCAR, "Buscar")
+        await _click_primero(frm, SELS_BUSCAR, "Buscar")
     except Exception as e:
         print(f"  [ERROR] No encontré el botón Buscar: {e}")
-        await _dump_formulario(page, "agenda-sin-buscar")
+        await _dump_formulario(frm, "agenda-sin-buscar")
         await page.screenshot(path=str(MAESTRO_DIR / "debug_agenda.png"))
         return (None, -1)
     await _networkidle(page)
-    await page.wait_for_timeout(2_500)
+    await frm.wait_for_timeout(2_500)
     if debug:
-        await _dump_formulario(page, "agenda-post-buscar")
+        await _dump_formulario(frm, "agenda-post-buscar")
         await page.screenshot(path=str(MAESTRO_DIR / "debug_agenda.png"))
 
-    n = await _filas_resultado(page)
+    n = await _filas_resultado(frm)
     if n == 0:
         print("  (sin actividades en el rango — no hay Excel que bajar)")
         return (None, 0)
@@ -423,7 +421,7 @@ async def paso_agenda_actividades(page, desde: str, hasta: str, debug=False):
     dest = MAESTRO_DIR / f"reporte_listado_actividades_{d}_{h}.xlsx"
     try:
         await descargar_como(page, dest,
-                             lambda: _click_primero(page, SELS_EXCEL, "Excel", force=True))
+                             lambda: _click_primero(frm, SELS_EXCEL, "Excel", force=True))
     except Exception as e:
         print(f"  [ERROR] No se pudo bajar el Excel: {e}")
         await page.screenshot(path=str(MAESTRO_DIR / "debug_agenda.png"))
@@ -1072,7 +1070,7 @@ async def _click_primero(page, selectores, etiqueta, force=False):
     raise RuntimeError(f"No encontré el botón '{etiqueta}' (probé: {selectores})")
 
 
-async def _set_fechas(page, desde, hasta):
+async def _set_fechas(page, desde, hasta, id_ini=SEL_FECHA_INI, id_fin=SEL_FECHA_FIN):
     """Rellena fechaInicio/fechaTermino simulando tipeo real (click + seleccionar
     todo + escribir carácter por carácter + Tab). Necesario porque asignar
     .value vía JS y disparar eventos sintéticos (el método anterior) dejaba
@@ -1081,7 +1079,11 @@ async def _set_fechas(page, desde, hasta):
     tomaba el valor. El campo tiene máscara/validación propia que solo
     reacciona a eventos de teclado reales, no a Event() sintéticos en bloque.
     Cae a la heurística JS anterior si el campo por id no existe. Fechas en
-    dd/mm/yyyy."""
+    dd/mm/yyyy. `id_ini`/`id_fin` permiten reutilizar esto con formularios que
+    usan otros ids (p.ej. Agenda Médica: FechaInicio/FechaTermino, distintos
+    de fechaInicio/fechaTermino de GT/Controlados). El Tab se manda vía
+    loc.press() (no page.keyboard) para que funcione igual si `page` es en
+    realidad un Frame (sin atributo .keyboard)."""
     async def _escribir(field_id, valor):
         try:
             loc = page.locator(f"#{field_id}")
@@ -1091,15 +1093,15 @@ async def _set_fechas(page, desde, hasta):
             await loc.press("Control+A")
             await loc.press("Delete")
             await loc.type(valor, delay=30)
-            await page.keyboard.press("Tab")
+            await loc.press("Tab")
             await page.wait_for_timeout(250)
             real = await loc.input_value()
             return real == valor
         except Exception:
             return False
 
-    ok_ini = await _escribir(SEL_FECHA_INI, desde) if desde else True
-    ok_fin = await _escribir(SEL_FECHA_FIN, hasta) if hasta else True
+    ok_ini = await _escribir(id_ini, desde) if desde else True
+    ok_fin = await _escribir(id_fin, hasta) if hasta else True
     if ok_ini and ok_fin:
         return
 

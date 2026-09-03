@@ -62,8 +62,13 @@ from datetime import datetime
 _RANGO_RE = re.compile(r"^\d{2}-\d{2}-\d{4}_\d{2}-\d{2}-\d{4}$")
 
 # Detecta el establecimiento de destino en nombres de archivo GT
+# "Inyectables_Planilla" (antipsicóticos LAI) y "SaludMental_Planilla"
+# (patrón legado) van ANTES que "Planilla" en la alternativa por la misma
+# razón que en publicar_drive.py: sin ellas, el archivo igual matcheaba pero
+# con la palabra de más pegada al destino (no existe en el mapeo) y se
+# perdía en silencio — ver fix 07-09-2026.
 _TIPO_GT_RE = re.compile(
-    r"^(.+?)_(Planilla|Letrero|Controlados_Planilla|Verificacion)\.(xlsx|pdf)$",
+    r"^(.+?)_(Inyectables_Planilla|SaludMental_Planilla|Planilla|Letrero|Controlados_Planilla|Verificacion)\.(xlsx|pdf)$",
     re.IGNORECASE,
 )
 

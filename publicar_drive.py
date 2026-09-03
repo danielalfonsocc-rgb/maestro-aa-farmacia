@@ -98,9 +98,21 @@ _RANGO_RE = re.compile(r"^\d{2}-\d{2}-\d{4}_\d{2}-\d{2}-\d{4}$")
 
 # Detecta el establecimiento de destino en un nombre de archivo GT
 # Patrones: <DESTINO>_Planilla.xlsx, <DESTINO>_Letrero.pdf,
-#           <DESTINO>_Controlados_Planilla.xlsx, <DESTINO>_Verificacion.xlsx
+#           <DESTINO>_Controlados_Planilla.xlsx, <DESTINO>_Verificacion.xlsx,
+#           <DESTINO>_Inyectables_Planilla.xlsx (antipsicóticos LAI, generar.py)
+#           <DESTINO>_SaludMental_Planilla.xlsx (patrón legado — generar.py ya
+#           no lo produce desde que salud mental se unificó a la nómina normal,
+#           pero quedan archivos históricos con este nombre en out_gt/).
+# Bug real 02-09-2026: cualquier sufijo NO listado aquí igual "matcheaba" (el
+# grupo 1 no-codicioso se come el sufijo extra también, ya que el string
+# siempre termina en "_Planilla.xlsx") pero devolvía un destino con la
+# palabra de más pegada (ej. "PSR QUEULE INYECTABLES", "COMPLEJO ASISTENCIAL
+# PADRE LAS CASAS SALUDMENTAL") — no existe en _SOLICITUDES_A_DRIVE, así que
+# el archivo se saltaba en silencio (nunca llegaba al árbol local ni a
+# Drive). Receta 48312022 (Paliperidona LAI) de PSR Queule nunca se depositó;
+# auditoría 07-09-2026 encontró más casos históricos con "SaludMental".
 _TIPO_GT_RE = re.compile(
-    r"^(.+?)_(Planilla|Letrero|Controlados_Planilla|Verificacion)\.(xlsx|pdf)$",
+    r"^(.+?)_(Inyectables_Planilla|SaludMental_Planilla|Planilla|Letrero|Controlados_Planilla|Verificacion)\.(xlsx|pdf)$",
     re.IGNORECASE,
 )
 
@@ -494,6 +506,7 @@ _SOLICITUDES_A_DRIVE = {
     "PSR_COMUY": "PSR COMUY",
     "PSR_QUEULE": "PSR QUEULE",
     "PSR_LOS_GALPONES": "PSR LOS GALPONES",
+    "COMPLEJO_ASISTENCIAL_PADRE_LAS_CASAS": "COMPLEJO ASISTENCIAL PADRE LAS CASAS",
 }
 
 

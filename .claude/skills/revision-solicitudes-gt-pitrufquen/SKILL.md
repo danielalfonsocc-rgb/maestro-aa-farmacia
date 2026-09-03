@@ -1,6 +1,6 @@
 ---
 name: revision-solicitudes-gt-pitrufquen
-description: Procesa una SOLICITUD DE ENVÍO de Gestión Territorial — cuando un establecimiento destino de la red (CESFAM Freire, CESFAM Hualpín, CESFAM Quepe, CESFAM Teodoro Schmidt, DSM/Hospital Gorbea, DSM/Hospital Loncoche, DSM/Hospital Toltén, PSR Comuy, PSR Queule, PSR Los Galpones) pide que se le envíen las recetas vigentes de sus pacientes crónicos, prescritas en Hospital Pitrufquén. Dispara ante: "llegó una solicitud de [establecimiento]", "solicitud de envío de Toltén/Loncoche/Freire/Teodoro Schmidt/etc", "nómina que me envió [CESFAM/DSM/Hospital]", "procesa esta lista de gestión territorial", "revisar solicitud GT", "busca estas recetas por SSASUR", o cuando el usuario adjunte un xlsx (columnas tipo RUT/NOMBRE, a veces con Nº de Receta sugerido) o PDFs sueltos (Receta_<n>_..., Historico_<n>_...) que sean una solicitud de un establecimiento de la red. Usar SIEMPRE que se mencione una solicitud de gestión territorial, aunque no se nombren los scripts por su nombre.
+description: Procesa una SOLICITUD DE ENVÍO de Gestión Territorial — cuando un establecimiento destino de la red (CESFAM Freire, CESFAM Hualpín, CESFAM Quepe, CESFAM Teodoro Schmidt, DSM/Hospital Gorbea, DSM/Hospital Loncoche, DSM/Hospital Toltén, PSR Comuy, PSR Queule, PSR Los Galpones, Complejo Asistencial Padre Las Casas) pide que se le envíen las recetas vigentes de sus pacientes crónicos, prescritas en Hospital Pitrufquén. Dispara ante: "llegó una solicitud de [establecimiento]", "solicitud de envío de Toltén/Loncoche/Freire/Teodoro Schmidt/etc", "nómina que me envió [CESFAM/DSM/Hospital]", "procesa esta lista de gestión territorial", "revisar solicitud GT", "busca estas recetas por SSASUR", o cuando el usuario adjunte un xlsx (columnas tipo RUT/NOMBRE, a veces con Nº de Receta sugerido) o PDFs sueltos (Receta_<n>_..., Historico_<n>_...) que sean una solicitud de un establecimiento de la red. Usar SIEMPRE que se mencione una solicitud de gestión territorial, aunque no se nombren los scripts por su nombre.
 ---
 
 # Skill: revision-solicitudes-gt-pitrufquen
@@ -51,6 +51,7 @@ en `agregar_gt_manual.py`):
 | PSR Comuy | `PSR COMUY` | `PSR_COMUY` |
 | PSR Queule | `PSR QUEULE` | `PSR_QUEULE` |
 | PSR Los Galpones | `PSR LOS GALPONES` | `PSR_LOS_GALPONES` |
+| Complejo Asistencial Padre Las Casas | `COMPLEJO ASISTENCIAL PADRE LAS CASAS` | `COMPLEJO_ASISTENCIAL_PADRE_LAS_CASAS` |
 
 Si el usuario no da un nombre exacto, pregunta o infiere del nombre del
 archivo — pero confirma antes de correr nada si hay ambigüedad real (ej.
