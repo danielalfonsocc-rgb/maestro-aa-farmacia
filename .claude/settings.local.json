@@ -79,7 +79,13 @@
       "PowerShell(Get-Process | Where-Object { $_.Name -match \"python|cmd|chrome|chromium|playwright\" } | Select-Object Name, Id, StartTime | Format-Table -AutoSize)",
       "PowerShell(py actualizar_sheets_gt.py reporteGestionTerritorial202662291537.xlsx 2>&1)",
       "PowerShell(cd \"C:\\\\Users\\\\danie\\\\Downloads\\\\maestro\"; $env:PYTHONUTF8=\"1\"; $env:PYTHONIOENCODING=\"utf-8\"; py centinela_reporte.py --no-pause 2>&1 | Select-Object -First 80)",
-"Bash(py subir_recetas_cheque_drive.py)"
+      "Bash(py subir_recetas_cheque_drive.py)",
+      "mcp__plugin_pdf-viewer_pdf__display_pdf",
+      "mcp__plugin_pdf-viewer_pdf__list_pdfs",
+      "Bash(copy \"C:\\\\Users\\\\danie\\\\Downloads\\\\doc33240820260831151008.pdf\" \"C:\\\\Users\\\\danie\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-danie-Downloads-maestro\\\\8cd0d1a0-51e9-46c9-b5c1-78c6df3d7cf7\\\\scratchpad\\\\\" && dir \"C:\\\\Users\\\\danie\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-danie-Downloads-maestro\\\\8cd0d1a0-51e9-46c9-b5c1-78c6df3d7cf7\\\\scratchpad\\\\*.pdf\")",
+      "mcp__claude-in-chrome__get_page_text",
+      "mcp__claude-in-chrome__computer",
+      "mcp__claude-in-chrome__read_page"
     ]
   }
 }

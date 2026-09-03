@@ -2058,6 +2058,26 @@ async def main():
             else:
                 print(f"  [aviso] cruce_gt.py no encontrado — omitiendo cruce.")
 
+        # ── PASO 5c2 — FUSIONAR NÓMINAS GT (auto + manual/backlog) ───────────
+        # verificar_backlog_gt() (PASO 3) puede haber generado hoy una o más
+        # "Nomina_Manual_*.xlsx" para el mismo destino que cruce_gt.py acaba
+        # de procesar arriba. Sin este paso, ambos archivos quedaban sueltos
+        # y se publicaban tal cual — la QF seguía recibiendo nóminas
+        # rotuladas "manual" (esa distinción ya no aplica en Gestión
+        # Territorial, ver fusionar_nominas_gt.py) porque nadie corría
+        # fusionar_nominas_gt.py a mano. Corre SIEMPRE (idempotente si no
+        # hay nada que fusionar) para que lo que se publique en el PASO 7-9
+        # sea siempre el nombre oficial "<destino>_Planilla.xlsx".
+        fusion_py = MAESTRO_DIR / "fusionar_nominas_gt.py"
+        if fusion_py.exists():
+            print(f"\n[5c2/9] Fusionando nóminas GT (automática + manual/backlog)...")
+            fret = subprocess.run(
+                [sys.executable, str(fusion_py), "--todos"],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
+            if fret.returncode != 0:
+                print(f"  [aviso] fusionar_nominas_gt.py terminó con código {fret.returncode}")
+
         # ── PASO 5d — REGISTRO ISP RECETAS CHEQUE ────────────────────────────
         # Consume la MISMA sábana ya descargada: filtra recetas cheque AT Abierta
         # y agrega los folios nuevos al formulario ISP del mes vigente. El

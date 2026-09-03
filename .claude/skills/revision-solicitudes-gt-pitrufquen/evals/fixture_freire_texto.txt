@@ -1,0 +1,9 @@
+Buenas tardes, favor vuestra ayuda con la solicitud de gestión territorial de los siguientes pacientes de CESFAM Freire.
+
+juan test uno 90111222-3 freire medicina interna
+maria test dos 90222333-4 freire cardiologia
+juan test uno 90111222-3 freire medicina interna
+pedro test tres 90333444-5 freire oftalmologia Receta completa N°99999999
+
+Se despide cordialmente,
+Servicio de Farmacia CESFAM Freire

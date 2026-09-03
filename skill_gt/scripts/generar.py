@@ -70,12 +70,6 @@ def es_ultima(per):
         n,m=str(per).split("/"); return int(n)==int(m)
     except Exception: return False
 
-def es_psiquiatria(especialidad):
-    """True si la especialidad es Psiquiatría/Siquiatría (con o sin acento, con o sin la 'p'
-    inicial muda — forma habitual en las recetas SSASUR, ej. "Siquiatría Adulto")."""
-    u=unicodedata.normalize("NFKD",str(especialidad or "")).encode("ascii","ignore").decode().upper()
-    return "SIQUIATR" in u  # cubre tanto PSIQUIATR* como SIQUIATR*
-
 # ---- inserción de logos centrados verticalmente, con margen interior ----
 def place_logo(ws, path, col_letter, target_h_px, col_off_px, row_off_px, from_row0=0):
     if not path or not os.path.exists(path): return False
@@ -694,24 +688,25 @@ def main():
     for destino, regs in grupos.items():
         titulo=f"GESTIÓN TERRITORIAL - {destino.upper()}"
         subtitulo=f"Origen: {origen}   |   Destino: {destino}   |   Fecha de entrega: {FECHA}"
-        # Salud mental: recetas prescritas por siquiatra van en nómina aparte del resto
-        # (misma lógica clínica que antes). Dentro de cada grupo (resto / salud mental),
-        # normales y controladas ahora van juntas en UNA sola nómina — antes salían en
-        # archivos separados y eso generaba hasta 4 planillas por destino cada mañana.
-        regs_sm=[g for g in regs if es_psiquiatria(g.get("especialidad",""))]
-        regs_resto=[g for g in regs if not es_psiquiatria(g.get("especialidad",""))]
+        # Salud mental/siquiatría ahora va junta con el resto (normales y controladas
+        # en UNA sola nómina general). Solo los inyectables de depósito (LAI:
+        # Haloperidol/Zuclopentixol decanoato, Risperidona/Paliperidona de depósito
+        # — marcados por cruce_gt.py en "inyectable_lai") siguen en nómina aparte,
+        # porque requieren administración/circuito distinto al despacho territorial normal.
+        regs_iny=[g for g in regs if (g.get("inyectable_lai") or "").strip()]
+        regs_resto=[g for g in regs if not (g.get("inyectable_lai") or "").strip()]
         archivos_dest=[]
         if regs_resto:
             wb=Workbook()
             hoja_funcionarios(wb, regs_resto, destino, titulo, subtitulo, modo="todos")
             pl=os.path.join(a.salida, f"{slug(destino)}_Planilla.xlsx"); wb.save(pl); archivos_dest.append(os.path.basename(pl))
             # Planilla: solo xlsx (editable para tick manual), sin PDF
-        if regs_sm:
-            titulo_sm=f"GESTIÓN TERRITORIAL SALUD MENTAL - {destino.upper()}"
+        if regs_iny:
+            titulo_iny=f"GESTIÓN TERRITORIAL INYECTABLES DE DEPÓSITO - {destino.upper()}"
             wb=Workbook()
-            hoja_funcionarios(wb, regs_sm, destino, titulo_sm, subtitulo, modo="todos")
-            pl_sm=os.path.join(a.salida, f"{slug(destino)}_SaludMental_Planilla.xlsx"); wb.save(pl_sm); archivos_dest.append(os.path.basename(pl_sm))
-            # Salud Mental: solo xlsx, sin PDF
+            hoja_funcionarios(wb, regs_iny, destino, titulo_iny, subtitulo, modo="todos")
+            pl_iny=os.path.join(a.salida, f"{slug(destino)}_Inyectables_Planilla.xlsx"); wb.save(pl_iny); archivos_dest.append(os.path.basename(pl_iny))
+            # Inyectables LAI: solo xlsx, sin PDF
         lleva=any(((g.get("refrigerado","") or "").strip() or (g["receta"] in refri_map)) for g in regs)
         detalle_refri=_detalle_refrigerados(regs, refri_map) if lleva else []
         le=os.path.join(a.salida, f"{slug(destino)}_Letrero.xlsx"); letrero(destino, lleva, le, detalle_refri)
@@ -727,7 +722,7 @@ def main():
         else:
             archivos_dest.append(os.path.basename(le))
         resumen=f"{len(regs_resto)} generales"
-        if regs_sm: resumen+=f" + {len(regs_sm)} salud mental"
+        if regs_iny: resumen+=f" + {len(regs_iny)} inyectables LAI"
         print(f"OK {destino}: {len(regs)} recetas ({resumen}) | refrigerado={lleva} -> {', '.join(archivos_dest)}")
         # Dígito verificador (módulo 11) - siempre
         malos=[(g["receta"],g["paciente"],g["run"]) for g in regs if dv_correcto(g["run"]) is False]

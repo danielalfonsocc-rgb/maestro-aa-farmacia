@@ -17,10 +17,15 @@ separados y había que fusionarlos a mano antes de enviar (caso real
 Este script NO decide qué receta va en la nómina (eso lo hace SSASUR o el
 QF vía agregar_gt_manual.py) — solo LEE los dos archivos ya generados y
 escribe uno solo, con el mismo formato (`generar.hoja_funcionarios`),
-sobreescribiendo la Planilla automática (nombre "oficial", el que espera
-quien recibe en destino). Si hay una receta repetida en ambos archivos
-(no debería pasar — dedup por N° Receta en cada pipeline), se conserva la
-versión manual y se avisa.
+SIEMPRE bajo el nombre oficial "<slug(destino)>_Planilla.xlsx" (el que
+espera quien recibe en destino) — incluso si ese día solo hubo nómina
+"manual" (backlog GT o registro a mano), se renombra igual. El .xlsx
+"Nomina_Manual_..." y su letrero quedan borrados una vez fusionados: es
+solo un archivo de staging interno, nunca el entregable final — "manual"
+ya no es una distinción válida de cara a Gestión Territorial (corregido
+07-09-2026, ver AUTO_SSASUR.py PASO 5c2). Si hay una receta repetida en
+ambos archivos (no debería pasar — dedup por N° Receta en cada pipeline),
+se conserva la versión manual y se avisa.
 
 Uso:
   py fusionar_nominas_gt.py --destino "CESFAM FREIRE"                  # hoy
@@ -51,6 +56,23 @@ def _normalizar_periodo(p):
     CESFAM Freire que el usuario armó a mano)."""
     m = _RE_PERIODO_DE.match(str(p or ""))
     return f"{m.group(1)}/{m.group(2)}" if m else p
+
+
+def _limpiar_manual(ruta_manual, dirp):
+    """Borra el .xlsx 'Manual' (staging interno de agregar_gt_manual.py) y su
+    letrero PDF una vez que sus filas ya quedaron en el archivo oficial —
+    nada rotulado 'manual' debe sobrevivir como entregable final."""
+    try:
+        os.remove(ruta_manual)
+    except OSError:
+        pass
+    base = os.path.splitext(os.path.basename(ruta_manual))[0]
+    letrero_pdf = os.path.join(dirp, f"{base}_Letrero.pdf")
+    if os.path.exists(letrero_pdf):
+        try:
+            os.remove(letrero_pdf)
+        except OSError:
+            pass
 
 
 def _carpeta_destino(destino, fecha):
@@ -100,38 +122,55 @@ def fusionar(destino, fecha):
     if hay_auto and not hay_manual:
         print(f"{destino}: solo automática — nada que fusionar ({os.path.basename(ruta_auto)}).")
         return ruta_auto
-    if hay_manual and not hay_auto:
-        print(f"{destino}: solo manual — nada que fusionar ({os.path.basename(ruta_manual)}).")
-        return ruta_manual
 
-    regs_auto = {r["receta"]: r for r in _leer_nomina_existente(ruta_auto)}
-    regs_manual = {r["receta"]: r for r in _leer_nomina_existente(ruta_manual)}
-    choque = set(regs_auto) & set(regs_manual)
-    ya_fusionada = bool(choque) and choque == set(regs_manual)
-    if ya_fusionada:
-        # Re-corrida del mismo día: la Planilla automática ya es el resultado
-        # de una fusión anterior (la sobreescribimos con las 2 fuentes) y
-        # contiene TODAS las recetas manuales — no hay que reescribir la
-        # planilla, pero igual se asegura el letrero más abajo.
-        print(f"{destino}: ya estaba fusionada ({len(regs_auto)} pacientes) — no se repite la planilla.")
-        regs = list(regs_auto.values())
-    else:
-        if choque:
-            print(f"  [AVISO] {len(choque)} receta(s) presentes en AMBOS archivos (no debería pasar) — "
-                  f"se conserva la versión manual: {sorted(choque)}")
-        regs = list({**regs_auto, **regs_manual}.values())
+    if hay_manual and not hay_auto:
+        # Solo hay "manual" (backlog GT o registro a mano) — igual se renombra
+        # al nombre oficial: el entregable final NUNCA debe quedar rotulado
+        # "Manual" (07-09-2026: la QF reportó que las nóminas de Gestión
+        # Territorial le seguían llegando así pese a que ya no aplica esa
+        # distinción de cara al establecimiento destino).
+        regs = list({r["receta"]: r for r in _leer_nomina_existente(ruta_manual)}.values())
         for r in regs:
             r["periodo"] = _normalizar_periodo(r.get("periodo"))
-
         from openpyxl import Workbook
         wb = Workbook()
         titulo = f"GESTIÓN TERRITORIAL - {destino.upper()}"
         subtitulo = f"Origen: Farmacia Hospital de Pitrufquén   |   Destino: {destino}   |   Fecha de entrega: {fecha.strftime('%d/%m/%Y')}"
         G.hoja_funcionarios(wb, regs, destino, titulo, subtitulo, modo="todos")
         wb.save(ruta_auto)
-        print(f"{destino}: fusionado -> {os.path.basename(ruta_auto)} "
-              f"({len(regs)} pacientes = {len(regs_auto)} automática + {len(regs_manual)} manual"
-              f"{f' - {len(choque)} choque' if choque else ''})")
+        _limpiar_manual(ruta_manual, dirp)
+        print(f"{destino}: {len(regs)} paciente(s) -> {os.path.basename(ruta_auto)} "
+              f"(renombrada desde {os.path.basename(ruta_manual)} — ya no queda 'manual')")
+    else:
+        regs_auto = {r["receta"]: r for r in _leer_nomina_existente(ruta_auto)}
+        regs_manual = {r["receta"]: r for r in _leer_nomina_existente(ruta_manual)}
+        choque = set(regs_auto) & set(regs_manual)
+        ya_fusionada = bool(choque) and choque == set(regs_manual)
+        if ya_fusionada:
+            # Re-corrida del mismo día: la Planilla automática ya es el resultado
+            # de una fusión anterior (la sobreescribimos con las 2 fuentes) y
+            # contiene TODAS las recetas manuales — no hay que reescribir la
+            # planilla, pero igual se asegura el letrero más abajo.
+            print(f"{destino}: ya estaba fusionada ({len(regs_auto)} pacientes) — no se repite la planilla.")
+            regs = list(regs_auto.values())
+        else:
+            if choque:
+                print(f"  [AVISO] {len(choque)} receta(s) presentes en AMBOS archivos (no debería pasar) — "
+                      f"se conserva la versión manual: {sorted(choque)}")
+            regs = list({**regs_auto, **regs_manual}.values())
+            for r in regs:
+                r["periodo"] = _normalizar_periodo(r.get("periodo"))
+
+            from openpyxl import Workbook
+            wb = Workbook()
+            titulo = f"GESTIÓN TERRITORIAL - {destino.upper()}"
+            subtitulo = f"Origen: Farmacia Hospital de Pitrufquén   |   Destino: {destino}   |   Fecha de entrega: {fecha.strftime('%d/%m/%Y')}"
+            G.hoja_funcionarios(wb, regs, destino, titulo, subtitulo, modo="todos")
+            wb.save(ruta_auto)
+            print(f"{destino}: fusionado -> {os.path.basename(ruta_auto)} "
+                  f"({len(regs)} pacientes = {len(regs_auto)} automática + {len(regs_manual)} manual"
+                  f"{f' - {len(choque)} choque' if choque else ''})")
+        _limpiar_manual(ruta_manual, dirp)
 
     # El letrero se (re)genera SIEMPRE que se toca este destino — no solo si
     # hay refrigerado — mismo criterio que el pipeline automático normal

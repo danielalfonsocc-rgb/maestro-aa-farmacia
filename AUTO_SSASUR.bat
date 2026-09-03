@@ -46,7 +46,11 @@ rem auto_ssasur_error.log se trunca en CADA corrida (2> en vez de 2>>): antes
 rem quedaba acumulando errores de corridas anteriores para siempre, y el
 rem "type" de abajo mostraba mezclados bugs ya resueltos de hace semanas con
 rem el error real de la corrida actual (detectado 30-07-2026).
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& { py AUTO_SSASUR.py %* 2> 'auto_ssasur_error.log' | Tee-Object -FilePath 'auto_ssasur_stdout.log'; exit $LASTEXITCODE }"
+rem --clozapina va siempre (31-08-2026): antes era opt-in y solo lo activaba
+rem CLOZAPINA.bat por separado; ahora la corrida diaria (tarea programada)
+rem saca tambien el consolidado de hemogramas sin necesidad de un acceso
+rem directo aparte. CLOZAPINA.bat fue eliminado por quedar redundante.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& { py AUTO_SSASUR.py --clozapina %* 2> 'auto_ssasur_error.log' | Tee-Object -FilePath 'auto_ssasur_stdout.log'; exit $LASTEXITCODE }"
 
 echo.
 echo  ============================================================

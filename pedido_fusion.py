@@ -42,7 +42,7 @@ BUFFER_SS    = 1    # días de safety stock (blindaje reapertura lunes)
 EXTRA_CRIT   = 1    # días extra SS para criticidad ≤ 2
 UMBRAL_PREQUIEBRE = 10   # días de cobertura farmacia bajo los cuales una bodega
                          # AA en 0 se reporta como POR AGOTARSE en Faltantes_AA
-CICLO_INICIO = dt.date(2026, 7, 13)   # inicio ciclo Bod→BodFarm; límite de CALENDARIO, repite cada 14 días (lunes)
+CICLO_INICIO = dt.date(2026, 8, 17)   # inicio ciclo Bod→BodFarm; límite de CALENDARIO, repite cada 14 días (lunes)
 # Recalibrado 2026-07-13: el ancla anterior (2026-06-29) cayó en feriado
 # (San Pedro y San Pablo), lo que restó 1 día hábil al 1er ciclo y corrió
 # el límite del 2° ciclo de lunes 13-jul a martes 14-jul. Confirmado con
@@ -53,6 +53,9 @@ CICLO_INICIO = dt.date(2026, 7, 13)   # inicio ciclo Bod→BodFarm; límite de C
 # inicio del siguiente. Antes el conteo acumulado hacía que el feriado
 # retrasara 1 día hábil el arranque del ciclo nuevo, aunque calendario ya
 # había avanzado 14 días.
+# Recalibrado 2026-08-18: confirmado con el usuario que el ciclo cambió y el
+# nuevo período Bod→BodFarm arrancó el lunes 17-ago-2026 (ya no sigue la
+# progresión 13-jul/27-jul/10-ago/24-ago).
 
 # ─────────────── helpers ────────────────────────────────────────────────────
 

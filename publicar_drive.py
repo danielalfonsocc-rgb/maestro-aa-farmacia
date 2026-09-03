@@ -493,6 +493,7 @@ _SOLICITUDES_A_DRIVE = {
     "HOSPITAL_TOLTEN": "TOLTEN HOSP",
     "PSR_COMUY": "PSR COMUY",
     "PSR_QUEULE": "PSR QUEULE",
+    "PSR_LOS_GALPONES": "PSR LOS GALPONES",
 }
 
 
@@ -635,18 +636,23 @@ def sync_centinela(service, raiz_id, stats, cache=None):
 
 def sync_programacion(service, raiz_id, stats, cache=None):
     fid = _obtener_o_crear_carpeta(service, SUB_PROG, raiz_id, cache)
-    # El Resumen (post-conteo) es la salida final; mientras no exista, se sube
-    # igual la planilla del ciclo (pre-conteo) para tenerla disponible fuera
-    # del equipo local aunque el conteo físico todavía no se haya hecho.
-    src = _mas_reciente(os.path.join(WORK_DIR, "Programacion_AA", "Resumen_Programacion_AA*.xlsx"))
-    if src:
-        r = _subir(service, src, fid, nuevo_nombre="Resumen_Programacion_AA.xlsx", stats=stats)
+    # Si existe una planilla de ciclo NUEVO (más reciente que el último Resumen),
+    # subirla aunque haya Resumen — el nuevo ciclo aún no tiene conteo aplicado.
+    # Si el Resumen es el más reciente (o no hay planilla nueva), sube el Resumen.
+    resumen = _mas_reciente(os.path.join(WORK_DIR, "Programacion_AA", "Resumen_Programacion_AA*.xlsx"))
+    planilla = _mas_reciente(os.path.join(WORK_DIR, "Programacion_AA", "Programacion_AA_*.xlsx"))
+    ciclo_nuevo = (
+        planilla and resumen and
+        os.path.getmtime(planilla) > os.path.getmtime(resumen)
+    )
+    if resumen and not ciclo_nuevo:
+        r = _subir(service, resumen, fid, nuevo_nombre="Resumen_Programacion_AA.xlsx", stats=stats)
         print(f"  Resumen_Programacion_AA.xlsx: {r}")
         return
-    src = _mas_reciente(os.path.join(WORK_DIR, "Programacion_AA", "Programacion_AA_*.xlsx"))
-    if src:
-        r = _subir(service, src, fid, nuevo_nombre="Programacion_AA.xlsx", stats=stats)
-        print(f"  Programacion_AA.xlsx: {r}  (planilla del ciclo, sin conteo aplicado todavía)")
+    if planilla:
+        r = _subir(service, planilla, fid, nuevo_nombre="Programacion_AA.xlsx", stats=stats)
+        etiqueta = "(nuevo ciclo — conteo pendiente)" if ciclo_nuevo else "(planilla del ciclo, sin conteo aplicado todavía)"
+        print(f"  Programacion_AA.xlsx: {r}  {etiqueta}")
     else:
         print("  Programacion_AA: no encontrado, omitido (corre programacion_aa.py)")
 

@@ -1,6 +1,6 @@
 ---
 name: revision-solicitudes-gt-pitrufquen
-description: Procesa una SOLICITUD DE ENVÍO de Gestión Territorial — cuando un establecimiento destino de la red (CESFAM Freire, CESFAM Hualpín, CESFAM Quepe, CESFAM Teodoro Schmidt, DSM/Hospital Gorbea, DSM/Hospital Loncoche, DSM/Hospital Toltén, PSR Comuy, PSR Queule) pide que se le envíen las recetas vigentes de sus pacientes crónicos, prescritas en Hospital Pitrufquén. Dispara ante: "llegó una solicitud de [establecimiento]", "solicitud de envío de Toltén/Loncoche/Freire/Teodoro Schmidt/etc", "nómina que me envió [CESFAM/DSM/Hospital]", "procesa esta lista de gestión territorial", "revisar solicitud GT", "busca estas recetas por SSASUR", o cuando el usuario adjunte un xlsx (columnas tipo RUT/NOMBRE, a veces con Nº de Receta sugerido) o PDFs sueltos (Receta_<n>_..., Historico_<n>_...) que sean una solicitud de un establecimiento de la red. Usar SIEMPRE que se mencione una solicitud de gestión territorial, aunque no se nombren los scripts por su nombre.
+description: Procesa una SOLICITUD DE ENVÍO de Gestión Territorial — cuando un establecimiento destino de la red (CESFAM Freire, CESFAM Hualpín, CESFAM Quepe, CESFAM Teodoro Schmidt, DSM/Hospital Gorbea, DSM/Hospital Loncoche, DSM/Hospital Toltén, PSR Comuy, PSR Queule, PSR Los Galpones) pide que se le envíen las recetas vigentes de sus pacientes crónicos, prescritas en Hospital Pitrufquén. Dispara ante: "llegó una solicitud de [establecimiento]", "solicitud de envío de Toltén/Loncoche/Freire/Teodoro Schmidt/etc", "nómina que me envió [CESFAM/DSM/Hospital]", "procesa esta lista de gestión territorial", "revisar solicitud GT", "busca estas recetas por SSASUR", o cuando el usuario adjunte un xlsx (columnas tipo RUT/NOMBRE, a veces con Nº de Receta sugerido) o PDFs sueltos (Receta_<n>_..., Historico_<n>_...) que sean una solicitud de un establecimiento de la red. Usar SIEMPRE que se mencione una solicitud de gestión territorial, aunque no se nombren los scripts por su nombre.
 ---
 
 # Skill: revision-solicitudes-gt-pitrufquen
@@ -11,9 +11,11 @@ o PSR de la red Araucanía Sur) pide las recetas **vigentes** de sus pacientes
 crónicos que están **prescritas en Hospital Pitrufquén**, para retirarlas vía
 GT en vez de que el paciente viaje hasta Pitrufquén.
 
-Esta skill **no crea scripts nuevos** — orquesta `revision_solicitudes.py` y
-`descargar_recetas_pdf.py`, ya probados en producción (Freire 23-07-2026,
-Toltén 25-07-2026, Loncoche, CESFAM Teodoro Schmidt 31-07-2026).
+Esta skill orquesta `revision_solicitudes.py` y `descargar_recetas_pdf.py`, ya
+probados en producción (Freire 23-07-2026, Toltén 25-07-2026, Loncoche,
+CESFAM Teodoro Schmidt 31-07-2026), más `scripts/parsear_solicitud.py`
+(propio de esta skill) para el caso más común de entrada: texto suelto
+pegado desde un correo.
 
 ## Regla de negocio central (no cambiar sin confirmar con el usuario)
 
@@ -48,6 +50,7 @@ en `agregar_gt_manual.py`):
 | Hospital Toltén | `TOLTEN HOSP` | `HOSPITAL_TOLTEN` |
 | PSR Comuy | `PSR COMUY` | `PSR_COMUY` |
 | PSR Queule | `PSR QUEULE` | `PSR_QUEULE` |
+| PSR Los Galpones | `PSR LOS GALPONES` | `PSR_LOS_GALPONES` |
 
 Si el usuario no da un nombre exacto, pregunta o infiere del nombre del
 archivo — pero confirma antes de correr nada si hay ambigüedad real (ej.
@@ -59,6 +62,45 @@ antes del paso 1 (nombres `Receta_<n>_....pdf` / `Historico_<n>_....pdf`). Si
 llegó como **planilla xlsx** (columnas tipo RUT/NOMBRE, a veces con Nº de
 Receta ya sugerido por el establecimiento), no hace falta moverla — se pasa
 la ruta directa con `--xlsx`.
+
+### Caso más común: texto suelto pegado (correo, PDF de Gmail, foto transcrita)
+
+La mayoría de las solicitudes NO llegan en xlsx — llegan como una lista
+suelta en el cuerpo del correo, una línea por paciente, tipo
+`nombre RUT establecimiento especialidad [nota opcional]`, muchas veces con
+mayúsculas/minúsculas y formato inconsistente entre un establecimiento y
+otro. **No transcribas esa lista a mano** escribiendo cada fila en un script
+— es trabajo mecánico puro que un script determinístico hace mejor y sin
+gastar tokens de salida en retipear ~30 filas de RUT/nombre:
+
+1. Pega el bloque de texto tal cual (sin reformatear) en un `.txt` con Write.
+2. Corre:
+   ```bash
+   py .claude/skills/revision-solicitudes-gt-pitrufquen/scripts/parsear_solicitud.py \
+     --texto <archivo.txt> --estab "<alias del establecimiento, ej. tolten>" \
+     --out Solicitud_<CARPETA_LOCAL>_<fecha>.xlsx
+   ```
+   El script ancla cada línea en el patrón de RUT (muy confiable), separa
+   nombre/resto, saca el alias del establecimiento y un N° de receta
+   sugerido si aparece (`N°123456`, `Receta completa N°123456`), y fusiona
+   RUT repetidos (pasa seguido que el establecimiento manda la misma fila
+   dos veces, o la repite agregando el N° de receta que le faltaba). No
+   intenta separar perfectamente "especialidad" de "nota" — deja el resto
+   de la línea junto en la columna ESPECIALIDAD, porque el cruce en
+   `_elegir_receta()` compara por substring en ambos sentidos y matchea
+   igual aunque venga texto de más pegado.
+3. El script imprime cuántas líneas NO calzaron con el patrón de RUT (si
+   las hay) — revisa esas puntuales a mano, no todo el listado. Si el motivo
+   es que el establecimiento digitó el RUT sin el guion del dígito
+   verificador (ej. "83444649"), el aviso ya trae calculado y verificado el
+   RUT sugerido con guion (ej. `[posible RUT sin guion, DV verificado:
+   8344464-9]`) — confírmalo contra el nombre del paciente y agrégalo a
+   mano a la fila correspondiente del xlsx antes del Paso 1, no hace falta
+   calcular el dígito verificador vos mismo.
+4. Sigue con el Paso 1 normal usando el xlsx recién generado (`--xlsx`).
+
+Si la solicitud SÍ llega ya en xlsx (algunos establecimientos ya mandan
+planilla), sáltate este paso y usa `--xlsx` directo como dice arriba.
 
 ## Paso 1 — cruce contra el histórico local (rápido, sin tocar SSASUR)
 

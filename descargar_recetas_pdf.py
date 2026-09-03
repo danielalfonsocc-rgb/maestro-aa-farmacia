@@ -258,40 +258,127 @@ def _agregar_encabezado_establecimiento(path, nombre_estab):
         writer.write(fh)
 
 
-def _estampar_pdf(path, lineas):
-    """Escribe `lineas` de texto en la esquina inferior izquierda de cada
-    página del PDF en `path` (letra chica, no tapa el contenido oficial de
-    la receta) — sello informativo con la última Fecha Entrega vista en
-    SSASUR y, si aplica, la Observación de la revisión. Pedido por el
-    usuario 04-08-2026 ("arriba de donde dice impreso por").
+def _envolver_texto(texto, canvas_obj, font, size, max_width):
+    """Parte `texto` en tantas líneas visuales como haga falta para que
+    cada una quepa en `max_width` con la fuente/tamaño dados — para no
+    cortar la Observación con "..." (pedido 06-08-2026)."""
+    palabras = texto.split(" ")
+    lineas_env = []
+    actual = ""
+    for palabra in palabras:
+        candidato = f"{actual} {palabra}".strip()
+        if canvas_obj.stringWidth(candidato, font, size) <= max_width or not actual:
+            actual = candidato
+        else:
+            lineas_env.append(actual)
+            actual = palabra
+    if actual:
+        lineas_env.append(actual)
+    return lineas_env
 
-    Corregido 05-08-2026 (caso Marta Elisabeth Sandoval Carcamo, 5 líneas
-    de sello): el pie de página nativo de SSASUR ("Impreso por... /
-    PITRUFQUEN HOSP., IP...") ocupa aprox. Y=26–45 pt (confirmado
-    extrayendo coordenadas de texto del PDF) — arrancar el sello en Y=12 lo
-    pisaba directo con 3+ líneas. Ahora arranca en Y=50, claramente arriba
-    de ese pie, con margen de sobra antes de la tabla de Digitación/
-    Entrega (~Y=150) para casos con muchos medicamentos pendientes."""
+
+def _zonas_libres_pie_pagina(path):
+    """Devuelve, por página, (y_pie, y_contenido) en coordenadas nativas
+    del PDF (origen abajo-izquierda): y_pie = borde superior del pie de
+    página nativo de SSASUR ("Impreso por..."), y_contenido = borde
+    inferior del contenido oficial más bajo que quede POR ENCIMA de ese
+    pie (tabla Digitación/Entrega, texto legal, firma, etc.). El espacio
+    libre entre ambos varía mucho según cuántos medicamentos tenga la
+    receta — una de 14 ítems a 2 páginas deja muy poco (~70pt en la
+    página 1); una de 3-5 deja de sobra (~240pt). Detectado 06-08-2026 al
+    subir el tamaño de letra del sello: pypdf.extract_text() reporta mal
+    la posición Y de "Impreso por..." en estos PDFs de SSASUR (por ~29pt),
+    así que acá se usa PyMuPDF (fitz), que sí da la posición real."""
+    import fitz
+    zonas = []
+    doc = fitz.open(str(path))
+    for page in doc:
+        h = page.rect.height
+        pie_top, contenido_bottom = [], []
+        for block in page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                for span in line["spans"]:
+                    t = span["text"].strip()
+                    if not t:
+                        continue
+                    borde_inf = h - span["bbox"][3]
+                    borde_sup = h - span["bbox"][1]
+                    if t.startswith("Impreso por"):
+                        pie_top.append(borde_sup)
+                    else:
+                        contenido_bottom.append(borde_inf)
+        y_pie = max(pie_top) if pie_top else 25.0
+        candidatos = [y for y in contenido_bottom if y > y_pie]
+        y_contenido = min(candidatos) if candidatos else y_pie + 250.0
+        zonas.append((y_pie, y_contenido))
+    doc.close()
+    return zonas
+
+
+def _estampar_pdf(path, lineas):
+    """Escribe `lineas` de texto en la parte inferior de cada página del
+    PDF en `path` — sello informativo con el Estado/Fecha Modificación
+    vistos en SSASUR y, si aplica, la Observación de la revisión. Pedido
+    por el usuario 04-08-2026 ("arriba de donde dice impreso por").
+
+    06-08-2026 (pedido usuario): letra más grande (antes 7.5pt) y texto
+    completo, sin truncar a 150 caracteres — se envuelve en varias líneas
+    si hace falta. La posición y el tamaño de letra ahora se calculan por
+    página según el espacio libre real entre el pie nativo de SSASUR y el
+    último contenido oficial arriba de él (ver _zonas_libres_pie_pagina) —
+    reduce el tamaño de letra solo si hace falta para no pisar la tabla
+    Digitación/Entrega en recetas con muchos medicamentos."""
     if not lineas:
         return
     import io
     from reportlab.pdfgen import canvas as rl_canvas
     from pypdf import PdfReader as _PdfReader
 
+    FONT = "Helvetica-Bold"
+    FONT_SIZE_MAX = 10
+    FONT_SIZE_MIN = 7
+    MARGEN = 12
+    HOLGURA = 8
+
+    zonas = _zonas_libres_pie_pagina(path)
     reader = _PdfReader(str(path))
     writer = PdfWriter()
-    for page in reader.pages:
+    for idx, page in enumerate(reader.pages):
         w = float(page.mediabox.width)
         h = float(page.mediabox.height)
+        max_width = w - 2 * MARGEN
+        y_pie, y_contenido = zonas[idx] if idx < len(zonas) else (25.0, 275.0)
+        zona_inf = y_pie + HOLGURA
+        zona_sup = y_contenido - HOLGURA
+
         buf = io.BytesIO()
         c = rl_canvas.Canvas(buf, pagesize=(w, h))
         c.setFillColorRGB(0.55, 0, 0)
-        c.setFont("Helvetica-Bold", 7.5)
-        y = 50
-        for linea in reversed(lineas):
-            texto = linea if len(linea) <= 150 else linea[:147] + "..."
-            c.drawString(12, y, texto)
-            y += 9
+
+        size = FONT_SIZE_MAX
+        lineas_visuales = []
+        while True:
+            leading = size + 3
+            c.setFont(FONT, size)
+            lineas_visuales = []
+            for linea in lineas:
+                lineas_visuales.extend(_envolver_texto(linea, c, FONT, size, max_width))
+            alto_necesario = len(lineas_visuales) * leading
+            if alto_necesario <= (zona_sup - zona_inf) or size <= FONT_SIZE_MIN:
+                break
+            size -= 0.5
+        c.setFont(FONT, size)
+
+        # Ancla desde ARRIBA de la zona libre (pegado al último contenido
+        # oficial) en vez de desde el pie de página — pedido 06-08-2026
+        # ("no es necesario que se vea tan abajo"). Cuando sobra espacio
+        # (caso típico) el sello queda bien separado del pie; cuando el
+        # espacio es justo, igual no lo pisa (ver el ajuste de tamaño de
+        # letra arriba).
+        y = zona_sup - leading
+        for texto in lineas_visuales:
+            c.drawString(MARGEN, y, texto)
+            y -= leading
         c.save()
         buf.seek(0)
         overlay = _PdfReader(buf).pages[0]
@@ -493,36 +580,54 @@ async def _buscar_vigentes_por_rut(page, rut, origen_filtro="PITRUFQUEN HOSP.", 
             continue
         if origen_filtro and origen_filtro.upper() not in origen.upper():
             continue
-        # Pedido por el usuario 04-08-2026 (caso Elier Ruben Sanhueza
-        # Garces, CESFAM Teodoro Schmidt): una receta de un episodio de
-        # hospitalización, su alta, o una urgencia NO es para retiro por
-        # Gestión Territorial aunque esté vigente (SOLICITADA/PENDIENTE) —
-        # GT es solo para el control crónico ambulatorio del paciente. Se
-        # detecta por "Procedencia" (índice 15: ATENCION ABIERTA/
-        # HOSPITALIZADO/URGENCIA), con "Tipo Atención" (índice 8, p.ej.
-        # "ALTA HOSPITALIZADO") como respaldo si Procedencia viniera vacía.
-        # Mismo criterio que revision_solicitudes._es_ambulatoria.
-        procedencia = r[15].strip().upper() if len(r) > 15 else ""
+        # Corregido 14-08-2026 (caso Inés Enriqueta Zapata Álvarez, Hospital
+        # Toltén): los índices de columna de abajo estaban todos corridos en
+        # -1 respecto al encabezado REAL de #tablaResultados (confirmado
+        # comparando el <thead> contra las filas del debug HTML). El
+        # encabezado real es: ...7 Tipo Receta, 8 Tipo Atención, 9 Estado,
+        # 10 Persona Retira, 11 Despacho Casillero, 12 Observación
+        # Casillero, 13 Fecha Ingreso, 14 Fecha Entrega, 15 Fecha
+        # Modificación, 16 Procedencia, 17 Número Documento Procedencia
+        # (= "Cuenta Corriente" del modal Ver Detalle), 18 Persona Digita,
+        # 19 Acciones. El código venía leyendo "Fecha Entrega" desde la
+        # columna real de "Fecha Ingreso" — para un paciente crónico
+        # digitado en 2025 pero con cuota vigente de 2026, eso hacía fallar
+        # el filtro "termina en 2026" y descartaba una receta PENDIENTE
+        # real (43160514, Fecha Entrega real 04/08/2026, Fecha Ingreso
+        # 18/12/2025). También leía "Procedencia" desde la columna de
+        # "Fecha Modificación" (una fecha, nunca igual a HOSPITALIZADO/
+        # URGENCIA), por lo que el filtro de exclusión de hospitalización/
+        # urgencia nunca actuaba en la práctica; y "Persona Digita" desde
+        # "Número Documento Procedencia" (un ID numérico, no un nombre),
+        # rompiendo la detección de duplicados por mismo profesional.
+        procedencia = r[16].strip().upper() if len(r) > 16 else ""
         tipo_atencion = r[8].strip().upper() if len(r) > 8 else ""
         if procedencia in ("HOSPITALIZADO", "URGENCIA"):
             continue
         if tipo_atencion.startswith("ALTA HOSPITAL") or tipo_atencion == "HOSPITALIZADO":
             continue
         # Pedido por el usuario 03-08-2026: exigir que "Fecha Entrega"
-        # (columna índice 13, confirmada por captura de pantalla —
-        # inmediatamente después de "Fecha Ingreso") caiga en 2026 — una
-        # receta vigente pero con fecha de entrega de otro año no cuenta.
-        fecha_entrega = r[13].strip() if len(r) > 13 else ""
-        if not fecha_entrega.endswith("2026"):
+        # caiga en 2026 — una receta vigente pero con fecha de entrega de
+        # otro año no cuenta.
+        #
+        # Corregido 14-08-2026 (caso Camilo Pérez Jiménez y Germán Sandoval
+        # Bebranez, Hospital Toltén, tras el fix de índice de columna de
+        # arriba): una receta SOLICITADA recién digitada (Fecha Ingreso de
+        # días atrás) puede no tener todavía una "Fecha Entrega" asignada
+        # por SSASUR — la celda viene vacía, no "de otro año". Exigir
+        # ciegamente que termine en "2026" excluía estas recetas vigentes
+        # nuevas junto con las realmente viejas/abandonadas. Ahora solo se
+        # descarta si HAY una fecha y esa fecha no es de 2026.
+        fecha_entrega = r[14].strip() if len(r) > 14 else ""
+        if fecha_entrega and not fecha_entrega.endswith("2026"):
             continue
-        # Pedido por el usuario 04-08-2026: "Fecha Modificación" (índice 14,
-        # confirmada por captura de pantalla — inmediatamente después de
-        # "Fecha Entrega") es la base para comparar cuál de 2 recetas con la
-        # misma prescripción es la más actual (la de fecha más reciente) y
-        # cuál quedó obsoleta (se marca para anular).
-        fecha_modificacion = r[14].strip() if len(r) > 14 else ""
+        # Pedido por el usuario 04-08-2026: "Fecha Modificación" es la base
+        # para comparar cuál de 2 recetas con la misma prescripción es la
+        # más actual (la de fecha más reciente) y cuál quedó obsoleta (se
+        # marca para anular).
+        fecha_modificacion = r[15].strip() if len(r) > 15 else ""
         # Corregido 04-08-2026 (caso Pilar Ana Cardenas Avila, CESFAM
-        # Teodoro Schmidt): "Cuenta Corriente" (índice 16, "Número Documento
+        # Teodoro Schmidt): "Cuenta Corriente" ("Número Documento
         # Procedencia" en el encabezado real — confirmada contra el modal
         # "Ver Detalle", que rotula la misma columna "Cuenta Corriente")
         # identifica la serie/episodio de la receta. 2 recetas vigentes de
@@ -532,16 +637,16 @@ async def _buscar_vigentes_por_rut(page, rut, origen_filtro="PITRUFQUEN HOSP.", 
         # es tener 2 recetas vigentes con la MISMA cuota (Tipo Atención) —
         # confirmado en vivo: 43936939 y 43936691, ambas "CRONICO (6/12)" de
         # la cuenta 120279858.
-        cuenta_corriente = r[16].strip() if len(r) > 16 else ""
+        cuenta_corriente = r[17].strip() if len(r) > 17 else ""
         # Corregido 04-08-2026 (aclarado por el usuario tras revisar el caso
-        # de Pilar): cuando el MISMO profesional (índice 17, "Persona
-        # Digita") abre una cuenta corriente NUEVA, la anterior queda
-        # obsoleta — el médico actualizó la terapia en el último control,
-        # aunque los medicamentos de la receta vieja y la nueva sean
-        # distintos. "Fecha Ingreso" (índice 12) identifica qué cuenta es
-        # más antigua (es la misma para todas las cuotas de una cuenta).
-        fecha_ingreso = r[12].strip() if len(r) > 12 else ""
-        persona_digita = r[17].strip().upper() if len(r) > 17 else ""
+        # de Pilar): cuando el MISMO profesional ("Persona Digita") abre
+        # una cuenta corriente NUEVA, la anterior queda obsoleta — el
+        # médico actualizó la terapia en el último control, aunque los
+        # medicamentos de la receta vieja y la nueva sean distintos.
+        # "Fecha Ingreso" identifica qué cuenta es más antigua (es la misma
+        # para todas las cuotas de una cuenta).
+        fecha_ingreso = r[13].strip() if len(r) > 13 else ""
+        persona_digita = r[18].strip().upper() if len(r) > 18 else ""
         # Corregido 04-08-2026 (caso Silvia Elisabeth Vasquez Teran): dentro
         # de una misma cuenta corriente y cuota, NORMAL y CONTROLADA son 2
         # series paralelas intencionales (recetas de fármacos controlados
@@ -909,8 +1014,7 @@ async def _main_async(estab, recetas, debug, rut=None, ruts=None, obs_por_rut=No
                 datos = datos_por_receta.get(n_receta)
                 if datos:
                     rut_datos, estado_datos, fecha_datos, fecha_mod_datos = datos
-                    lineas_sello.append(f"SSASUR — Estado: {estado_datos} — Última Fecha Entrega: {fecha_datos} — "
-                                         f"Fecha Modificación: {fecha_mod_datos}")
+                    lineas_sello.append(f"SSASUR — Estado: {estado_datos} — Fecha Modificación: {fecha_mod_datos}")
                     obs = obs_por_rut.get(rut_datos)
                     if obs:
                         lineas_sello.append(f"Observación: {obs}")

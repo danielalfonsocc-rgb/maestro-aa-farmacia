@@ -96,6 +96,20 @@ def es_controlado_oficial(prod):
     return False
 
 
+def es_inyectable_lai(prod):
+    """Antipsicóticos de depósito (LAI) de salud mental ambulatoria — mismo
+    catálogo que centinela_inyectables_sm.py. Requiere el calificador de forma
+    de depósito (DECANOATO/JER/FA) para no confundir con la forma oral del
+    mismo principio activo (ej. 'HALOPERIDOL 5 MG COMPRIMIDO' o
+    'RISPERIDONA 1 MG COMPRIMIDO' NO deben quedar marcados)."""
+    u = str(prod or "").upper()
+    if "HALOPERIDOL" in u and "DECANOATO" in u: return True
+    if "ZUCLOPENTIXOL" in u and "DECANOATO" in u: return True
+    if "PALIPERIDONA" in u and ("PALMITATO" in u or "JER" in u): return True
+    if "RISPERIDONA" in u and (re.search(r"\bFA\b", u) or "MICROESFERAS" in u or "CONSTA" in u): return True
+    return False
+
+
 def _num(v):
     try: return int(float(str(v).replace(",", ".").strip() or 0))
     except Exception: return 0
@@ -216,8 +230,8 @@ def cruzar_historico(recetas_set, archivos):
 
 
 def clasificar(reg, d):
-    """Rellena refrigerado/controlado/pendiente (texto con cantidad) en reg."""
-    refri, control, pend = [], [], []
+    """Rellena refrigerado/controlado/pendiente/inyectable_lai (texto con cantidad) en reg."""
+    refri, control, pend, iny = [], [], [], []
     tipo_controlada = (d["tipo_receta"] or "").upper() == "CONTROLADA"
     for ln in d["lineas"].values():
         prod = ln["prod"]
@@ -226,6 +240,8 @@ def clasificar(reg, d):
         rlab = es_refrigerado(prod)
         if rlab:
             refri.append(f"{rlab} x{ln['recetada']}")
+        if es_inyectable_lai(prod):
+            iny.append(f"{prod.title()} x{ln['recetada']}")
         # controlado: receta CONTROLADA y producto que matchea lista, o (si ninguno
         # matchea) todos los fármacos de una receta CONTROLADA
         if tipo_controlada and es_controlado_oficial(prod):
@@ -241,6 +257,7 @@ def clasificar(reg, d):
     reg["refrigerado"] = "; ".join(dict.fromkeys(refri))
     reg["controlado"]  = "; ".join(dict.fromkeys(control))
     reg["pendiente"]   = "; ".join(dict.fromkeys(pend))
+    reg["inyectable_lai"] = "; ".join(dict.fromkeys(iny))
     reg["tipo_receta"] = d["tipo_receta"]
     reg["_en_historico"] = bool(d["lineas"])
     return reg
@@ -254,8 +271,9 @@ def escribir_excel(regs, ruta):
     thin = Side(style="thin", color="BFBFBF"); bd = Border(thin, thin, thin, thin)
     wb = Workbook(); ws = wb.active; ws.title = "Cruce GT"
     cols = ["Estab. Destino","Nº Receta","Paciente","RUN","Especialidad","Período",
-            "Tipo Receta","Refrigerados (cant.)","Controlados (cant.)","Pendientes (cant.)","En histórico"]
-    widths = [22,11,30,14,24,8,14,34,34,34,11]
+            "Tipo Receta","Refrigerados (cant.)","Controlados (cant.)","Pendientes (cant.)",
+            "Inyectables LAI (cant.)","En histórico"]
+    widths = [22,11,30,14,24,8,14,34,34,34,34,11]
     for c, w in enumerate(widths, 1): ws.column_dimensions[get_column_letter(c)].width = w
     for c, h in enumerate(cols, 1):
         cell = ws.cell(1, c, h); cell.font = Font(bold=True, color="FFFFFF")
@@ -266,7 +284,7 @@ def escribir_excel(regs, ruta):
     for g in sorted(regs.values(), key=lambda x: (x["estab_destino"], x["paciente"])):
         vals = [g["estab_destino"], g["receta"], g["paciente"], g["run"], g["especialidad"],
                 g["periodo"], g.get("tipo_receta",""), g.get("refrigerado",""),
-                g.get("controlado",""), g.get("pendiente",""),
+                g.get("controlado",""), g.get("pendiente",""), g.get("inyectable_lai",""),
                 "Sí" if g.get("_en_historico") else "NO"]
         for c, v in enumerate(vals, 1):
             cell = ws.cell(r, c, v); cell.border = bd
@@ -275,6 +293,7 @@ def escribir_excel(regs, ruta):
             if c == 8 and v: cell.font = Font(size=9, bold=True, color="1F6F3D")   # refrig verde
             if c == 9 and v: cell.font = Font(size=9, bold=True, color="C00000")   # control rojo
             if c == 10 and v: cell.font = Font(size=9, bold=True, color="C55A11")  # pend naranjo
+            if c == 11 and v: cell.font = Font(size=9, bold=True, color="7030A0")  # inyectable LAI morado
         if not g.get("_en_historico"):
             for c in range(1, len(cols)+1): ws.cell(r, c).fill = PatternFill("solid", fgColor="FFF2CC")
         r += 1
@@ -388,25 +407,27 @@ def main():
     n_ref = sum(1 for g in regs.values() if g["refrigerado"])
     n_con = sum(1 for g in regs.values() if g["controlado"])
     n_pen = sum(1 for g in regs.values() if g["pendiente"])
+    n_iny = sum(1 for g in regs.values() if g["inyectable_lai"])
     n_nohist = sum(1 for g in regs.values() if not g["_en_historico"])
     print(f"\n  Clasificación (recetas con al menos uno):")
-    print(f"    ❄  Refrigerados : {n_ref}")
-    print(f"    ⚠  Controlados  : {n_con}")
-    print(f"    ⏳ Pendientes   : {n_pen}")
+    print(f"    ❄  Refrigerados     : {n_ref}")
+    print(f"    ⚠  Controlados      : {n_con}")
+    print(f"    ⏳ Pendientes       : {n_pen}")
+    print(f"    💉 Inyectables LAI  : {n_iny}")
     if n_nohist:
         print(f"    • No halladas en histórico: {n_nohist} (sin clasificar)")
     print(f"\n  Por establecimiento de destino:")
-    por_dest = defaultdict(lambda: [0,0,0,0])
+    por_dest = defaultdict(lambda: [0,0,0,0,0])
     for g in regs.values():
         d = por_dest[g["estab_destino"]]
-        d[0]+=1; d[1]+=bool(g["refrigerado"]); d[2]+=bool(g["controlado"]); d[3]+=bool(g["pendiente"])
-    for dest, (t,rf,co,pe) in sorted(por_dest.items()):
-        print(f"    {dest:<28} {t:>3} recetas | ❄{rf}  ⚠{co}  ⏳{pe}")
+        d[0]+=1; d[1]+=bool(g["refrigerado"]); d[2]+=bool(g["controlado"]); d[3]+=bool(g["pendiente"]); d[4]+=bool(g["inyectable_lai"])
+    for dest, (t,rf,co,pe,iy) in sorted(por_dest.items()):
+        print(f"    {dest:<28} {t:>3} recetas | ❄{rf}  ⚠{co}  ⏳{pe}  💉{iy}")
 
     # JSON enriquecido (formato registros del skill)
     CAMPOS_PUBLICOS = ("receta","paciente","edad","direccion","comuna","telefono",
                         "estab_origen","estab_destino","periodo","especialidad","n_presc",
-                        "ventanilla","refrigerado","pendiente","controlado")
+                        "ventanilla","refrigerado","pendiente","controlado","inyectable_lai")
     out_json = os.path.join(a.salida, "gt_enriquecido.json")
     data = {
         "fecha_entrega": next((g["fecha_entrega_rep"] for g in regs.values() if g.get("fecha_entrega_rep")), ""),

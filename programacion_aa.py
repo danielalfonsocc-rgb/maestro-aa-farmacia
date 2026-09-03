@@ -470,6 +470,10 @@ def aplicar_conteo(ruta_json, ruta_plantilla=None):
     hoy = dt.date.today()
     filas = []
     n_diff = 0
+    # key → índice en filas: evita filas duplicadas cuando la planilla tiene un
+    # medicamento con dos nombres (uno programado, uno no programado) que
+    # HOMOLOGACION colapsa al mismo key. Gana el que tiene Programada≠None.
+    key_idx: dict[str, int] = {}
     for row in ws.iter_rows(min_row=4, max_col=7):
         med_c, prog_c, sol_c, sbod_c, sreal_c, cpm_c, sug_c = row
         if med_c.value is None:
@@ -478,9 +482,7 @@ def aplicar_conteo(ruta_json, ruta_plantilla=None):
         stock_real = valores_key.get(key)
         sbod = stock_actual_key.get(key, sbod_c.value or 0)
         diff = None if stock_real is None else stock_real - sbod
-        if diff:
-            n_diff += 1
-        filas.append({
+        fila = {
             'Medicamento': med_c.value,
             'Cantidad Programada': prog_c.value,
             'Cantidad Solicitada': sol_c.value,
@@ -489,7 +491,22 @@ def aplicar_conteo(ruta_json, ruta_plantilla=None):
             'Consumo Promedio Mensual': cpm_c.value,
             'Sugerencia': sug_c.value or '',
             'Diferencia': diff,
-        })
+        }
+        if key in key_idx:
+            prev = filas[key_idx[key]]
+            # si la fila previa es huérfana (sin Programada) y esta tiene Programada, reemplazar
+            if prev['Cantidad Programada'] is None and prog_c.value is not None:
+                if prev.get('Diferencia') not in (None, 0):
+                    n_diff -= 1
+                filas[key_idx[key]] = fila
+                if diff not in (None, 0):
+                    n_diff += 1
+            # si la fila actual es huérfana, descartarla silenciosamente
+        else:
+            key_idx[key] = len(filas)
+            filas.append(fila)
+            if diff not in (None, 0):
+                n_diff += 1
 
     fuente_stock = archivo_stock or mae
     os.makedirs(OUT_DIR, exist_ok=True)

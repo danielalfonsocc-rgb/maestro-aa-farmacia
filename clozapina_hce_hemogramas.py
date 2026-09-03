@@ -56,6 +56,20 @@ def _run_a_partes(run: str) -> tuple[str, str]:
     return num.strip(), dv.strip()
 
 
+def _cache_key(run_sin_guion: str, fecha_despacho) -> str:
+    """Cache por (paciente, despacho) — NO solo por paciente. Bug real detectado
+    en vivo (11-08-2026, caso Gina Cicarelli): con cache solo por RUN, un
+    paciente que ya tenía un PDF descargado de un despacho anterior nunca
+    volvía a consultarse en HCE en despachos posteriores, aunque el sistema ya
+    tuviera un hemograma más nuevo — el reporte seguía mostrando el examen
+    viejo (y su antigüedad calculada quedaba falsamente alta o baja). Cada
+    despacho nuevo del mismo paciente debe buscar de nuevo en HCE."""
+    if fecha_despacho is None or fecha_despacho != fecha_despacho:  # NaT check
+        return run_sin_guion
+    fecha = fecha_despacho.date() if hasattr(fecha_despacho, "date") else fecha_despacho
+    return f"{run_sin_guion}_{fecha:%Y%m%d}"
+
+
 async def entrar_hce(page):
     """Dashboard → tarjeta HCE. Igual que RECETA en AUTO_SSASUR.py: SSASur acuña
     la sesión del módulo al clicar la tarjeta, un deep-link directo puede fallar."""
@@ -141,19 +155,19 @@ async def _debug_estado(page, run_sin_guion: str, etapa: str):
         print(f"    [debug] no se pudo capturar estado ({etapa}): {e}")
 
 
-async def descargar_hemograma_mas_reciente(context, page, run_sin_guion: str, debug: bool = False) -> Path | None:
+async def descargar_hemograma_mas_reciente(context, page, run_sin_guion: str, cache_key: str, debug: bool = False) -> Path | None:
     """Abre el modal de Laboratorio y captura el PDF del examen MAS RECIENTE
     (primera fila: la tabla ya viene ordenada descendente por fecha). SIEMPRE
     cierra el modal antes de retornar (éxito o fallo) — confirmado en vivo que
     si queda abierto, bloquea la búsqueda del paciente siguiente."""
     await page.click('button:has-text("Laboratorio")')
     try:
-        return await _intentar_descarga_pdf(page, context, run_sin_guion, debug)
+        return await _intentar_descarga_pdf(page, context, run_sin_guion, cache_key, debug)
     finally:
         await _cerrar_modal(page)
 
 
-async def _intentar_descarga_pdf(page, context, run_sin_guion: str, debug: bool) -> Path | None:
+async def _intentar_descarga_pdf(page, context, run_sin_guion: str, cache_key: str, debug: bool) -> Path | None:
     # El modal "Históricos Clínicos de Exámenes" abre con la pestaña Laboratorio
     # activa por defecto, ya ordenada descendente por fecha — el primer botón
     # "Ver PDF" que aparezca en la página ES el examen más reciente.
@@ -201,7 +215,7 @@ async def _intentar_descarga_pdf(page, context, run_sin_guion: str, debug: bool)
         return None
 
     HEMOGRAMAS_DIR.mkdir(exist_ok=True)
-    dest = HEMOGRAMAS_DIR / f"{run_sin_guion}.pdf"
+    dest = HEMOGRAMAS_DIR / f"{cache_key}.pdf"
     dest.write_bytes(pdf_bytes)
     return dest
 
@@ -222,7 +236,7 @@ def _construir_filas_desde_cache(por_paciente):
         run = row["run_normalizado"]
         run_sin_guion = run.replace("-", "").replace(".", "")
         nombre = f"{row['Nombre']} {row['Apellido Paterno']} {row['Apellido Materno']}"
-        pdf_cacheado = HEMOGRAMAS_DIR / f"{run_sin_guion}.pdf"
+        pdf_cacheado = HEMOGRAMAS_DIR / f"{_cache_key(run_sin_guion, row['fecha_despacho'])}.pdf"
         hemograma = None
         if pdf_cacheado.exists():
             try:
@@ -255,12 +269,12 @@ async def main_async(csv_recetas: str, desde, hasta, salida: str, solo_rut: str 
         por_paciente = por_paciente[por_paciente["run_normalizado"].str.replace(".", "", regex=False).str.replace(" ", "", regex=False).str.upper() == solo_rut_norm]
     print(f"{len(por_paciente)} pacientes con Clozapina (Atencion Abierta) en el periodo.")
 
-    def _tiene_pdf_cacheado(run_sin_guion):
-        return (HEMOGRAMAS_DIR / f"{run_sin_guion}.pdf").exists()
+    def _tiene_pdf_cacheado(run_sin_guion, fecha_despacho):
+        return (HEMOGRAMAS_DIR / f"{_cache_key(run_sin_guion, fecha_despacho)}.pdf").exists()
 
     pendientes = [
         row for _, row in por_paciente.iterrows()
-        if forzar or not _tiene_pdf_cacheado(row["run_normalizado"].replace("-", "").replace(".", ""))
+        if forzar or not _tiene_pdf_cacheado(row["run_normalizado"].replace("-", "").replace(".", ""), row["fecha_despacho"])
     ]
 
     if not pendientes:
@@ -316,12 +330,17 @@ async def main_async(csv_recetas: str, desde, hasta, salida: str, solo_rut: str 
             run_num, dv = _run_a_partes(run)
             nombre = f"{row['Nombre']} {row['Apellido Paterno']} {row['Apellido Materno']}"
 
-            pdf_cacheado = HEMOGRAMAS_DIR / f"{run_sin_guion}.pdf"
+            cache_key = _cache_key(run_sin_guion, row["fecha_despacho"])
+            pdf_cacheado = HEMOGRAMAS_DIR / f"{cache_key}.pdf"
             hemograma = None
             if not forzar and pdf_cacheado.exists():
-                # Ya se descargó su hemograma en una corrida anterior — no hace
-                # falta volver a buscarlo en HCE en cada corrida, solo para los
-                # despachos NUEVOS (pacientes sin PDF todavía).
+                # Ya se descargó el hemograma para ESTE despacho puntual (mismo
+                # paciente + misma fecha de despacho) en una corrida anterior —
+                # no hace falta volver a buscarlo en HCE. Un despacho nuevo del
+                # mismo paciente en otra fecha SIEMPRE vuelve a buscar en HCE
+                # (bug real 11-08-2026: con cache solo por RUN se reutilizaba
+                # para siempre el PDF del primer despacho, ignorando exámenes
+                # más nuevos ya cargados en el sistema).
                 try:
                     hemograma = extraer_hemograma_pdf(pdf_cacheado)
                     ok += 1
@@ -333,7 +352,7 @@ async def main_async(csv_recetas: str, desde, hasta, salida: str, solo_rut: str 
             if hemograma is None:
                 encontrado = await buscar_paciente(page, run_num, dv, debug=True)
                 if encontrado:
-                    pdf_path = await descargar_hemograma_mas_reciente(context, page, run_sin_guion, debug=True)
+                    pdf_path = await descargar_hemograma_mas_reciente(context, page, run_sin_guion, cache_key, debug=True)
                     if pdf_path:
                         try:
                             hemograma = extraer_hemograma_pdf(pdf_path)

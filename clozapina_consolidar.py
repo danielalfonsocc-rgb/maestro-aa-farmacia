@@ -68,8 +68,12 @@ FACTOR_PLAQUETAS = 1_000
 
 COLUMNAS_MINSAL = [
     "RUT", "FECHA", "DOSIS", "BAS", "EOS", "MIELO", "JUV", "BAC", "SEG", "LINFO", "MONO",
-    "LEUCO", "HTO", "HB", "GLOB ROJOS", "PLAQ", "RAE", "RAN", "Fecha Despacho",
+    "LEUCO", "HTO", "HB", "GLOB ROJOS", "PLAQ", "RAE", "RAN", "Fecha Despacho", "Nombre",
 ]
+# "Nombre" va AL FINAL, después de las 18 columnas exactas del formulario MINSAL +
+# "Fecha Despacho" — es solo para identificar al paciente de un vistazo al revisar/
+# pegar (la planilla ya es confidencial, gitignored, nunca sube al Escritorio/GitHub);
+# no se toca el orden de las columnas que sí se copian/pegan tal cual a la plataforma.
 # La alarma (RAN/RAE) la calcula y muestra la propia plataforma MINSAL al ingresar
 # los datos — no la determinamos nosotros, por eso no hay columnas de alarma aquí.
 COLUMNAS_OBSERVACION = [
@@ -353,6 +357,7 @@ def construir_fila(fila: FilaConsolidada, fecha_ref: date) -> tuple[dict, dict]:
         "RAE": rae if rae is not None else "",
         "RAN": ran if ran is not None else "",
         "Fecha Despacho": _fmt_fecha_minsal(fila.fecha_despacho),
+        "Nombre": fila.nombre,
     }
 
     # Observaciones administrativas para que la QF revise antes de ingresar — la
@@ -395,7 +400,7 @@ def construir_fila(fila: FilaConsolidada, fecha_ref: date) -> tuple[dict, dict]:
 _ANCHOS_MINSAL = {
     "RUT": 13, "FECHA": 11, "DOSIS": 8, "BAS": 7, "EOS": 7, "MIELO": 7, "JUV": 7,
     "BAC": 7, "SEG": 7, "LINFO": 7, "MONO": 7, "LEUCO": 9, "HTO": 7, "HB": 7,
-    "GLOB ROJOS": 12, "PLAQ": 10, "RAE": 9, "RAN": 9, "Fecha Despacho": 13,
+    "GLOB ROJOS": 12, "PLAQ": 10, "RAE": 9, "RAN": 9, "Fecha Despacho": 13, "Nombre": 30,
 }
 _ANCHOS_REVISAR = {
     "RUN": 13, "Nombre": 30, "Fecha Despacho": 13, "Cuota Receta": 12,

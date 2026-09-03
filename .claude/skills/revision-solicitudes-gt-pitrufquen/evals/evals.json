@@ -1,0 +1,60 @@
+{
+  "skill_name": "revision-solicitudes-gt-pitrufquen",
+  "evals": [
+    {
+      "id": 1,
+      "name": "freire-texto-suelto",
+      "prompt": "Llegó este correo de CESFAM Freire con una solicitud de gestión territorial, ¿la puedes revisar? Por ahora solo dime qué encuentras en el cruce local (--dry-run), no hace falta que busques en vivo en SSASUR todavía.\n\nBuenas tardes, favor vuestra ayuda con la solicitud de gestión territorial de los siguientes pacientes de CESFAM Freire.\n\njuan test uno 90111222-3 freire medicina interna\nmaria test dos 90222333-4 freire cardiologia\njuan test uno 90111222-3 freire medicina interna\npedro test tres 90333444-5 freire oftalmologia Receta completa N°99999999\n\nSe despide cordialmente,\nServicio de Farmacia CESFAM Freire",
+      "expected_output": "Identifica el establecimiento como CESFAM FREIRE, usa scripts/parsear_solicitud.py en vez de transcribir las filas a mano, corre revision_solicitudes.py --dry-run, fusiona el RUT duplicado (juan test uno) a un solo paciente, y responde con un resumen agregado sin listar RUT/pacientes uno por uno en el chat.",
+      "files": ["fixture_freire_texto.txt (contenido pegado en el prompt)"],
+      "expectations": [
+        "Identificó el establecimiento como CESFAM FREIRE (--estab \"CESFAM FREIRE\")",
+        "Usó scripts/parsear_solicitud.py para generar la planilla en vez de transcribir las filas a mano en código",
+        "Corrió revision_solicitudes.py con --dry-run",
+        "El RUT duplicado 90111222-3 (juan test uno) quedó fusionado en un solo paciente, no dos",
+        "La respuesta final en el chat no lista RUT ni nombres de pacientes uno por uno, solo un resumen agregado",
+        "No intentó abrir una búsqueda en vivo en SSASUR (no corrió descargar_recetas_pdf.py)"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "loncoche-establecimiento-ambiguo",
+      "prompt": "Nos llegó esto de Loncoche, revisa por favor (--dry-run nomás, sin buscar en vivo todavía):\n\nEstimados, adjunto solicitud de gestión territorial de nuestros pacientes de Loncoche.\n\nana test cuatro 90444555-6 loncoche medicina interna\nluis test cinco 90555666-7 loncoche gastroenterologia\n\nSaludos,\nFarmacia Loncoche",
+      "expected_output": "\"Loncoche\" solo es ambiguo (DSM Loncoche vs Hospital Loncoche, ambos existen). Antes de correr ningún script, pregunta al usuario cuál de los dos es.",
+      "files": ["fixture_loncoche_texto.txt (contenido pegado en el prompt)"],
+      "expectations": [
+        "Reconoce que \"Loncoche\" solo es ambiguo (existen DSM Loncoche y Hospital Loncoche)",
+        "Pregunta al usuario cuál de los dos es ANTES de correr cualquier script",
+        "No corrió revision_solicitudes.py ni parsear_solicitud.py con un --estab adivinado (ni DSM LONCOCHE ni LONCOCHE HOSP) antes de preguntar"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "freire-xlsx-directo",
+      "prompt": "Te adjunto la planilla que mandó CESFAM Freire con la solicitud de gestión territorial: {{fixture_freire_xlsx.xlsx}}. Revísala (--dry-run nomás, sin buscar en vivo todavía).",
+      "expected_output": "Como la solicitud ya llega en xlsx (columnas FECHA/RUT/NOMBRE/ESPECIALIDAD), NO debe correr scripts/parsear_solicitud.py — usa la planilla directo con revision_solicitudes.py --estab \"CESFAM FREIRE\" --xlsx <ruta> --dry-run.",
+      "files": ["fixture_freire_xlsx.xlsx"],
+      "expectations": [
+        "NO ejecutó scripts/parsear_solicitud.py (la planilla ya venía lista en xlsx, no hacía falta parsear texto suelto)",
+        "Usó revision_solicitudes.py --xlsx apuntando directo al archivo adjunto",
+        "Corrió con --dry-run",
+        "Identificó el establecimiento como CESFAM FREIRE"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "tolten-hosp-rut-sin-guion",
+      "prompt": "Llegó este correo del Hospital de Toltén con una solicitud de gestión territorial, ¿la puedes revisar? Por ahora solo dime qué encuentras en el cruce local (--dry-run), no hace falta que busques en vivo en SSASUR todavía.\n\nBuenas tardes, favor vuestra ayuda con la solicitud de gestión territorial de los siguientes pacientes del Hospital de Toltén.\n\nana test seis 90666777-8 tolten medicina interna\nirma test siete 83444649 tolten medicina interna\n\nSe despide cordialmente,\nServicio de Farmacia Hospital Familiar y Comunitario de Toltén",
+      "expected_output": "Identifica el establecimiento como Hospital Toltén (TOLTEN HOSP, no DSM), usa scripts/parsear_solicitud.py, y nota que 'irma test siete' quedó en el aviso de líneas sin RUT reconocible porque el RUT viene sin guion (83444649). En vez de descartar esa fila o transcribir el RUT a mano sin verificar, usa el DV ya calculado y verificado que imprime el script (8344464-9), lo confirma contra el nombre y lo agrega a la planilla antes de correr el cruce -- no debe inventar ni calcular el DV él mismo, ni dejar a la paciente fuera de la solicitud sin decirlo.",
+      "files": ["fixture_tolten_hosp_rut_sin_guion.txt (contenido pegado en el prompt)"],
+      "expectations": [
+        "Identificó el establecimiento como Hospital Toltén / TOLTEN HOSP (no DSM Tolten)",
+        "Usó scripts/parsear_solicitud.py en vez de transcribir las filas a mano",
+        "Detectó que 'irma test siete' (RUT sin guion 83444649) quedó en el aviso de líneas sin RUT",
+        "Usó el RUT sugerido con DV verificado (8344464-9) que imprime el script, sin recalcularlo ni inventarlo",
+        "Agregó esa fila a la planilla y la incluyó en el cruce, no la dejó fuera de la solicitud sin avisar",
+        "Corrió revision_solicitudes.py con --dry-run"
+      ]
+    }
+  ]
+}
