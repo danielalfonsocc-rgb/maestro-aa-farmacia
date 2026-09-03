@@ -230,6 +230,23 @@ SELS_REPORTE_HOJA_DIARIA = ('a:has-text("Reporte Hoja Diaria")', ':text("Reporte
 # (<input type=radio>, "Principalmente Actividades").
 SEL_AGENDA_FECHA_INI = "FechaInicio"
 SEL_AGENDA_FECHA_FIN = "FechaTermino"
+# Establecimiento del ENCABEZADO (arriba a la derecha, junto al avatar
+# "DC"/Daniel Castro Cortes) — DISTINTO del <select id=establecimiento> de
+# adentro del formulario. Viene por defecto en "CESFAM PITRUFQUEN" y acota
+# TODO lo que trae Agenda Médica a ese establecimiento; hay que cambiarlo
+# ANTES de abrir Hoja Diaria o los datos salen del CESFAM, no del Hospital.
+# Corrección en vivo pedida por el usuario 03-09-2026 mientras miraba la
+# corrida. Es un widget select2 con búsqueda AJAX (no un <select> con todas
+# las opciones cargadas): hay que abrirlo, escribir el texto y clickear el
+# resultado que aparece.
+SEL_HEADER_ESTABLECIMIENTO = "#slctCabmiarEstablecimientoHeader"
+TXT_HEADER_ESTABLECIMIENTO_HOSP = "PITRUFQUEN HOSP"
+# El botón Buscar de Hoja Diaria es <input type="button" value="Buscar">, NO
+# type="submit" — por eso SELS_BUSCAR (genérico, usado también por GT/
+# Controlados) nunca lo encontraba pese a que "Buscar" aparecía en el dump.
+# Confirmado en vivo 03-09-2026. Selector propio para no tocar SELS_BUSCAR,
+# que ya está probado en producción para los otros formularios.
+SELS_AGENDA_BUSCAR = ('input[type="button"][value*="Buscar" i]',) + SELS_BUSCAR
 
 
 def _frame_hoja_diaria(page):
@@ -241,29 +258,63 @@ def _frame_hoja_diaria(page):
     return None
 
 
+async def _cambiar_establecimiento_header(page, texto=TXT_HEADER_ESTABLECIMIENTO_HOSP):
+    """Cambia el Establecimiento del select2 del encabezado a `texto`
+    (por defecto "PITRUFQUEN HOSP", que matchea la opción real "PITRUFQUEN
+    HOSP. · HOSPITAL DE PITRUFQUEN"). No hace nada si ya está en HOSP."""
+    try:
+        actual = await page.evaluate(
+            "() => { const s = document.querySelector(%r); "
+            "return s && s.selectedIndex >= 0 ? "
+            "s.options[s.selectedIndex].textContent.trim() : null; }" % SEL_HEADER_ESTABLECIMIENTO
+        )
+    except Exception:
+        actual = None
+    if actual and re.search(r"hosp", actual, re.I):
+        return f"ya en {actual}"
+    try:
+        await page.click(".select2Header-selection", timeout=5_000)
+        await page.wait_for_timeout(400)
+        await page.locator(".select2Header-search__field").fill(texto)
+        await page.wait_for_timeout(1_500)
+        await page.click(f'li[role="option"]:has-text("{texto}")', timeout=3_000)
+        await page.wait_for_timeout(500)
+        await page.keyboard.press("Escape")
+        await _networkidle(page)
+        await page.wait_for_timeout(1_000)
+        return f"cambiado → {texto}"
+    except Exception as e:
+        return f"[AVISO] no pude cambiar el establecimiento del encabezado: {e}"
+
+
 async def entrar_agenda_medica(page):
     """Dashboard → tarjeta AGENDA MÉDICA. Si no aparece ninguna tarjeta con ese
     texto (el dashboard de SSASUR agrupa módulos por texto de botón, ver
     entrar_modulo), cae a navegar directo por URL — con el mismo riesgo de
     rebote/403 que ya se documentó para RCE si la sesión no queda acuñada al
-    proyecto correcto (ver notas de entrar_receta)."""
+    proyecto correcto (ver notas de entrar_receta). Termina asegurando el
+    Establecimiento del encabezado en PITRUFQUEN HOSP. (ver
+    _cambiar_establecimiento_header) — si no, los reportes salen acotados al
+    CESFAM, que es el default de la sesión."""
     try:
         await entrar_modulo(page, "AGENDA")
-        return
     except Exception:
-        pass
-    print("  [info] No encontré tarjeta 'AGENDA' en el dashboard — navego directo por URL.")
-    await page.goto(AGENDA_MEDICA_URL)
-    await _networkidle(page)
-    await page.wait_for_timeout(1_500)
-    print(f"  ✓ En Agenda Médica: {page.url}")
+        print("  [info] No encontré tarjeta 'AGENDA' en el dashboard — navego directo por URL.")
+        await page.goto(AGENDA_MEDICA_URL)
+        await _networkidle(page)
+        await page.wait_for_timeout(1_500)
+        print(f"  ✓ En Agenda Médica: {page.url}")
+    estab = await _cambiar_establecimiento_header(page)
+    print(f"  Establecimiento (encabezado) → {estab}")
 
 
-async def _abrir_hoja_diaria_profesional(page, debug=False):
-    """Proceso_nuevo → Hoja Diaria de Profesional → Reporte Hoja Diaria.
-    Devuelve el Frame del formulario (Fecha Inicio/Termino, Tipo Profesional,
-    Establecimiento, Tipo Reporte) si quedó cargado — vive en un <iframe>
-    propio, no en el documento principal — o None si no se pudo abrir."""
+async def _intentar_abrir_hoja_diaria(page, debug=False):
+    """Un intento del cascade de menú Proceso_nuevo → Hoja Diaria de
+    Profesional → Reporte Hoja Diaria. Clics directos, sin hover explícito
+    previo — un hover() agregado antes de cada clic (probado en vivo
+    03-09-2026) rompía el cascade de CSS :hover en vez de ayudarlo; el click
+    normal de Playwright ya hace su propio hover implícito al mover el mouse
+    al elemento. Devuelve el Frame del formulario o None."""
     try:
         await _click_primero(page, SELS_PROCESO_NUEVO, "Proceso_nuevo")
         await page.wait_for_timeout(800)
@@ -272,7 +323,7 @@ async def _abrir_hoja_diaria_profesional(page, debug=False):
             await _dump_formulario(page, "agenda-sin-proceso_nuevo")
     try:
         await _click_primero(page, SELS_HOJA_DIARIA, "Hoja Diaria de Profesional")
-        await page.wait_for_timeout(500)
+        await page.wait_for_timeout(600)
     except Exception:
         if debug:
             await _dump_formulario(page, "agenda-sin-hoja_diaria")
@@ -284,11 +335,31 @@ async def _abrir_hoja_diaria_profesional(page, debug=False):
             await _dump_formulario(page, "agenda-sin-reporte_hoja_diaria")
         return None
     await _networkidle(page)
-    await page.wait_for_timeout(1_500)
-    frm = _frame_hoja_diaria(page)
+    # Poll-ea la aparición del frame en vez de un sleep fijo — la carga del
+    # iframe puede tardar más que 1.5s si SSASUR está lento.
+    frm = None
+    for _ in range(10):
+        await page.wait_for_timeout(500)
+        frm = _frame_hoja_diaria(page)
+        if frm is not None:
+            break
     if debug:
         await _dump_formulario(frm or page, "agenda-hoja_diaria")
     return frm
+
+
+async def _abrir_hoja_diaria_profesional(page, debug=False):
+    """Proceso_nuevo → Hoja Diaria de Profesional → Reporte Hoja Diaria.
+    Devuelve el Frame del formulario (Fecha Inicio/Termino, Tipo Profesional,
+    Establecimiento, Tipo Reporte) si quedó cargado — vive en un <iframe>
+    propio, no en el documento principal — o None si no se pudo abrir. El
+    cascade de menú hover es intermitente en vivo (visto 03-09-2026): 1 solo
+    reintento completo si el primero no encuentra el frame."""
+    frm = await _intentar_abrir_hoja_diaria(page, debug)
+    if frm is not None:
+        return frm
+    await page.wait_for_timeout(1_000)
+    return await _intentar_abrir_hoja_diaria(page, debug)
 
 
 async def _fijar_tipo_profesional_aps(frame):
@@ -399,34 +470,34 @@ async def paso_agenda_actividades(page, desde: str, hasta: str, debug=False):
     if debug:
         await _dump_formulario(frm, "agenda-pre-buscar")
 
-    try:
-        await _click_primero(frm, SELS_BUSCAR, "Buscar")
-    except Exception as e:
-        print(f"  [ERROR] No encontré el botón Buscar: {e}")
-        await _dump_formulario(frm, "agenda-sin-buscar")
-        await page.screenshot(path=str(MAESTRO_DIR / "debug_agenda.png"))
-        return (None, -1)
-    await _networkidle(page)
-    await frm.wait_for_timeout(2_500)
-    if debug:
-        await _dump_formulario(frm, "agenda-post-buscar")
-        await page.screenshot(path=str(MAESTRO_DIR / "debug_agenda.png"))
-
-    n = await _filas_resultado(frm)
-    if n == 0:
-        print("  (sin actividades en el rango — no hay Excel que bajar)")
-        return (None, 0)
-
+    # La descarga dispara SOLA al terminar de generarse en el servidor — NO
+    # hay botón "Excel" que clickear después (confirmado en vivo 03-09-2026).
+    # Puede tardar apenas ~30s o varios minutos según el rango. El bug real
+    # era de CARRERA: si se clickea Buscar primero y recién DESPUÉS se arma
+    # el expect_download() (como hacía descargar_como() acá), el evento de
+    # descarga ya disparó y se pierde — por eso el timeout de 10 min siempre
+    # fallaba pese a que la descarga sí ocurría. Hay que armar el listener
+    # ANTES del clic. El archivo real es CSV (';' + texto), no un .xlsx de
+    # verdad pese a lo que dicen las instrucciones en pantalla — se guarda
+    # con la extensión real (dl.suggested_filename) para que
+    # servicios_farmaceuticos.py lo lea con el parser correcto.
     d, h = desde.replace("/", "-"), hasta.replace("/", "-")
-    dest = MAESTRO_DIR / f"reporte_listado_actividades_{d}_{h}.xlsx"
+    print("  Buscando (la descarga puede tardar entre segundos y varios minutos)...")
     try:
-        await descargar_como(page, dest,
-                             lambda: _click_primero(frm, SELS_EXCEL, "Excel", force=True))
+        async with page.expect_download(timeout=TIMEOUT_DESCARGA) as dl_info:
+            await _click_primero(frm, SELS_AGENDA_BUSCAR, "Buscar")
+        dl = await dl_info.value
     except Exception as e:
-        print(f"  [ERROR] No se pudo bajar el Excel: {e}")
+        print(f"  [ERROR] No se pudo bajar el archivo: {e}")
+        await _dump_formulario(frm, "agenda-sin-descarga")
         await page.screenshot(path=str(MAESTRO_DIR / "debug_agenda.png"))
         return (None, -1)
-    return (dest, _contar_filas_xlsx(dest))
+
+    ext = Path(dl.suggested_filename).suffix or ".xlsx"
+    dest = MAESTRO_DIR / f"reporte_listado_actividades_{d}_{h}{ext}"
+    await dl.save_as(dest)
+    print(f"  ✓ {dest.name}")
+    return (dest, _contar_filas_archivo(dest))
 
 
 def fmt(d: date) -> str:
@@ -1155,6 +1226,20 @@ def _contar_filas_xlsx(path):
         return max(n - 2, 0)   # fila de título + fila de encabezado
     except Exception:
         return -1
+
+
+def _contar_filas_archivo(path: Path) -> int:
+    """Como _contar_filas_xlsx, pero soporta también .csv (el reporte de
+    Agenda Médica descarga CSV real pese a llamarse 'reporte de Excel' en
+    pantalla). Solo descuenta 1 fila (encabezado) para CSV — no trae fila de
+    título separada como los .xlsx de GT/Controlados."""
+    if str(path).lower().endswith(".csv"):
+        try:
+            with open(path, encoding="latin-1", errors="replace") as fh:
+                return max(sum(1 for ln in fh if ln.strip()) - 1, 0)
+        except Exception:
+            return -1
+    return _contar_filas_xlsx(path)
 
 
 async def paso_gt(page, desde=None, hasta=None, debug=False):
