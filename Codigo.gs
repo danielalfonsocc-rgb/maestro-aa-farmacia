@@ -54,6 +54,19 @@
  *       API). Con "," la fórmula es inválida y el filtro ocultaba TODAS las
  *       filas en vez de solo las no-pendientes — confirmado probando ambas
  *       variantes directo contra el Sheet real vía la API antes de corregir.
+ *
+ * Blindado 04-09-2026 (a pedido del usuario, tras el bug del punto 10):
+ *   11. verPendientes() ya NO usa whenFormulaSatisfied() — se eliminó por
+ *       completo la dependencia de que Sheets parsee una fórmula escrita a
+ *       mano (el origen real de los bugs #9/#10: el separador de argumentos
+ *       depende del locale del Sheet y no hay forma de probarlo sin acceso
+ *       directo a la API antes de entregarlo). Ahora la condición "Estado =
+ *       pendiente O Fármaco Pendiente no vacío" se evalúa en JavaScript
+ *       puro dentro de Apps Script, y las filas se ocultan/muestran
+ *       directamente con hideRows()/showRows() — cero fórmulas de Sheets
+ *       involucradas, cero riesgo de locale. Como ya no es un filtro nativo
+ *       de Sheets, "Datos > Quitar filtro" no lo revierte — se agregó
+ *       mostrarTodasLasRecetas() al menú para eso.
  */
 
 var MESES_ES = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO",
@@ -65,6 +78,7 @@ function onOpen() {
     .addItem('🔄 Ordenar por N° de Receta', 'ordenarPorReceta')
     .addItem('❄️ Filtrar Cadena de Frío (Mes)', 'filtrarCadenaFrio')
     .addItem('⏳ Ver Recetas Pendientes (Falta Stock)', 'verPendientes')
+    .addItem('👁 Mostrar Todas las Recetas', 'mostrarTodasLasRecetas')
     .addSeparator()
     .addItem('🗓️ Generar Rollover (Pase al Mes Siguiente)', 'generarRolloverMes')
     .addToUi();
@@ -168,16 +182,23 @@ function filtrarCadenaFrio() {
     "Filtro aplicado: solo Refrigerado = SÍ. Quítalo desde Datos > Quitar filtro.", "Cadena de Frío", 4);
 }
 
-/** Filtra la hoja activa mostrando las filas con Estado Despacho =
- * "pendiente por falta stock" (Columna K, criterio manual del QF) O con algo
- * escrito en Fármaco Pendiente/Stock (Columna N, criterio real: lo cruza
- * gt_pendientes_maestro_pacientes.py contra la Cantidad Pendiente por
- * prescripción de informe_completo_recetas*.csv, no un estado a mano).
- * Usa la unión de ambas para no perder un despacho PARCIAL — una receta
- * puede estar marcada "Enviada" en general y aun así tener un fármaco
- * puntual con Cantidad Pendiente > 0 en el informe completo. Mismo mecanismo
- * que filtrarCadenaFrio(): filtro nativo de Sheets, reversible desde
- * Datos > Quitar filtro sin perder datos. */
+/** Oculta todas las filas de la hoja activa EXCEPTO las que tienen Estado
+ * Despacho = "pendiente por falta stock" (Columna K, criterio manual del QF)
+ * O algo escrito en Fármaco Pendiente/Stock (Columna N, criterio real: lo
+ * cruza gt_pendientes_maestro_pacientes.py contra el informe completo de
+ * recetas, no un estado a mano). Usa la unión de ambas para no perder un
+ * despacho PARCIAL — una receta puede estar "Enviada" en general y aun así
+ * tener un fármaco puntual pendiente en el informe completo.
+ *
+ * OJO: NO usa un filtro nativo de Sheets con fórmula custom (whenFormulaSatisfied).
+ * La condición se evalúa acá en JavaScript y las filas se ocultan directo con
+ * hideRows() — bug real 04-09-2026: una fórmula de Sheets escrita a mano
+ * depende del separador de argumentos del locale (",", ";") y no hay forma
+ * de probarla sin acceso directo a la API antes de entregarla; con el
+ * separador equivocado la fórmula queda inválida y el filtro oculta TODO.
+ * Sacando la fórmula de la ecuación, ese bug entero deja de ser posible.
+ * Como esto ya no es un filtro nativo, "Datos > Quitar filtro" no lo
+ * revierte — usar "👁 Mostrar Todas las Recetas" del menú para eso. */
 function verPendientes() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   var name = sheet.getName();
@@ -188,24 +209,59 @@ function verPendientes() {
   var lastRow = sheet.getLastRow();
   if (lastRow < 4) return;
 
-  var range = sheet.getRange(3, 1, lastRow - 2, 18); // fila 3 = encabezado, filtro incluido
   var existente = sheet.getFilter();
-  if (existente) existente.remove();
-  var filter = range.createFilter();
-  // Formula relativa a la fila 3 (encabezado del rango) — Sheets la ajusta
-  // fila por fila igual que un formato condicional. $K/$N fijan columna, la
-  // fila queda relativa para que el desplazamiento sea automático.
-  // OJO: separador de argumentos ";" (no ","), locale es_ES del Sheet —
-  // con "," la fórmula es inválida y el filtro oculta TODO (bug real
-  // 04-09-2026, confirmado probando ambas variantes contra la API).
-  var criteria = SpreadsheetApp.newFilterCriteria()
-    .whenFormulaSatisfied('=OR($K3="pendiente por falta stock";$N3<>"")')
-    .build();
-  filter.setColumnFilterCriteria(11, criteria); // se ancla en K, pero la formula mira K y N
+  if (existente) existente.remove(); // por si quedó un filtro nativo de una versión anterior
+
+  var numFilas = lastRow - 3;
+  sheet.showRows(4, numFilas); // parte de un estado limpio antes de recalcular
+
+  var datos = sheet.getRange(4, 11, numFilas, 4).getValues(); // K:N = Estado, Refrig, Control, Farmaco
+  var visibles = 0;
+  var inicioOculto = -1;
+
+  for (var i = 0; i <= datos.length; i++) {
+    var fila = 4 + i;
+    var ocultarEstaFila = false;
+
+    if (i < datos.length) {
+      var estado = String(datos[i][0] || "").trim().toLowerCase();
+      var farmaco = String(datos[i][3] || "").trim();
+      var esPendiente = (estado === "pendiente por falta stock") || (farmaco !== "");
+      if (esPendiente) {
+        visibles++;
+      } else {
+        ocultarEstaFila = true;
+      }
+    }
+
+    if (ocultarEstaFila) {
+      if (inicioOculto === -1) inicioOculto = fila;
+    } else if (inicioOculto !== -1) {
+      sheet.hideRows(inicioOculto, fila - inicioOculto); // oculta el bloque contiguo de una vez
+      inicioOculto = -1;
+    }
+  }
 
   SpreadsheetApp.getActiveSpreadsheet().toast(
-    "Filtro aplicado: Estado 'pendiente por falta stock' O Fármaco Pendiente/Stock con dato. " +
-    "Quítalo desde Datos > Quitar filtro.", "Recetas Pendientes", 4);
+    visibles + " receta(s) con Estado 'pendiente por falta stock' o con dato en Fármaco Pendiente/Stock. " +
+    "Usa '👁 Mostrar Todas las Recetas' del menú para volver a ver todo.", "Recetas Pendientes", 4);
+}
+
+/** Revierte verPendientes(): vuelve a mostrar todas las filas de la hoja
+ * activa. Necesario porque verPendientes() oculta filas directamente
+ * (hideRows()) en vez de usar un filtro nativo de Sheets, así que
+ * "Datos > Quitar filtro" no aplica acá. */
+function mostrarTodasLasRecetas() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var name = sheet.getName();
+  if (!_esHojaDespachos(name)) {
+    SpreadsheetApp.getUi().alert("Ubíquese en una hoja de despachos (Despachos_<Mes> o Plantilla_Mes_Nuevo).");
+    return;
+  }
+  var maxRows = sheet.getMaxRows();
+  if (maxRows < 4) return;
+  sheet.showRows(4, maxRows - 3);
+  SpreadsheetApp.getActiveSpreadsheet().toast("Todas las filas visibles de nuevo.", "Recetas Pendientes", 3);
 }
 
 /**
