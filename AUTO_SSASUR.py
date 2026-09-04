@@ -2144,14 +2144,6 @@ async def main():
         # el rango GT a revisar. Ver ultima_corrida_ok()/rango_backlog_gt().
         marcar_corrida_ok(today)
 
-        # ── PASO 5b — AUDITORÍA DE PRESCRIPCIÓN ──────────────────────────────
-        audit_py = MAESTRO_DIR / "auditoria_prescripcion.py"
-        if audit_py.exists():
-            print("\n[5b/9] Generando auditoría de prescripción...")
-            aret = subprocess.run([sys.executable, str(audit_py)], cwd=str(MAESTRO_DIR), env=env_utf8)
-            if aret.returncode != 0:
-                print(f"  [aviso] auditoria_prescripcion.py terminó con código {aret.returncode}")
-
         # ── PASO 5c — CRUCE GT + PLANILLAS ───────────────────────────────────
         if gt_dest:
             out_gt = gt_salida(gt_dest)   # carpeta propia por rango de fechas

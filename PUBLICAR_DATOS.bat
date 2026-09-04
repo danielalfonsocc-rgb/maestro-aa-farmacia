@@ -19,10 +19,10 @@ rem mensaje generico por la condicion de carrera. Ver memoria del proyecto.)
 set ARCHIVOS=
 for %%F in (
     Consolidado_AA_MAESTRO.xlsx Resumen_Pedidos_AA.xlsx
-    app_pedidos.py maestro_aa.py aa_colors.py AUTO_SSASUR.py auditoria_prescripcion.py
+    maestro_aa.py aa_colors.py AUTO_SSASUR.py
     requirements.txt .gitignore
     CONFIGURAR_GITHUB.bat PUBLICAR_DATOS.bat INSTALAR_TAREA_PROGRAMADA.bat TAREA_PROGRAMADA_AUTO.xml
-    feedback.json auditoria_prescripcion.json
+    feedback.json
 ) do (
     if exist "%%F" set ARCHIVOS=!ARCHIVOS! "%%F"
 )

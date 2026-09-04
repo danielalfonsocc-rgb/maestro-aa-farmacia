@@ -7,37 +7,32 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 
 | Archivo | Rol |
 |---|---|
-| `maestro_aa.py` | Consolidación principal → `Consolidado_AA_MAESTRO.xlsx` (14 hojas) |
-| `app_pedidos.py` | Dashboard Streamlit — pedidos, faltantes, alertas |
-| `sgli.py` | Motor SGLI: reposición basada en demanda (sin techo de capacidad) |
+| `maestro_aa.py` | Consolidación principal → `Consolidado_AA_MAESTRO.xlsx` (14 hojas). Infraestructura: alimenta Pedido Fusión y el resto de las 6 categorías, aunque ya no tiene dashboard propio |
+| `sgli.py` / `sgli_historico.py` | Motor SGLI (reposición basada en demanda) y su planilla histórica ABC-XYZ. Dependencia interna de `maestro_aa.py` |
 | `utils_aa.py` | **Módulo compartido**: norm_erp, HOMOLOGACION (20 entradas), cargar_recetas_csv |
-| `cruce_gt.py` | Cruce con Guías de Tratamiento |
-| `recetas_cheque.py` | Formulario ISP recetas cheque (estupefacientes/psicotrópicos) — obligación legal |
-| `agente_duplicados.py` | Agente IA (Haiku) — duplicados operacionales del día |
-| `agente_gt_pendientes.py` | Agente IA (Haiku) — clasifica PENDIENTES de GT (URGENTE/RUTINARIO/DIFERIBLE) |
-| `auditoria_medicamento.py` | Auditoría clínica genérica: `--contiene NOMBRE --dosis X` |
-| `auditoria_duplicados_profunda.py` | Auditoría duplicados histórica con vigencia actual y propuestas IA |
-| `auditoria_prescripcion.py` | Pre-calcula `auditoria_prescripcion.json` (consumido por app_pedidos) |
-| `pedido_fusion.py` | Genera Pedido_Fusion_AA_<fecha>.xlsx (Farm_Bod + Bod_Farmacos + Dialisis + Faltantes_AA) |
-| `programacion_aa.py` | Planilla ciclo Bodega AA: Cantidad Programada/Solicitada (reporte SSASUR) vs Stock Bodega AA vs Stock Real (conteo). `--aplicar-conteo` genera el Resumen final en `Programacion_AA\`. Sin IA |
-| `sgli_historico.py` | Planilla SGLI histórica — clasificación ABC-XYZ |
-| `centinela_reporte.py` | Reporte semanal centinela campaña invierno (PDF MINSAL) |
+| `cruce_gt.py`, `gt_maestro.py`, `agente_gt_pendientes.py`, `dedup_recetas.py`, `fusionar_nominas_gt.py`, `procesar_establecimiento_maestro.py`, `descargar_recetas_pdf.py`, `publicar_gt_sheets.py` y demás scripts `gt_*`/`*_gt_*` | Bloque de **Gestión Territorial** (una de las 6 categorías) |
+| `recetas_cheque.py`, `subir_recetas_cheque_drive.py` | **Controlados**: formulario ISP recetas cheque (estupefacientes/psicotrópicos) — obligación legal |
+| `pedido_fusion.py`, `pedido_fusion_simple.py` | **Fusión AA**: Pedido_Fusion_AA_<fecha>.xlsx (Farm_Bod + Bod_Farmacos + Dialisis + Faltantes_AA) |
+| `centinela_reporte.py` | **Centinela Invierno**: reporte semanal campaña invierno (PDF MINSAL) |
+| `centinela_inyectables_sm.py` | **Centinela SM**: stock de antipsicóticos de depósito (salud mental ambulatoria) |
+| `clozapina_consolidar.py`, `clozapina_hce_hemogramas.py`, `motor_reglas_clozapina_v3.py` | **Clozapinas**: consolidado de hemogramas MINSAL |
+| `servicios_farmaceuticos.py` | **Servicios Farmacéuticos**: recuento mensual QF desde "Hoja Diaria de Profesional" (Agenda Médica SSASUR) → `Servicios_Farmaceuticos/<MES AÑO>/Resumen_Servicios_Farmaceuticos_*.xlsx`, SIN RUT. Lo llama AUTO_SSASUR |
 | `AUTO_SSASUR.py` | Descarga automatizada SSASur (recetas + stock + GT) → dedup → Drive |
-| `dedup_recetas.py` | Detecta/limpia recetas duplicadas por sobre-extracción de GT (crea .bak) |
-| `publicar_drive.py` | Sube salidas a Google Drive (requiere `credentials.json` + `SETUP_DRIVE.bat`) |
-| `publicar_escritorio.py` | Copia salidas al Escritorio\Farmacia AA\ (acceso rápido local) |
+| `publicar_drive.py` | Sube salidas a Google Drive (requiere `credentials.json` + `SETUP_DRIVE.bat`) — recortado 04-09-2026 a solo las 6 categorías |
+| `publicar_escritorio.py` | Copia salidas al Escritorio\Farmacia AA\ (acceso rápido local) — recortado 04-09-2026 a solo las 6 categorías |
 | `aa_colors.py` | Paleta de colores compartida (impresión económica) |
-| `_generar_glosario.py` | Genera Glosario_Maestro_AA.pdf |
-| `servicios_farmaceuticos.py` | Recuento mensual de actividades QF desde el reporte "Hoja Diaria de Profesional" (Agenda Médica SSASUR, `ESPECIALIDAD='QUIMICO FARMACEUTICO'`) → `Servicios_Farmaceuticos/<MES AÑO>/Resumen_Servicios_Farmaceuticos_*.xlsx` (agregado QF × actividad, SIN RUT). Lo llama AUTO_SSASUR (PASO 4e, mensual con catch-up) |
 | `skill_gt/scripts/generar.py` | Generador de planillas + letreros GT por establecimiento destino |
+
+**Eliminados 04-09-2026** (dashboard Streamlit + auditorías/programación sueltas, fuera de las 6 categorías que el usuario pidió conservar): `app_pedidos.py`, `app_maestro.py` (+ `paginas/*.py` y `estilo_maestro.py`, exclusivos del hub), `agente_duplicados.py`, `auditoria_medicamento.py`, `auditoria_duplicados_profunda.py`, `auditoria_prescripcion.py`, `auditoria_cantidad_posologia.py`, `auditoria_insulinas.py`, `app_auditoria_retiros.py`, `programacion_aa.py`, `actualizar_programacion_sept.py`, `_generar_glosario.py`, `crear_acta_vencimiento.py`, `subir_prueba_sheets.py`. No reintroducir sin confirmar con el usuario (mismo criterio que otras eliminaciones — ver memoria del proyecto).
 
 ## Reglas de arquitectura
 
 - **Nuevas homologaciones de nombres**: SOLO en `utils_aa.py → HOMOLOGACION_RAW`. Nunca duplicar en scripts individuales.
 - **El modelo SGLI no tiene techo de capacidad**: el Nivel Objetivo T se calcula desde la demanda; Cap_Max es informativo y solo activa [ALERTA_ESTRES].
-- **RUTs**: nunca a la API. `agente_duplicados.py` anonimiza con SHA-256 antes de llamar a Claude.
+- **RUTs**: nunca a la API. `agente_gt_pendientes.py` no incluye RUT ni nombre en el prompt (solo medicamento/fecha/estado).
 - **GT raw downloads**: van a `../04_Farmacia_Gestion_Territorial/` (carpeta hermana del repo). Nombrado: `reporteGestionTerritorial_<desde>_<hasta>.xlsx`. `dedup_recetas.py` busca ahí.
-- **Reporte de Programación AA (PASO 4b de `AUTO_SSASUR.py`)**: se descarga TODOS LOS DÍAS (nunca solo al inicio del ciclo), para poder ver día a día cuánto se ha consumido de lo programado del mes. No pasar `--no-programacion` en la tarea programada. El resto del flujo de `PROGRAMACION_AA.bat` / `programacion_aa.py` (generar planilla solo al inicio de ciclo o con `--forzar`, `--aplicar-conteo`) no cambia.
+- **Reporte de Programación AA (PASO 4b de `AUTO_SSASUR.py`)**: sigue descargándose a diario (es parte del mismo scrape del módulo ABASTECIMIENTO, sin costo aparte) aunque `programacion_aa.py` ya no existe — nadie lo procesa hoy. Se dejó así porque tocar el scraper es riesgoso y de bajo beneficio; si se quiere ahorrar el tiempo de descarga, usar `--no-programacion` explícitamente.
+- **Drive/Escritorio recortados 04-09-2026**: `publicar_drive.py` y `publicar_escritorio.py` solo sincronizan las 6 categorías vigentes (Fusión AA, Gestión Territorial, Controlados, Clozapinas, Centinela Invierno/SM, Servicios Farmacéuticos) + infraestructura. Las carpetas "App Pedidos", "Auditoria Prescripcion" y "Programacion AA" (en Drive y en Escritorio\Farmacia AA\) se eliminaron — no reintroducir sin confirmar.
 - **Drive**: NO subir CSV sábanas ni stock xlsx (RUTs / Ley 19.628). Carpeta raíz `Farmacia AA` en Drive — IDs fijos en `_drive_folders.json`. Para activar: `SETUP_DRIVE.bat`.
 - **Rutas fuera del repo (otra máquina)**: `RCH_DIR` y `PLANTILLA_BLANCO_RCH` (carpeta/plantilla del formulario ISP de Recetas Cheque) viven en `utils_aa.py`, configurables por variable de entorno — `MAESTRO_RCH_DIR` y `MAESTRO_PLANTILLA_RCH` — para no hardcodear la ruta de la QF al correr esto en otro equipo. Default = la ruta actual de esta máquina.
 
@@ -49,7 +44,6 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 - Formatear o convertir una lista pequeña
 - "¿Cuál es el dtype de esta columna pandas?"
 - Dudas de sintaxis Python/Streamlit puntuales
-- `agente_duplicados.py` usa Haiku por defecto (análisis mecánico-analítico)
 
 ### Sonnet — trabajo estándar (mayoría de las tareas)
 - Agregar/modificar columnas en `maestro_aa.py`

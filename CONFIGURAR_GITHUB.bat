@@ -79,8 +79,7 @@ if errorlevel 1 (
     echo   1. Ve a https://share.streamlit.io
     echo   2. Conecta tu cuenta de GitHub
     echo   3. Selecciona el repo: %GH_URL%
-    echo   4. Archivo principal: app_pedidos.py
-    echo   5. Haz clic en Deploy
+    echo   4. Haz clic en Deploy
     echo  ================================================================
 )
 

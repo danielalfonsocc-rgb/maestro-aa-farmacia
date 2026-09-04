@@ -16,9 +16,9 @@ y [[gt-sheets-rut-drive-excepcion]] en memoria del proyecto).
 Todo .xlsx se sube convertido a Google Sheets nativo (no como archivo Excel
 crudo) — se abre editable en el navegador sin descargar. PDF/JSON no se tocan.
 
-Estructura en Drive:
+Estructura en Drive (recortada 04-09-2026 a solo 6 categorías — ver memoria
+del proyecto "drive-carpetas-recorte-6-categorias"):
   Farmacia AA/
-    1 - App Pedidos/          Consolidado_AA_MAESTRO.xlsx + Resumen_Pedidos_AA.xlsx
     2 - Gestion Territorial/
         <ESTAB DESTINO>/
             Revisión de Solicitudes/   feedback + recetas solicitadas
@@ -26,9 +26,7 @@ Estructura en Drive:
                 <DD-MM-YYYY>/          planillas + letrero de cada envío (historial completo;
                                        sin carpetas Historial/Acumulados desde el 21-07-2026)
     3 - Pedido Fusionado/     Pedido_Fusion_AA.xlsx + Pedido_Fusion_Simple_AA.xlsx
-    4 - Auditoria Prescripcion/  Auditoria_Prescripcion_Resumen.xlsx
     6 - Centinela/<Sxx>/      centinela_Sxx.json + centinela_Sxx.pdf por semana
-    7 - Programacion AA/      Resumen_Programacion_AA.xlsx (conteo vs programación)
     8 - Servicios Farmaceuticos/<MES AÑO>/  Resumen_Servicios_Farmaceuticos_<mes>_<año>.xlsx
                               (agregado QF × actividad, SIN RUT — el reporte crudo de
                               Agenda Médica con RUT de paciente nunca se sube, igual que
@@ -41,7 +39,7 @@ Primera vez (requiere Google Cloud credentials.json):
 
 Uso normal (token ya generado):
   py publicar_drive.py           # sube todo
-  py publicar_drive.py --solo-app  --solo-gt  --solo-pedido  --solo-auditoria  --solo-centinela  --solo-programacion  --solo-centinela-sm
+  py publicar_drive.py --solo-gt  --solo-pedido  --solo-centinela  --solo-servicios  --solo-centinela-sm
 """
 import argparse, glob, hashlib, json, os, re, sys
 from datetime import datetime
@@ -59,12 +57,9 @@ CREDS_FILE = os.path.join(WORK_DIR, "credentials.json")
 TOKEN_FILE = os.path.join(WORK_DIR, "token_drive.json")
 
 NOMBRE_RAIZ = "Farmacia AA"
-SUB_APP     = "1 - App Pedidos"
 SUB_GT      = "2 - Gestion Territorial"
 SUB_PEDIDO  = "3 - Pedido Fusionado"
-SUB_AUDIT   = "4 - Auditoria Prescripcion"
 SUB_CENTINELA = "6 - Centinela"
-SUB_PROG    = "7 - Programacion AA"
 SUB_SERVICIOS = "8 - Servicios Farmaceuticos"
 SUB_CENTINELA_SM = "9 - Centinela Inyectables SM"
 
@@ -331,21 +326,6 @@ def _mas_reciente(patron):
 
 
 # ── Sincronizadores ───────────────────────────────────────────────────────────
-def sync_app(service, raiz_id, stats, cache=None):
-    fid = _obtener_o_crear_carpeta(service, SUB_APP, raiz_id, cache)
-    for patron, canon in [
-        ("Consolidado_AA_MAESTRO*.xlsx", "Consolidado_AA_MAESTRO.xlsx"),
-        ("Resumen_Pedidos_AA*.xlsx",      "Resumen_Pedidos_AA.xlsx"),
-        ("SGLI_Historico_*.xlsx",         "SGLI_Historico.xlsx"),
-    ]:
-        src = _mas_reciente(os.path.join(WORK_DIR, patron))
-        if src:
-            r = _subir(service, src, fid, nuevo_nombre=canon, stats=stats)
-            print(f"  {canon}: {r}")
-        else:
-            print(f"  {canon}: no encontrado, omitido")
-
-
 def _fecha_fin_rango(nombre_carpeta):
     """Extrae la fecha de fin del nombre de carpeta 'DD-MM-YYYY_DD-MM-YYYY' como 'DD-MM-YYYY'.
     Si el formato no coincide, cae a mtime de la carpeta."""
@@ -595,16 +575,6 @@ def _subir_arbol(service, local_dir, fid_padre, stats, cache, prefijo_log, estad
     return subidos
 
 
-def sync_auditoria(service, raiz_id, stats, cache=None):
-    fid = _obtener_o_crear_carpeta(service, SUB_AUDIT, raiz_id, cache)
-    src = _mas_reciente(os.path.join(WORK_DIR, "Auditoria_Prescripcion_Resumen*.xlsx"))
-    if src:
-        r = _subir(service, src, fid, nuevo_nombre="Auditoria_Prescripcion_Resumen.xlsx", stats=stats)
-        print(f"  Auditoria_Prescripcion_Resumen.xlsx: {r}")
-    else:
-        print("  Auditoria_Prescripcion_Resumen.xlsx: no encontrado, omitido")
-
-
 def sync_pedido(service, raiz_id, stats, cache=None):
     fid = _obtener_o_crear_carpeta(service, SUB_PEDIDO, raiz_id, cache)
     src = _mas_reciente(os.path.join(WORK_DIR, "Pedido_Fusion_AA*.xlsx"))
@@ -645,29 +615,6 @@ def sync_centinela(service, raiz_id, stats, cache=None):
             if r != "skip":
                 print(f"  {nombre_semana}/{os.path.basename(f)}: {r}")
     print(f"  [Centinela] {len(semanas)} semana(s): {', '.join(os.path.basename(d) for d in semanas)}")
-
-
-def sync_programacion(service, raiz_id, stats, cache=None):
-    fid = _obtener_o_crear_carpeta(service, SUB_PROG, raiz_id, cache)
-    # Si existe una planilla de ciclo NUEVO (más reciente que el último Resumen),
-    # subirla aunque haya Resumen — el nuevo ciclo aún no tiene conteo aplicado.
-    # Si el Resumen es el más reciente (o no hay planilla nueva), sube el Resumen.
-    resumen = _mas_reciente(os.path.join(WORK_DIR, "Programacion_AA", "Resumen_Programacion_AA*.xlsx"))
-    planilla = _mas_reciente(os.path.join(WORK_DIR, "Programacion_AA", "Programacion_AA_*.xlsx"))
-    ciclo_nuevo = (
-        planilla and resumen and
-        os.path.getmtime(planilla) > os.path.getmtime(resumen)
-    )
-    if resumen and not ciclo_nuevo:
-        r = _subir(service, resumen, fid, nuevo_nombre="Resumen_Programacion_AA.xlsx", stats=stats)
-        print(f"  Resumen_Programacion_AA.xlsx: {r}")
-        return
-    if planilla:
-        r = _subir(service, planilla, fid, nuevo_nombre="Programacion_AA.xlsx", stats=stats)
-        etiqueta = "(nuevo ciclo — conteo pendiente)" if ciclo_nuevo else "(planilla del ciclo, sin conteo aplicado todavía)"
-        print(f"  Programacion_AA.xlsx: {r}  {etiqueta}")
-    else:
-        print("  Programacion_AA: no encontrado, omitido (corre programacion_aa.py)")
 
 
 def sync_servicios(service, raiz_id, stats, cache=None):
@@ -765,12 +712,9 @@ def main():
     ap = argparse.ArgumentParser(description="Sube salidas Farmacia AA a Google Drive")
     ap.add_argument("--setup", action="store_true",
                     help="Fuerza el flujo OAuth (primera vez o token expirado)")
-    ap.add_argument("--solo-app",      action="store_true")
     ap.add_argument("--solo-gt",       action="store_true")
     ap.add_argument("--solo-pedido",   action="store_true")
-    ap.add_argument("--solo-auditoria",action="store_true")
     ap.add_argument("--solo-centinela",action="store_true")
-    ap.add_argument("--solo-programacion", action="store_true")
     ap.add_argument("--solo-servicios", action="store_true")
     ap.add_argument("--solo-centinela-sm", action="store_true")
     ap.add_argument("--solo-clozapina", action="store_true",
@@ -824,17 +768,16 @@ def main():
 
     stats = {"ok": 0, "skip": 0, "fail": 0}
 
-    todos = not any([a.solo_app, a.solo_gt, a.solo_pedido, a.solo_auditoria,
-                     a.solo_centinela, a.solo_programacion, a.solo_servicios,
+    todos = not any([a.solo_gt, a.solo_pedido,
+                     a.solo_centinela, a.solo_servicios,
                      a.solo_centinela_sm, a.solo_clozapina, a.solo_gt_confidencial])
     # Clozapina y GT Confidencial viven en su PROPIA carpeta (fuera de
     # "Farmacia AA") — si son lo ÚNICO que se pidió subir, no hace falta
     # resolver/imprimir la raíz "Farmacia AA" en absoluto (evita el mensaje
     # engañoso "Subiendo a «Farmacia AA»" cuando en realidad va a una
     # carpeta totalmente distinta).
-    necesita_raiz_farmacia = todos or any([a.solo_app, a.solo_gt, a.solo_pedido,
-                                            a.solo_auditoria, a.solo_centinela,
-                                            a.solo_programacion, a.solo_servicios,
+    necesita_raiz_farmacia = todos or any([a.solo_gt, a.solo_pedido,
+                                            a.solo_centinela, a.solo_servicios,
                                             a.solo_centinela_sm])
 
     raiz_id = None
@@ -843,7 +786,7 @@ def main():
         if NOMBRE_RAIZ in known:
             raiz_id = known[NOMBRE_RAIZ]
             # Pre-carga sub-carpetas fijas para evitar búsquedas API
-            for sub in (SUB_APP, SUB_GT, SUB_PEDIDO, SUB_AUDIT, SUB_CENTINELA, SUB_PROG, SUB_SERVICIOS, SUB_CENTINELA_SM):
+            for sub in (SUB_GT, SUB_PEDIDO, SUB_CENTINELA, SUB_SERVICIOS, SUB_CENTINELA_SM):
                 if sub in known:
                     cache[(sub, raiz_id)] = known[sub]
         else:
@@ -856,14 +799,6 @@ def main():
     # Cada sync_*() va en su propio try/except: un error de carpeta/API en una
     # sección (p.ej. resolver una de las 12 carpetas de GT) no debe abortar el
     # resto de secciones independientes de la corrida.
-    if todos or a.solo_app:
-        print(f"  ── {SUB_APP} ──")
-        try:
-            sync_app(svc, raiz_id, stats, cache)
-        except Exception as e:
-            print(f"  [error] {SUB_APP}: {e}")
-            stats["fail"] += 1
-
     if todos or a.solo_gt:
         print(f"\n  ── {SUB_GT} ──")
         try:
@@ -880,28 +815,12 @@ def main():
             print(f"  [error] {SUB_PEDIDO}: {e}")
             stats["fail"] += 1
 
-    if todos or a.solo_auditoria:
-        print(f"\n  ── {SUB_AUDIT} ──")
-        try:
-            sync_auditoria(svc, raiz_id, stats, cache)
-        except Exception as e:
-            print(f"  [error] {SUB_AUDIT}: {e}")
-            stats["fail"] += 1
-
     if todos or a.solo_centinela:
         print(f"\n  ── {SUB_CENTINELA} ──")
         try:
             sync_centinela(svc, raiz_id, stats, cache)
         except Exception as e:
             print(f"  [error] {SUB_CENTINELA}: {e}")
-            stats["fail"] += 1
-
-    if todos or a.solo_programacion:
-        print(f"\n  ── {SUB_PROG} ──")
-        try:
-            sync_programacion(svc, raiz_id, stats, cache)
-        except Exception as e:
-            print(f"  [error] {SUB_PROG}: {e}")
             stats["fail"] += 1
 
     if todos or a.solo_servicios:

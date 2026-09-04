@@ -5,25 +5,18 @@ publicar_escritorio.py — Centraliza en el ESCRITORIO las salidas de todos los
 procesos de la Farmacia AT Abierta, para revisar los resultados de un vistazo
 sin entrar a la carpeta del repositorio.
 
-  Escritorio\Farmacia AA\
-    ├── Abrir App de Pedidos.lnk          (acceso directo → ABRIR_APP.bat)
+  Escritorio\Farmacia AA\  (recortada 04-09-2026 a solo 6 categorías — ver
+  memoria del proyecto "drive-carpetas-recorte-6-categorias")
     ├── AUTO_SSASUR.lnk                   (acceso directo → AUTO_SSASUR.bat)
     ├── Gestion Territorial.lnk           (acceso directo → GT.bat)
     ├── Recetas Cheque ISP.lnk            (acceso directo → RECETAS_CHEQUE.bat)
     ├── LEEME.txt
     ├── _ultima_sync.txt                  (qué se copió y cuándo)
-    ├── 1 - App Pedidos\        Consolidado_AA_MAESTRO.xlsx + Resumen_Pedidos_AA.xlsx
     ├── 2 - Gestion Territorial\  ÚLTIMO rango al frente + Historial\<rango>\
     ├── 3 - Recetas Cheque\     SOLO un acceso directo a la carpeta local (datos de
     │                           pacientes NO se copian a la nube de OneDrive)
-    ├── 4 - Auditoria Prescripcion\  Auditoria_Prescripcion_Resumen.xlsx (legible)
     ├── 5 - Pedido Fusionado\   Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
     ├── 6 - Centinela\          Centinela_Reportes\<Sxx>\ (json + pdf) por semana
-    ├── 7 - Auditoria Duplicados\  Accesos a Agente Duplicados IA + Auditoria Profunda
-    │                               (corren a demanda; el Excel con nombres de pacientes
-    │                               NO se copia aquí — queda solo en la carpeta local)
-    ├── 8 - Programacion AA\    Resumen_Programacion_AA.xlsx (conteo vs programación,
-    │                             generado por programacion_aa.py --aplicar-conteo)
     ├── 9 - Clozapina\          Accesos a carpetas locales de reportes/hemogramas
     │                             (RUT pacientes, NO se copian a la nube)
     ├── 10 - Servicios Farmaceuticos\  Servicios_Farmaceuticos\<MES AÑO>\ (agregado
@@ -37,14 +30,10 @@ desde el repo. Aquí solo dejamos copias legibles, ordenadas por proceso.
 
 Uso:
     py publicar_escritorio.py            # sincroniza TODO
-    py publicar_escritorio.py --app          # solo Consolidado/Resumen (maestro)
     py publicar_escritorio.py --gt           # solo Gestion Territorial (out_gt)
     py publicar_escritorio.py --rch          # solo el acceso directo de recetas cheque
-    py publicar_escritorio.py --auditoria
     py publicar_escritorio.py --pedido       # solo Pedido_Fusion_AA.xlsx
     py publicar_escritorio.py --centinela    # solo Centinela_Reportes\
-    py publicar_escritorio.py --duplicados   # solo accesos de Agente/Auditoria Duplicados
-    py publicar_escritorio.py --programacion # solo Resumen_Programacion_AA.xlsx
     py publicar_escritorio.py --servicios    # solo Servicios_Farmaceuticos\ (recuento QF)
     py publicar_escritorio.py --centinela-sm # solo Centinela_Inyectables_SM\ (antipsicóticos depósito)
     py publicar_escritorio.py --enlaces      # solo (re)crea carpetas, LEEME y accesos
@@ -53,7 +42,6 @@ import os
 import re
 import sys
 import glob
-import json
 import shutil
 import subprocess
 from datetime import datetime
@@ -87,14 +75,10 @@ setup_stdout()  # evita UnicodeEncodeError en consolas cp1252 (mensajes usan →
 PREFIJO_FORM = "Formulario-Notificacion-Recetas-Cheque"
 
 NOMBRE_CARPETA = "Farmacia AA"
-SUB_APP   = "1 - App Pedidos"
 SUB_GT    = "2 - Gestion Territorial"
 SUB_RCH    = "3 - Recetas Cheque"
-SUB_AUDIT  = "4 - Auditoria Prescripcion"
 SUB_PEDIDO = "5 - Pedido Fusionado"
 SUB_CENTINELA = "6 - Centinela"
-SUB_DUP    = "7 - Auditoria Duplicados"
-SUB_PROG   = "8 - Programacion AA"
 SUB_CLOZAPINA = "9 - Clozapina"
 SUB_SERVICIOS = "10 - Servicios Farmaceuticos"
 SUB_CENTINELA_SM = "11 - Centinela Inyectables SM"
@@ -103,12 +87,10 @@ SUB_CENTINELA_SM = "11 - Centinela Inyectables SM"
 _SHELL32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "shell32.dll")
 def _icon(idx):
     return f"{_SHELL32},{idx}"
-_ICON_APP     = _icon(13)   # globo de red  → app web
 _ICON_REFRESH = _icon(238)  # flechas sync  → actualizar/publicar
 _ICON_DOC     = _icon(1)    # documento     → planillas GT
 _ICON_RUN     = _icon(2)    # aplicación    → proceso recetas cheque
 _ICON_FOLDER  = _icon(4)    # carpeta       → abrir carpeta local
-_ICON_LUPA    = _icon(23)   # lupa/buscar   → agentes de duplicados
 
 
 def detectar_escritorio():
@@ -222,17 +204,6 @@ def _limpiar_archivos_sueltos(dirpath):
 
 
 # ── Sincronizadores por proceso ──────────────────────────────────────────────
-def sync_app():
-    dst = os.path.join(BASE, SUB_APP)
-    # El Consolidado puede tener respaldo fechado si el base estaba abierto;
-    # publicamos siempre la versión MÁS reciente con el nombre canónico.
-    _copiar(_mas_reciente(os.path.join(WORK_DIR, "Consolidado_AA_MAESTRO*.xlsx")),
-            dst, nuevo_nombre="Consolidado_AA_MAESTRO.xlsx")
-    _copiar(_mas_reciente(os.path.join(WORK_DIR, "Resumen_Pedidos_AA*.xlsx")),
-            dst, nuevo_nombre="Resumen_Pedidos_AA.xlsx")
-    REP.say(f"[App Pedidos] Consolidado y Resumen → «{SUB_APP}»")
-
-
 def _copiar_rango_por_estab(rango_dir, dst_base):
     """Copia archivos de un rango GT en dst_base/<ESTABLECIMIENTO>/.
     Archivos sin establecimiento conocido van directamente a dst_base."""
@@ -398,89 +369,6 @@ def sync_pedido():
     _copiar(src, dst, nuevo_nombre="Pedido_Fusion_AA.xlsx")
     REP.say(f"[Pedido Fusionado] {os.path.basename(src)} → «{SUB_PEDIDO}»")
 
-_LEEME_DUPLICADOS = """\
-AUDITORIA DE DUPLICADOS — Farmacia AT Abierta
-==============================================
-
-Estos DOS accesos NO se ejecutan solos con AUTO_SSASUR (llaman a la API de
-Claude y cuestan tokens) — corren a demanda, cuando tú los abres.
-
-  Agente Duplicados IA.lnk
-  -------------------------
-  Para que sirve: revisa las recetas de HOY (ventana de 90 dias hacia atras)
-  y detecta pacientes con el mismo medicamento prescrito por duplicado. Una
-  IA (Claude) razona caso a caso y prioriza cuales investigar primero.
-  Que ayuda al ejecutarlo: pillar a tiempo un doble retiro reciente (mismo
-  paciente retirando el mismo medicamento dos veces) ANTES de que se
-  acumule, especialmente util con medicamentos controlados o de alto costo.
-  Genera un Excel con el razonamiento de cada caso. Los RUT de pacientes
-  NUNCA se envian a la IA (se anonimizan con SHA-256 antes de la llamada).
-
-  Auditoria Duplicados Profunda.lnk
-  ----------------------------------
-  Para que sirve: audita TODO el historico de recetas (no solo hoy), marca
-  si el doble retiro sigue ACTIVO en este momento, desde que fecha empezo
-  y cuantos dias lleva acumulado. La IA sugiere una accion por caso:
-  URGENTE / REVISAR / INFORMAR / MONITOREAR.
-  Que ayuda al ejecutarlo: da la foto completa y priorizada de TODOS los
-  casos de duplicidad (activos e historicos), util para una revision
-  periodica de fondo o cuando se sospecha de un paciente en particular.
-  Al abrirla pide elegir 1-4 (completa con IA / rapida sin IA / rapida con
-  IA / salir) — la opcion 1 (completa) es la recomendada.
-
-  Ambas abren una ventana de consola: se demoran unos minutos y quedan
-  esperando que presiones una tecla al terminar (revisa el resultado ahi
-  antes de cerrar).
-
-  IMPORTANTE — privacidad: el Excel generado (trae nombre completo del
-  paciente junto al medicamento) NO se copia a esta carpeta ni a ningun
-  otro lugar del Escritorio, porque el Escritorio esta sincronizado a
-  OneDrive (nube). Queda SOLO en la carpeta local del programa:
-  {work}
-  Abrelo desde ahi cuando lo necesites.
-"""
-
-
-def sync_programacion():
-    dst = os.path.join(BASE, SUB_PROG)
-    # El Resumen (post-conteo) es la salida final; mientras no exista, se publica
-    # igual la planilla del ciclo (pre-conteo) para poder imprimirla/consultarla
-    # desde el Escritorio aunque el conteo físico todavía no se haya hecho.
-    src = _mas_reciente(os.path.join(WORK_DIR, "Programacion_AA", "Resumen_Programacion_AA*.xlsx"))
-    if src:
-        _copiar(src, dst, nuevo_nombre="Resumen_Programacion_AA.xlsx")
-        REP.say(f"[Programacion AA] {os.path.basename(src)} → «{SUB_PROG}»")
-        return
-    src = _mas_reciente(os.path.join(WORK_DIR, "Programacion_AA", "Programacion_AA_*.xlsx"))
-    if not src:
-        REP.say("[Programacion AA] (aún no generado — corre programacion_aa.py)")
-        return
-    _copiar(src, dst, nuevo_nombre="Programacion_AA.xlsx")
-    REP.say(f"[Programacion AA] {os.path.basename(src)} → «{SUB_PROG}» (planilla del ciclo, sin conteo aplicado todavía)")
-
-
-def sync_duplicados():
-    dst = os.path.join(BASE, SUB_DUP)
-    os.makedirs(dst, exist_ok=True)
-    n = 0
-    if _crear_lnk(os.path.join(dst, "Agente Duplicados IA.lnk"),
-                  os.path.join(WORK_DIR, "AGENTE_DUPLICADOS.bat"),
-                  "Revisa las recetas de hoy y detecta duplicados con IA (Claude)",
-                  icono=_ICON_LUPA):
-        n += 1
-    if _crear_lnk(os.path.join(dst, "Auditoria Duplicados Profunda.lnk"),
-                  os.path.join(WORK_DIR, "AUDITAR_DUPLICADOS_PROFUNDO.bat"),
-                  "Audita todo el historico de duplicados, vigencia y accion sugerida",
-                  icono=_ICON_LUPA):
-        n += 1
-    try:
-        with open(os.path.join(dst, "LEEME.txt"), "w", encoding="utf-8") as fh:
-            fh.write(_LEEME_DUPLICADOS.format(work=WORK_DIR))
-    except OSError:
-        pass
-    REP.say(f"[Auditoria Duplicados] {n} acceso(s) directo(s) → «{SUB_DUP}»")
-
-
 def sync_centinela():
     dst = os.path.join(BASE, SUB_CENTINELA)
     src = os.path.join(WORK_DIR, "Centinela_Reportes")
@@ -522,94 +410,6 @@ def sync_centinela_sm():
             f"{', '.join(fechas) if fechas else '(ninguna)'} → «{SUB_CENTINELA_SM}»")
 
 
-def sync_auditoria():
-    dst = os.path.join(BASE, SUB_AUDIT)
-    src = os.path.join(WORK_DIR, "auditoria_prescripcion.json")
-    destino_xlsx = os.path.join(dst, "Auditoria_Prescripcion_Resumen.xlsx")
-    if not os.path.isfile(src):
-        REP.say("[Auditoría] (aún no se ha generado el JSON)")
-        return
-    # Preferimos el Excel legible: quita el JSON crudo que dejaba una versión
-    # anterior (si el Excel falla, el fallback de abajo lo vuelve a copiar).
-    viejo_json = os.path.join(dst, "auditoria_prescripcion.json")
-    if os.path.isfile(viejo_json):
-        try:
-            os.remove(viejo_json)
-        except OSError:
-            pass
-    # Incremental: si el Excel ya está al día respecto al JSON, no regenerar.
-    if os.path.isfile(destino_xlsx) and os.path.getmtime(destino_xlsx) >= os.path.getmtime(src):
-        REP.skip += 1
-        REP.say("[Auditoría] Excel ya está al día (sin cambios)")
-        return
-    try:
-        with open(src, encoding="utf-8") as f:
-            payload = json.load(f)
-        if _excel_auditoria(payload, destino_xlsx):
-            REP.say(f"[Auditoría] Excel legible generado "
-                    f"({payload.get('n_medicamentos', '?')} medicamentos)")
-            return
-    except Exception as e:
-        REP.say(f"  [aviso] no se pudo generar el Excel de auditoría: {e}")
-    _copiar(src, dst)  # respaldo: el JSON crudo
-    REP.say("[Auditoría] copiado el JSON (no se pudo generar el Excel)")
-
-
-def _excel_auditoria(payload, ruta):
-    """Convierte el JSON de auditoría en un Excel de una hoja, legible y filtrable."""
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, Alignment, PatternFill
-
-    data = payload.get("data", {})
-    if not data:
-        return False
-    filas = []
-    for med, d in data.items():
-        pres = d.get("prescriptores") or []
-        diag = d.get("diagnosticos") or []
-        p1 = pres[0] if pres else {}
-        d1 = diag[0] if diag else {}
-        filas.append([
-            med,
-            d.get("cmp_dispensado", 0),
-            d.get("total_prescrito", 0),
-            d.get("total_dispensado", 0),
-            d.get("pct_dispensado", 0),
-            d.get("pacientes", 0),
-            d.get("dup_2mas_medicos", 0),
-            d.get("dup_2mas_recetas_mes", 0),
-            d.get("sin_diagnostico", 0),
-            (f"{p1.get('medico','')} · {p1.get('esp','')} · {p1.get('pct','')}%" if p1 else ""),
-            (d1.get("dx", "") if d1 else ""),
-        ])
-    # Más dispensado primero.
-    filas.sort(key=lambda r: r[3], reverse=True)
-
-    cols = ["Medicamento", "CMP dispensado (mes)", "Total prescrito", "Total dispensado",
-            "% dispensado", "Pacientes", "Pac. >=2 medicos", "Pac. >=2 recetas/mes",
-            "Sin diagnostico", "Top prescriptor", "Top diagnostico"]
-    anchos = [40, 16, 14, 15, 12, 11, 15, 18, 14, 38, 38]
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Resumen"
-    ws.append(cols)
-    for fila in filas:
-        ws.append(fila)
-
-    hdr = PatternFill("solid", fgColor="0F766E")
-    for c, ancho in enumerate(anchos, 1):
-        celda = ws.cell(1, c)
-        celda.font = Font(bold=True, color="FFFFFF")
-        celda.fill = hdr
-        celda.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        ws.column_dimensions[ws.cell(1, c).column_letter].width = ancho
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
-    wb.save(ruta)
-    return True
-
-
 # ── Estructura, LEEME y accesos directos ─────────────────────────────────────
 LEEME = """\
 ========================================================================
@@ -620,7 +420,6 @@ Esta carpeta reúne, en el Escritorio, las SALIDAS de todos los procesos
 para revisarlas sin abrir la carpeta del programa. Se actualizan solas
 cada vez que corres cada proceso.
 
-  Abrir App de Pedidos        ← abre el tablero en el navegador
   AUTO_SSASUR                 ← descarga de SSASUR + recalcula + publica (todo)
   Gestion Territorial         ← solo descarga y genera planillas GT
   Recetas Cheque ISP          ← solo actualiza el registro ISP del mes
@@ -630,17 +429,10 @@ cada vez que corres cada proceso.
                                  (no descarga de SSASUR ni recalcula — usa esto
                                  para republicar rápido tras un cambio manual)
 
-  1 - App Pedidos          Consolidado_AA_MAESTRO.xlsx y Resumen_Pedidos_AA.xlsx
   2 - Gestion Territorial  Lo del ÚLTIMO rango queda al frente; lo anterior, en Historial\\
   3 - Recetas Cheque       Acceso directo a la carpeta LOCAL (no sube datos de pacientes a la nube)
-  4 - Auditoria Prescripcion  Auditoria_Prescripcion_Resumen.xlsx (ordena/filtra en Excel)
   5 - Pedido Fusionado     Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
   6 - Centinela             Reportes semanales (json + pdf) por semana epidemiológica
-  7 - Auditoria Duplicados Accesos a Agente Duplicados IA y Auditoria Profunda (a demanda,
-                            con su propio LEEME.txt explicando cada uno). El Excel con
-                            nombres de pacientes NO se copia aquí (Escritorio = OneDrive).
-  8 - Programacion AA      Resumen_Programacion_AA.xlsx (conteo físico vs programación
-                            SSASUR del ciclo Bodega AA, generado por programacion_aa.py)
   9 - Clozapina             Accesos a carpetas locales de reportes/hemogramas (RUT pacientes, NO se copian a la nube)
   10 - Servicios Farmaceuticos  Recuento mensual QF x actividad (Agenda Médica), un Excel por mes, SIN RUT
   11 - Centinela Inyectables SM  Stock de antipsicóticos de depósito (salud mental ambulatoria),
@@ -691,7 +483,6 @@ def _crear_lnk(ruta_lnk, target, descripcion, icono=None):
 
 
 _ACCESOS = [
-    ("Abrir App de Pedidos.lnk",        "ABRIR_APP.bat",      "Abre el tablero de Pedidos AA en el navegador", _ICON_APP),
     ("AUTO_SSASUR.lnk",                 "AUTO_SSASUR.bat",    "Descarga de SSASUR, recalcula todo y publica",  _ICON_REFRESH),
     ("Gestion Territorial.lnk",         "GT.bat",             "Descarga y genera las planillas de GT",         _ICON_DOC),
     ("Recetas Cheque ISP.lnk",          "RECETAS_CHEQUE.bat", "Actualiza el registro ISP del mes",             _ICON_RUN),
@@ -702,7 +493,7 @@ _ACCESOS = [
 
 def crear_estructura(forzar_lnk=False):
     """Crea carpetas, LEEME y (si faltan o forzar_lnk) los accesos directos."""
-    for sub in (SUB_APP, SUB_GT, SUB_RCH, SUB_AUDIT, SUB_PEDIDO, SUB_CENTINELA, SUB_DUP, SUB_PROG, SUB_CLOZAPINA, SUB_SERVICIOS, SUB_CENTINELA_SM):
+    for sub in (SUB_GT, SUB_RCH, SUB_PEDIDO, SUB_CENTINELA, SUB_CLOZAPINA, SUB_SERVICIOS, SUB_CENTINELA_SM):
         os.makedirs(os.path.join(BASE, sub), exist_ok=True)
     try:
         with open(os.path.join(BASE, "LEEME.txt"), "w", encoding="utf-8") as fh:
@@ -750,27 +541,19 @@ def main():
         print("\nListo: carpetas y accesos directos actualizados.")
         return
 
-    selectivo = args & {"--app", "--gt", "--rch", "--auditoria", "--pedido",
-                         "--centinela", "--duplicados", "--programacion", "--clozapina",
+    selectivo = args & {"--gt", "--rch", "--pedido",
+                         "--centinela", "--clozapina",
                          "--servicios", "--centinela-sm"}
     todo = not selectivo
 
-    if todo or "--app" in args:
-        sync_app()
     if todo or "--gt" in args:
         sync_gt()
     if todo or "--rch" in args:
         sync_rch()
-    if todo or "--auditoria" in args:
-        sync_auditoria()
     if todo or "--pedido" in args:
         sync_pedido()
     if todo or "--centinela" in args:
         sync_centinela()
-    if todo or "--duplicados" in args:
-        sync_duplicados()
-    if todo or "--programacion" in args:
-        sync_programacion()
     if todo or "--clozapina" in args:
         sync_clozapina()
     if todo or "--servicios" in args:
