@@ -183,7 +183,7 @@ def leer_reporte_gt(path):
 
 # ── Cruce con el histórico ─────────────────────────────────────────────────────
 def cruzar_historico(recetas_set, archivos):
-    """Devuelve {n_receta: {"tipo_receta","lineas":[{id,prod,recetada,pendiente}]}}.
+    """Devuelve {n_receta: {"tipo_receta","lineas":[{id,prod,recetada,pendiente,estado_presc}]}}.
     Deduplica líneas por ID Receta Detalle."""
     det = defaultdict(lambda: {"tipo_receta": "", "lineas": OrderedDict()})
     vistos = set()
@@ -204,6 +204,7 @@ def cruzar_historico(recetas_set, archivos):
             ix_id = K.get("idrecetadetalle")
             ix_pre = K.get("prescripcion")
             ix_cr = K.get("cantidadrecetada"); ix_cp = K.get("cantidadpendiente")
+            ix_ep = K.get("estadoprescripcion")
             if ix_rec is None or ix_pre is None:
                 print(f"  [aviso] {os.path.basename(fp)} sin columnas esperadas — omito")
                 continue
@@ -225,6 +226,7 @@ def cruzar_historico(recetas_set, archivos):
                     "prod": (row[ix_pre] or "").strip(),
                     "recetada": _num(row[ix_cr]) if ix_cr is not None else 0,
                     "pendiente": _num(row[ix_cp]) if ix_cp is not None else 0,
+                    "estado_presc": (row[ix_ep] or "").strip().upper() if ix_ep is not None else "",
                 }
     return det
 
@@ -246,9 +248,32 @@ def clasificar(reg, d):
         # matchea) todos los fármacos de una receta CONTROLADA
         if tipo_controlada and es_controlado_oficial(prod):
             control.append(f"{prod.title()} x{ln['recetada']}")
-        # pendiente: cantidad pendiente > 0
-        if ln["pendiente"] > 0:
-            pend.append(f"{prod.title()} x{ln['pendiente']}")
+        # pendiente: CUALQUIERA de las 2 señales (no solo Cantidad Pendiente).
+        # Bug real 02-09-2026: una receta recién digitada trae Estado
+        # Prescripción='SOLICITADO' (correcto, ya está pendiente) con
+        # Cantidad Pendiente todavía en 0 porque ese campo lo actualiza un
+        # proceso de SSASUR con retraso frente al estado real — la Planilla
+        # de ese día salía con "Pendiente" en blanco pese a que el medicamento
+        # genuinamente no se había entregado (caso real: Aripiprazol 15mg,
+        # receta 48212191, corregido a mano — ver [[gt-manual-vs-pipeline-auto]]).
+        # El resto del proyecto (agente_duplicados.py, auditoria_prescripcion.py,
+        # centinela_reporte.py, etc.) ya usa Estado Prescripción=='ENTREGADO'
+        # como criterio de "ya se despachó" — cruce_gt.py era el único que no
+        # lo miraba. PERO Estado Prescripción tampoco es 100% confiable solo:
+        # auditoría 07-09-2026 sobre 560 líneas GT encontró 5 con Estado
+        # Prescripción='ENTREGADO' y Cantidad Entregada=0/Cantidad
+        # Pendiente=recetada completa (inconsistencia real de SSASUR, ej.
+        # Metformina 1000mg LM x3 recetas) — ahí Cantidad Pendiente es la
+        # señal correcta y Estado Prescripción miente. Por eso se usa OR:
+        # cualquiera de las 2 en "no entregado" marca la línea como
+        # pendiente — prioriza no perder un medicamento realmente faltante
+        # sobre el riesgo menor de marcar de más. Cantidad mostrada: la
+        # pendiente si ya está > 0, si no la recetada completa.
+        estado_presc = ln.get("estado_presc", "")
+        no_entregado_por_estado = bool(estado_presc) and estado_presc != "ENTREGADO"
+        if no_entregado_por_estado or ln["pendiente"] > 0:
+            cant = ln["pendiente"] if ln["pendiente"] > 0 else ln["recetada"]
+            pend.append(f"{prod.title()} x{cant}")
     if tipo_controlada and not control:
         # receta marcada CONTROLADA pero sin match de palabra clave → listar fármacos no insulina
         for ln in d["lineas"].values():

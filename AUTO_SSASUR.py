@@ -652,7 +652,13 @@ def verificar_backlog_gt(hoy: date) -> None:
 
     filas_por_receta = {}
     conteo_por_receta = {}   # receta -> nº de líneas de prescripción (usado como n_presc del backfill)
-    lineas_por_receta = {}   # receta -> [(Prescripción, Cantidad Recetada), ...] (para detectar refrigerados)
+    # receta -> [(Prescripción, Cantidad Recetada, Cantidad Pendiente, Estado
+    # Prescripción), ...] — para detectar refrigerados Y pendientes, mismos
+    # campos y misma lógica OR que cruce_gt.clasificar() (ver [[gt-manual-vs-pipeline-auto]]):
+    # ni "Estado=ENTREGADA" a nivel de receta garantiza que CADA línea se
+    # haya despachado de verdad (auditoría 07-09-2026: 5 líneas reales con
+    # Estado Prescripción='ENTREGADO' pero Cantidad Entregada=0).
+    lineas_por_receta = {}
     for path in sorted(_glob.glob(str(MAESTRO_DIR / "informe_completo_recetas*.csv"))):
         try:
             with open(path, encoding="latin-1", newline="") as fh:
@@ -675,6 +681,8 @@ def verificar_backlog_gt(hoy: date) -> None:
                 i_receta = idx.get("Número Receta")
                 i_presc = idx.get("Prescripción")
                 i_cant = idx.get("Cantidad Recetada")
+                i_cant_pend = idx.get("Cantidad Pendiente")
+                i_estado_presc = idx.get("Estado Prescripción")
                 i_estado = idx.get("Estado")
                 if i_gt is None or i_fecha is None or i_receta is None:
                     continue
@@ -697,7 +705,10 @@ def verificar_backlog_gt(hoy: date) -> None:
                     prod = r[i_presc].strip() if (i_presc is not None and i_presc < len(r)) else ""
                     if prod:
                         cant = r[i_cant].strip() if (i_cant is not None and i_cant < len(r)) else ""
-                        lineas_por_receta.setdefault(n, []).append((prod, cant))
+                        cant_pend = r[i_cant_pend].strip() if (i_cant_pend is not None and i_cant_pend < len(r)) else ""
+                        estado_presc = (r[i_estado_presc].strip().upper()
+                                        if (i_estado_presc is not None and i_estado_presc < len(r)) else "")
+                        lineas_por_receta.setdefault(n, []).append((prod, cant, cant_pend, estado_presc))
         except Exception:
             continue
     if not filas_por_receta:
@@ -767,10 +778,28 @@ def _generar_backlog_gt(faltantes, conteo_por_receta, lineas_por_receta=None) ->
         if _CG is None:
             return ""
         vistos = []
-        for prod, cant in lineas_por_receta.get(n, []):
+        for prod, cant, _cant_pend, _estado_presc in lineas_por_receta.get(n, []):
             lab = _CG.es_refrigerado(prod)
             if lab:
                 vistos.append(f"{lab} x{cant or '1'}")
+        return "; ".join(dict.fromkeys(vistos))
+
+    def _pendiente_texto(n):
+        """Misma lógica OR que cruce_gt.clasificar(): Estado Prescripción
+        distinto de ENTREGADO, O Cantidad Pendiente > 0 — ninguna de las 2
+        señales sola es 100% confiable (ver comentario en cruce_gt.py)."""
+        vistos = []
+        for prod, cant, cant_pend, estado_presc in lineas_por_receta.get(n, []):
+            try:
+                cp = float((cant_pend or "0").replace(",", "."))
+            except ValueError:
+                cp = 0
+            no_entregado_por_estado = bool(estado_presc) and estado_presc != "ENTREGADO"
+            if no_entregado_por_estado or cp > 0:
+                cant_mostrar = cp if cp > 0 else (cant or "1")
+                if isinstance(cant_mostrar, float) and cant_mostrar == int(cant_mostrar):
+                    cant_mostrar = int(cant_mostrar)
+                vistos.append(f"{prod.title()} x{cant_mostrar}")
         return "; ".join(dict.fromkeys(vistos))
 
     filas, sin_destino = [], []
@@ -790,7 +819,7 @@ def _generar_backlog_gt(faltantes, conteo_por_receta, lineas_por_receta=None) ->
             "especialidad": (row.get("Especialidad") or "").strip(),
             "n_presc": str(conteo_por_receta.get(n, 1)),
             "telefono": (row.get("Fono 1") or "").strip(),
-            "pendiente": "",
+            "pendiente": _pendiente_texto(n),
             "refrigerado": _refrigerado_texto(n),
         })
     if sin_destino:
@@ -2145,26 +2174,6 @@ async def main():
             else:
                 print(f"  [aviso] cruce_gt.py no encontrado — omitiendo cruce.")
 
-        # ── PASO 5c2 — FUSIONAR NÓMINAS GT (auto + manual/backlog) ───────────
-        # verificar_backlog_gt() (PASO 3) puede haber generado hoy una o más
-        # "Nomina_Manual_*.xlsx" para el mismo destino que cruce_gt.py acaba
-        # de procesar arriba. Sin este paso, ambos archivos quedaban sueltos
-        # y se publicaban tal cual — la QF seguía recibiendo nóminas
-        # rotuladas "manual" (esa distinción ya no aplica en Gestión
-        # Territorial, ver fusionar_nominas_gt.py) porque nadie corría
-        # fusionar_nominas_gt.py a mano. Corre SIEMPRE (idempotente si no
-        # hay nada que fusionar) para que lo que se publique en el PASO 7-9
-        # sea siempre el nombre oficial "<destino>_Planilla.xlsx".
-        fusion_py = MAESTRO_DIR / "fusionar_nominas_gt.py"
-        if fusion_py.exists():
-            print(f"\n[5c2/9] Fusionando nóminas GT (automática + manual/backlog)...")
-            fret = subprocess.run(
-                [sys.executable, str(fusion_py), "--todos"],
-                cwd=str(MAESTRO_DIR), env=env_utf8,
-            )
-            if fret.returncode != 0:
-                print(f"  [aviso] fusionar_nominas_gt.py terminó con código {fret.returncode}")
-
         # ── PASO 5d — REGISTRO ISP RECETAS CHEQUE ────────────────────────────
         # Consume la MISMA sábana ya descargada: filtra recetas cheque AT Abierta
         # y agrega los folios nuevos al formulario ISP del mes vigente. El
@@ -2248,6 +2257,40 @@ async def main():
                 print(f"  [aviso] SINCRONIZAR_TODO.bat terminó con código {sret.returncode}")
         else:
             print("\n[7-9/9] SINCRONIZAR_TODO.bat no encontrado — omitiendo publicación.")
+
+        # ── PASO 5c2 — FUSIONAR NÓMINAS GT (auto + manual/backlog) ───────────
+        # verificar_backlog_gt() (PASO 3) puede haber generado hoy una o más
+        # "Nomina_Manual_*.xlsx" para el mismo destino que cruce_gt.py (PASO
+        # 5c) también procesó. Sin este paso, ambos archivos quedaban
+        # sueltos y se publicaban tal cual — la QF seguía recibiendo nóminas
+        # rotuladas "manual" (esa distinción ya no aplica en Gestión
+        # Territorial, ver fusionar_nominas_gt.py) porque nadie corría
+        # fusionar_nominas_gt.py a mano.
+        #
+        # OJO — va DESPUÉS del PASO 7-9, no justo después del 5c: la Planilla
+        # "automática" que genera cruce_gt.py vive primero en out_gt/<rango>/
+        # y SOLO llega a 04_Farmacia_Gestion_Territorial/<ESTAB>/... cuando
+        # SINCRONIZAR_TODO.bat (PASO 7-9) la deposita ahí. Bug real
+        # 04-09-2026: con la fusión ANTES del depósito, fusionar_nominas_gt.py
+        # solo encontraba la nómina "manual" (la automática todavía no
+        # existía en el árbol local), la promovía sola al nombre oficial, y
+        # el depósito posterior chocaba con eso — quedaban 2 archivos
+        # separados (uno "(rango ...)") en vez de una sola nómina fusionada,
+        # el mismo problema que se suponía debía resolver este paso.
+        #
+        # Corre SIEMPRE (idempotente si no hay nada que fusionar) para que lo
+        # que termine en el árbol local sea siempre el nombre oficial
+        # "<destino>_Planilla.xlsx", sin importar si Drive/GitHub estaban
+        # disponibles o no en este paso.
+        fusion_py = MAESTRO_DIR / "fusionar_nominas_gt.py"
+        if fusion_py.exists():
+            print(f"\n[5c2/9] Fusionando nóminas GT (automática + manual/backlog)...")
+            fret = subprocess.run(
+                [sys.executable, str(fusion_py), "--todos"],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
+            if fret.returncode != 0:
+                print(f"  [aviso] fusionar_nominas_gt.py terminó con código {fret.returncode}")
     else:
         print("  [ERROR] maestro_aa.py falló — revisa los mensajes arriba")
 
