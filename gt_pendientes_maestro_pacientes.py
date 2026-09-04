@@ -3,9 +3,22 @@
 gt_pendientes_maestro_pacientes.py — Cruza la hoja Despachos_<Mes> del Sheet
 paciente-céntrico (migrar_gestion_territorial.py / Codigo.gs) contra el
 histórico informe_completo_recetas*.csv, y auto-completa las recetas que
-tienen algún fármaco con Cantidad Pendiente > 0 (mismo criterio que
-cruce_gt.py: la columna real del CSV, no el campo "Estado", que es menos
-confiable — ver memoria gt-nomina-logica-correcta).
+tienen algún fármaco pendiente. Mismo criterio que cruce_gt.py (fix
+07-09-2026, ver memoria gt-pendiente-estado-prescripcion): pendiente si
+Estado Prescripción != 'ENTREGADO' O Cantidad Pendiente > 0 (OR, no una
+sola señal).
+
+OJO — "Estado Prescripción" (por línea de producto) NO es el mismo campo
+que el "Estado" general de la receta que gt-nomina-logica-correcta.md
+advierte no usar: ese Estado de receta viene de comparar un reporte VIVO
+de modalidad de despacho contra un reporte ya descargado y desactualizado
+(el incidente real del 10-08-2026, 17/22 falsos positivos, fue así). Acá
+se cruza contra el CSV histórico del MISMO día, no un reporte viejo, y
+Estado Prescripción es un campo distinto y más granular. Auditoría
+07-09-2026 sobre 4 archivos históricos completos confirmó que Estado
+Prescripción sola genera MENOS contradicciones contra recetas ya
+ENTREGADA que Cantidad Pendiente sola (ej. archivo de junio: 56 líneas
+vs 69) — por eso se combinan ambas con OR en vez de usar solo una.
 
 Rellena SOLO celdas vacías o previamente auto-escritas por este mismo script:
   - Columna "Fármaco Pendiente / Stock": "[SSASUR-AUTO] Producto xCantidad; ..."
@@ -202,10 +215,21 @@ def main():
             recetas_sin_historico += 1
             continue
 
+        # Misma lógica OR que cruce_gt.clasificar() (fix 07-09-2026): ninguna
+        # señal sola es 100% confiable — Cantidad Pendiente la actualiza
+        # SSASUR con retraso frente al estado real (puede seguir en 0 pese a
+        # que Estado Prescripción ya diga 'SOLICITADO'), y a la inversa hay
+        # líneas reales con Estado Prescripción='ENTREGADO' y Cantidad
+        # Entregada=0 (inconsistencia de SSASUR, no error de lectura).
         pend = []
         for ln in d["lineas"].values():
-            if ln["pendiente"] > 0 and ln["prod"]:
-                pend.append(f"{ln['prod'].title()} x{ln['pendiente']}")
+            if not ln["prod"]:
+                continue
+            estado_presc = ln.get("estado_presc", "")
+            no_entregado_por_estado = bool(estado_presc) and estado_presc != "ENTREGADO"
+            if no_entregado_por_estado or ln["pendiente"] > 0:
+                cant = ln["pendiente"] if ln["pendiente"] > 0 else ln["recetada"]
+                pend.append(f"{ln['prod'].title()} x{cant}")
         pend = list(dict.fromkeys(pend))  # dedup preservando orden
         if not pend:
             continue
@@ -223,7 +247,7 @@ def main():
             cambios_k.append((row_num, ESTADO_PENDIENTE))
 
     print(f"\nFilas con N° de receta: {filas_con_receta}")
-    print(f"Recetas con algun farmaco pendiente (Cantidad Pendiente > 0): {len(recetas_pendientes)}")
+    print(f"Recetas con algun farmaco pendiente (Estado Prescripcion!=ENTREGADO o Cantidad Pendiente>0): {len(recetas_pendientes)}")
     print(f"Recetas no halladas en el historico (sin cruce, no tocadas): {recetas_sin_historico}")
     print(f"  -> Columna Farmaco Pendiente/Stock a escribir/refrescar: {len(cambios_n)}")
     print(f"  -> Columna Estado Despacho a rellenar (estaba vacia): {len(cambios_k)}")
