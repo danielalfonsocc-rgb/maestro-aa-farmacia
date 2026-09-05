@@ -113,8 +113,6 @@ delante de una persona y ajusta lo que no calce leyendo los volcados
 """
 import asyncio
 import ctypes
-import csv as _csv
-import glob as _glob
 import os
 import re
 import subprocess
@@ -206,8 +204,9 @@ SERVICIOS_MARCADOR = MAESTRO_DIR / "Servicios_Farmaceuticos" / "_ultimo_mes.json
 # Última fecha en que AUTO_SSASUR completó el PASO 5 (maestro_aa.py) sin
 # error. Permite detectar huecos REALES (PC apagado, sesión SSASUR caída,
 # feriado no listado, etc.) en vez de asumir que el hueco es siempre
-# "fin de semana/feriado" como hacía dia_habil_anterior() a solas — ver
-# ultima_corrida_ok()/rango_backlog_gt().
+# "fin de semana/feriado" como hacía dia_habil_anterior() a solas — extiende
+# desde_gt hacia atrás para que paso_gt() no deje un rango sin consultar
+# (ver ultima_corrida_ok() y el cálculo de desde_gt en main()).
 ULTIMA_CORRIDA_JSON = MAESTRO_DIR / "_ultima_corrida_ok.json"
 SELS_PROCESO_NUEVO = ('a:has-text("Proceso_nuevo")', 'button:has-text("Proceso_nuevo")',
                        ':text("Proceso_nuevo")', 'a:has-text("Proceso Nuevo")')
@@ -579,279 +578,6 @@ def marcar_corrida_ok(d: date) -> None:
         )
     except Exception as e:
         print(f"  [aviso] no se pudo escribir {ULTIMA_CORRIDA_JSON.name}: {e}")
-
-
-def rango_backlog_gt(hoy: date) -> tuple[date, date] | None:
-    """Bug real detectado 30-07-2026 (caso Teodoro Schmidt, 23 recetas GT
-    despachadas el viernes 24 y sábado 25 de julio sin nómina): el informe
-    'Modalidad de Despacho' que usa paso_gt() solo muestra despachos
-    PENDIENTES — una vez que SSASUR procesa/entrega la receta, desaparece del
-    listado para siempre. Si no corre AUTO_SSASUR un día (fin de semana,
-    feriado, PC apagado, corrida fallida), cualquier receta que se digitó Y
-    despachó ese mismo día queda invisible para SIEMPRE a paso_gt(), sin
-    importar qué tan amplio sea el rango de fechas que se consulte (verificado
-    en vivo: ni ampliando la ventana hacia atrás aparecen).
-
-    El punto de partida NO asume que el único hueco posible es fin de
-    semana/feriado (dia_habil_anterior): si ULTIMA_CORRIDA_JSON dice que la
-    última corrida exitosa fue anterior a eso — porque se saltó un día hábil
-    normal — el rango se extiende hacia atrás hasta cubrir ese hueco real.
-
-    Devuelve el rango de fechas [desde, hasta] a revisar contra el HISTÓRICO
-    real (informe_completo_recetas*.csv, no el reporte de pendientes) para
-    detectar recetas GT que se despacharon en ese hueco. None si no hay hueco
-    que revisar."""
-    desde = dia_habil_anterior(hoy)   # inclusive: el propio último día hábil puede
-                                       # tener despachos posteriores a la corrida de esa mañana
-    ultima_ok = ultima_corrida_ok()
-    if ultima_ok is not None and ultima_ok + timedelta(days=1) < desde:
-        desde = ultima_ok + timedelta(days=1)   # hueco real más amplio que el calendario
-    hasta = hoy - timedelta(days=1)   # ayer
-    if desde >= hoy:
-        return None
-    return (desde, hasta)
-
-
-def verificar_backlog_gt(hoy: date) -> None:
-    """Cruza informe_completo_recetas*.csv (histórico real, no el reporte de
-    pendientes) contra gt_maestro.xlsx para encontrar recetas con Gestión
-    Territorial='S' y Fecha Entrega Receta dentro del hueco fin de
-    semana/feriado que paso_gt() no pudo ver (ver rango_backlog_gt). Antes
-    esto solo IMPRIMÍA el hallazgo y esperaba que un QF corriera
-    GT_NOMINA_PARTICULAR.bat a mano (en la práctica, no pasaba de forma
-    confiable — ver _generar_backlog_gt). Ahora, además de avisar, GENERA
-    y REGISTRA la(s) Nómina(s) de Envío que faltan automáticamente."""
-    rango = rango_backlog_gt(hoy)
-    if rango is None:
-        return
-    desde, hasta = rango
-    fechas_ok = {(desde + timedelta(days=i)).strftime("%d/%m/%Y")
-                 for i in range((hasta - desde).days + 1)}
-
-    # Campos que interesan de informe_completo_recetas*.csv. OJO: "Periodo"
-    # aparece DOS VECES en ese CSV — la columna de la receta (tras "Estado",
-    # valores tipo "1 de 1") y la de la dosis/prescripción (tras "Intervalo",
-    # valores "DIAS"/"HORAS"). csv.DictReader se queda con la ÚLTIMA columna
-    # de nombre repetido (la equivocada) — por eso acá se lee por posición y
-    # se usa la PRIMERA ocurrencia de cada nombre, igual que hace
-    # maestro_aa.py con pandas al excluir el sufijo ".1" de read_csv.
-    # Bug real 10-08-2026: "Fecha Entrega Receta" en este CSV NO significa
-    # "ya se entregó" — puede ser una fecha objetivo/agendada que después se
-    # reprograma. La prueba real: la receta 45206882 traía Fecha Entrega
-    # Receta=06/08/2026 con Estado='PENDIENTE', y seguía viva y "EN TRÁNSITO"
-    # en el reporte de Modalidad de Despacho días después con OTRA fecha
-    # (10/08). Sin filtrar por Estado='ENTREGADA', este chequeo generaba
-    # nóminas prematuras/duplicadas para recetas que la corrida normal de
-    # cruce_gt.py iba a procesar de todos modos (6 de 50 casos ese día). Solo
-    # cuenta como "backlog perdido" una receta genuinamente ya despachada por
-    # la farmacia (Estado='ENTREGADA') que además ya no aparece en ningún
-    # reporte de pendientes futuro.
-    _CAMPOS_BACKLOG = ("Nombre", "Apellido Paterno", "Apellido Materno", "RUN",
-                        "Establecimiento Retira G. Territorial", "Comuna", "Periodo",
-                        "Especialidad", "Fono 1", "Fecha Entrega Receta", "Estado")
-
-    filas_por_receta = {}
-    conteo_por_receta = {}   # receta -> nº de líneas de prescripción (usado como n_presc del backfill)
-    # receta -> [(Prescripción, Cantidad Recetada, Cantidad Pendiente, Estado
-    # Prescripción), ...] — para detectar refrigerados Y pendientes, mismos
-    # campos y misma lógica OR que cruce_gt.clasificar() (ver [[gt-manual-vs-pipeline-auto]]):
-    # ni "Estado=ENTREGADA" a nivel de receta garantiza que CADA línea se
-    # haya despachado de verdad (auditoría 07-09-2026: 5 líneas reales con
-    # Estado Prescripción='ENTREGADO' pero Cantidad Entregada=0).
-    lineas_por_receta = {}
-    for path in sorted(_glob.glob(str(MAESTRO_DIR / "informe_completo_recetas*.csv"))):
-        try:
-            with open(path, encoding="latin-1", newline="") as fh:
-                rd = _csv.reader(fh, delimiter=";")
-                try:
-                    hdr = [h.strip() for h in next(rd)]
-                except StopIteration:
-                    continue
-                idx = {}
-                for i, h in enumerate(hdr):
-                    if h not in idx:   # primera ocurrencia manda (ver nota arriba)
-                        idx[h] = i
-
-                def _get(r, campo, _idx=idx):
-                    i = _idx.get(campo)
-                    return r[i].strip() if (i is not None and i < len(r)) else ""
-
-                i_gt = idx.get("Gestión Territorial")
-                i_fecha = idx.get("Fecha Entrega Receta")
-                i_receta = idx.get("Número Receta")
-                i_presc = idx.get("Prescripción")
-                i_cant = idx.get("Cantidad Recetada")
-                i_cant_pend = idx.get("Cantidad Pendiente")
-                i_estado_presc = idx.get("Estado Prescripción")
-                i_estado = idx.get("Estado")
-                if i_gt is None or i_fecha is None or i_receta is None:
-                    continue
-                for r in rd:
-                    if i_gt >= len(r) or (r[i_gt] or "").strip().upper() != "S":
-                        continue
-                    if i_fecha >= len(r) or (r[i_fecha] or "").strip() not in fechas_ok:
-                        continue
-                    # Solo Estado=ENTREGADA — PENDIENTE/otros siguen su curso normal
-                    # por cruce_gt.py, que ahora dedupe correctamente contra
-                    # gt_maestro.xlsx (ver cruce_gt._recetas_en_gt_maestro).
-                    if i_estado is None or i_estado >= len(r) or (r[i_estado] or "").strip().upper() != "ENTREGADA":
-                        continue
-                    n = (r[i_receta] or "").strip() if i_receta < len(r) else ""
-                    if not n:
-                        continue
-                    if n not in filas_por_receta:
-                        filas_por_receta[n] = {campo: _get(r, campo) for campo in _CAMPOS_BACKLOG}
-                    conteo_por_receta[n] = conteo_por_receta.get(n, 0) + 1
-                    prod = r[i_presc].strip() if (i_presc is not None and i_presc < len(r)) else ""
-                    if prod:
-                        cant = r[i_cant].strip() if (i_cant is not None and i_cant < len(r)) else ""
-                        cant_pend = r[i_cant_pend].strip() if (i_cant_pend is not None and i_cant_pend < len(r)) else ""
-                        estado_presc = (r[i_estado_presc].strip().upper()
-                                        if (i_estado_presc is not None and i_estado_presc < len(r)) else "")
-                        lineas_por_receta.setdefault(n, []).append((prod, cant, cant_pend, estado_presc))
-        except Exception:
-            continue
-    if not filas_por_receta:
-        return
-
-    try:
-        import gt_maestro as _GM
-        wb, _ = _GM.cargar_maestro()
-        faltantes = [(n, r) for n, r in filas_por_receta.items()
-                     if _GM.buscar_receta_en_maestro(wb, n) is None]
-    except Exception as e:
-        print(f"\n[AVISO] No pude cruzar contra gt_maestro.xlsx para el chequeo de backlog GT: {e}")
-        faltantes = list(filas_por_receta.items())
-
-    if not faltantes:
-        return
-
-    print("\n" + "═" * 62)
-    print(f"  [ALERTA] Backlog GT sin nómina — {desde.strftime('%d/%m/%Y')} → {hasta.strftime('%d/%m/%Y')}")
-    print("═" * 62)
-    print(f"  {len(faltantes)} receta(s) con Gestión Territorial='S' despachada(s) en ese rango")
-    print("  y SIN fila en el maestro GT — no salieron con AUTO_SSASUR (el reporte de")
-    print("  pendientes ya no las muestra, quedaron invisibles).")
-    for n, r in sorted(faltantes, key=lambda t: t[0]):
-        nombre = f"{r.get('Nombre','').strip()} {r.get('Apellido Paterno','').strip()} {r.get('Apellido Materno','').strip()}"
-        destino = r.get("Establecimiento Retira G. Territorial") or f"(sin destino — comuna: {r.get('Comuna','?')})"
-        print(f"    {n} | {nombre} | {destino} | entregada {r.get('Fecha Entrega Receta')}")
-    print("═" * 62)
-
-    _generar_backlog_gt(faltantes, conteo_por_receta, lineas_por_receta)
-
-
-def _generar_backlog_gt(faltantes, conteo_por_receta, lineas_por_receta=None) -> None:
-    """Genera y registra AUTOMÁTICAMENTE la(s) Nómina(s) de Envío para las
-    recetas que verificar_backlog_gt() detectó sin fila en el maestro GT.
-
-    Antes esto solo se imprimía en el log (ver git blame) y dependía de que
-    alguien lo viera y corriera GT_NOMINA_PARTICULAR.bat a mano — en la
-    práctica no pasaba: caso real detectado 07-08-2026, 50 recetas
-    entregadas el 06-08-2026 (23 CESFAM QUEPE, 15 TOLTEN HOSP., 8 PSR
-    QUEULE, 4 CESFAM TEODORO SCHMIDT) llevaban acumuladas SIN nómina.
-
-    OJO — la opción 2 de GT_NOMINA_PARTICULAR.bat (agregar_gt_manual.py
-    --gt-excel) NO sirve para este caso: ese flujo lee un Informe Modalidad
-    de Despacho recién bajado, pero estas recetas ya desaparecieron de ese
-    reporte (SSASUR solo lista despachos PENDIENTES — ver rango_backlog_gt).
-    Por eso acá se arman las filas directo desde el histórico real
-    (informe_completo_recetas*.csv, ya leído por verificar_backlog_gt) y se
-    reusa la MISMA lógica de registro + generación de agregar_gt_manual.py
-    (equivalente a su opción 1, "--csv" pero sin el paso manual de Excel)."""
-    try:
-        import agregar_gt_manual as _AGM
-        import gt_maestro as _GM
-    except Exception as e:
-        print(f"  [AVISO] No pude generar automáticamente las nóminas del backlog: {e}")
-        print("  → Corre GT_NOMINA_PARTICULAR.bat (opción 1) a mano con estos datos.")
-        return
-    try:
-        import cruce_gt as _CG
-    except Exception:
-        _CG = None   # sin detección de refrigerados — la nómina/letrero se generan igual, sin la lista
-
-    lineas_por_receta = lineas_por_receta or {}
-
-    def _refrigerado_texto(n):
-        """Mismo formato que cruce_gt.clasificar(): 'Nombre xCantidad; ...'."""
-        if _CG is None:
-            return ""
-        vistos = []
-        for prod, cant, _cant_pend, _estado_presc in lineas_por_receta.get(n, []):
-            lab = _CG.es_refrigerado(prod)
-            if lab:
-                vistos.append(f"{lab} x{cant or '1'}")
-        return "; ".join(dict.fromkeys(vistos))
-
-    def _pendiente_texto(n):
-        """Misma lógica OR que cruce_gt.clasificar(): Estado Prescripción
-        distinto de ENTREGADO, O Cantidad Pendiente > 0 — ninguna de las 2
-        señales sola es 100% confiable (ver comentario en cruce_gt.py)."""
-        vistos = []
-        for prod, cant, cant_pend, estado_presc in lineas_por_receta.get(n, []):
-            try:
-                cp = float((cant_pend or "0").replace(",", "."))
-            except ValueError:
-                cp = 0
-            no_entregado_por_estado = bool(estado_presc) and estado_presc != "ENTREGADO"
-            if no_entregado_por_estado or cp > 0:
-                cant_mostrar = cp if cp > 0 else (cant or "1")
-                if isinstance(cant_mostrar, float) and cant_mostrar == int(cant_mostrar):
-                    cant_mostrar = int(cant_mostrar)
-                vistos.append(f"{prod.title()} x{cant_mostrar}")
-        return "; ".join(dict.fromkeys(vistos))
-
-    filas, sin_destino = [], []
-    for n, row in faltantes:
-        # "TOLTEN HOSP." trae punto final en el histórico crudo; se saca para calzar
-        # con _CARPETA_LOCAL de agregar_gt_manual.py (mismo tratamiento que --gt-excel).
-        destino = (row.get("Establecimiento Retira G. Territorial") or "").strip().upper().rstrip(".")
-        if not destino:
-            sin_destino.append(n)
-            continue
-        nombre = f"{row.get('Nombre','').strip()} {row.get('Apellido Paterno','').strip()} {row.get('Apellido Materno','').strip()}".strip()
-        filas.append({
-            "receta": n, "paciente": nombre,
-            "rut": (row.get("RUN") or "").strip(),
-            "destino": destino,
-            "periodo": (row.get("Periodo") or "").strip(),
-            "especialidad": (row.get("Especialidad") or "").strip(),
-            "n_presc": str(conteo_por_receta.get(n, 1)),
-            "telefono": (row.get("Fono 1") or "").strip(),
-            "pendiente": _pendiente_texto(n),
-            "refrigerado": _refrigerado_texto(n),
-        })
-    if sin_destino:
-        print(f"  [AVISO] {len(sin_destino)} receta(s) del backlog sin 'Establecimiento Retira G. "
-              f"Territorial' informado — quedan SIN generar, revisar a mano: {sin_destino}")
-    if not filas:
-        return
-
-    wb, path = _GM.cargar_maestro()
-    hoy = date.today()
-    hojas_tocadas = {}
-    for f in filas:
-        receta_dict = {k: v for k, v in f.items() if k != "receta" and v} | {"receta": f["receta"]}
-        ws, _resultado, _ = _GM.upsert_receta_maestro(wb, receta_dict, estado="EN PREPARACIÓN", fecha_fallback=hoy)
-        hojas_tocadas[ws.title] = ws
-    for ws in hojas_tocadas.values():
-        _GM.aplicar_formato_maestro(ws)
-    _GM.formatear_historial(wb)
-    _GM.guardar(wb, path)
-
-    por_destino = {}
-    for f in filas:
-        por_destino.setdefault(f["destino"], []).append(f)
-    print(f"\n  [BACKLOG GT] Generando {len(filas)} receta(s) que faltaban en {len(por_destino)} nómina(s):")
-    for destino, filas_destino in por_destino.items():
-        ruta, ruta_letrero = _AGM._generar_nomina(destino, filas_destino, hoy)
-        if ruta_letrero:
-            print(f"    {destino}: {len(filas_destino)} receta(s) -> {ruta}, {ruta_letrero}")
-        else:
-            print(f"    {destino}: {len(filas_destino)} receta(s) -> {ruta}")
-    print("  (quedaron registradas en el maestro GT y en Nóminas de Envío — despachar cuanto antes)")
-    print("═" * 62)
 
 
 def gt_salida(dest: Path) -> Path:
@@ -1483,24 +1209,25 @@ async def main():
     # calendario) — si hoy es lunes, cae en viernes; si hubo feriado, lo salta.
     # Override para reintentos/backfill: --fecha-controlados dd/mm/yyyy.
     fecha_controlados = _arg_val("--fecha-controlados", fmt(dia_habil_anterior(today)))
-    # Default GT: último día hábil (no "ayer" calendario) → +13 días. Captura
-    # despachos próximos programados (el reporte muestra pendientes, no
-    # histórico entregado) — los despachos pasados desaparecen del listado al
-    # ser procesados, por eso se mira al FUTURO en lugar de hacia atrás.
-    # Bug real 30-07-2026 (caso Teodoro Schmidt): con "ayer" a secas, un lunes
-    # arranca en domingo y nunca llega a ver viernes/sábado — cualquier cosa
-    # que se digitó Y despachó ese fin de semana (sin corrida de por medio)
-    # queda fuera de la ventana consultada. dia_habil_anterior() ya salta
-    # fines de semana Y feriados, así que un lunes normal arranca en viernes
-    # solo; si el viernes fue feriado, arranca más atrás. Sin cambio en el
-    # resto de la semana (dia_habil_anterior(martes) = lunes = ayer de todos
-    # modos). Complementa a verificar_backlog_gt(), que cubre el caso — más
-    # grave — de lo que ya se despachó y desapareció del reporte antes de
-    # que corriera cualquier ventana.
+    # Default GT: último día hábil (no "ayer" calendario) → +13 días. El
+    # reporte 'Modalidad de Despacho' registra cada receta en su fecha REAL
+    # de despacho de forma permanente (no desaparece al ser procesada/
+    # entregada) — el rango hacia el FUTURO no es para "no perderla antes de
+    # que se pierda", es para traer con anticipación los despachos ya
+    # programados y dejar tiempo de preparar la nómina antes de que llegue
+    # esa fecha.
+    # dia_habil_anterior() en vez de "ayer" a secas: si "ayer" fue domingo
+    # (hoy lunes), un rango que arranca en domingo nunca llega a ver
+    # viernes/sábado — cualquier receta despachada ese fin de semana sin
+    # corrida de por medio quedaría fuera de la ventana consultada la
+    # primera vez que sí corre. dia_habil_anterior() ya salta fines de
+    # semana Y feriados, así que un lunes normal arranca en viernes solo; si
+    # el viernes fue feriado, arranca más atrás. Sin cambio en el resto de
+    # la semana (dia_habil_anterior(martes) = lunes = ayer de todos modos).
     # Si la última corrida exitosa (ULTIMA_CORRIDA_JSON) es más vieja que el
     # último día hábil — porque se saltó un día hábil normal, no solo fin de
     # semana/feriado — se extiende el inicio hasta ahí para no dejar un hueco
-    # real sin consultar (ver ultima_corrida_ok()/rango_backlog_gt()).
+    # real sin consultar (ver ultima_corrida_ok()).
     _gt_inicio_base = dia_habil_anterior(today)
     _ultima_ok = ultima_corrida_ok()
     if _ultima_ok is not None and _ultima_ok + timedelta(days=1) < _gt_inicio_base:
@@ -1725,22 +1452,6 @@ async def main():
             else:
                 print("  [AVISO] No se generó el Excel GT — continúo con el resto.")
                 print(f"    Revisa debug_gt.png en {MAESTRO_DIR}")
-
-        # ── Chequeo de backlog GT (fin de semana / feriado) ────────────────────
-        # El reporte de arriba solo ve PENDIENTES — una receta despachada un
-        # día sin corrida (sábado, domingo, feriado) desaparece de ahí para
-        # siempre sin dejar nómina. Se cruza el histórico real
-        # (informe_completo_recetas) contra el maestro para no perderlas y,
-        # si encuentra alguna, GENERA y REGISTRA la Nómina de Envío que
-        # falta (ver rango_backlog_gt/verificar_backlog_gt/_generar_backlog_gt).
-        # Corre siempre — no hace nada si no hay hueco/backlog que revisar,
-        # pero cuando SÍ encuentra algo escribe en gt_maestro.xlsx y en
-        # 04_Farmacia_Gestion_Territorial (ya no es de solo lectura).
-        if not no_gt:
-            try:
-                verificar_backlog_gt(today)
-            except Exception as e:
-                print(f"  [AVISO] Chequeo de backlog GT falló: {e} — continúo con el resto.")
 
         # ════════════════════════════════════════════════════════════════════
         #  PASO 3b — INFORME MEDICAMENTOS CONTROLADOS (Farmacia AT Abierta)
@@ -2141,7 +1852,8 @@ async def main():
 
         # Marca HOY como la última corrida exitosa — la próxima corrida usa
         # esto para detectar huecos reales (no solo fin de semana/feriado) en
-        # el rango GT a revisar. Ver ultima_corrida_ok()/rango_backlog_gt().
+        # el rango GT a revisar. Ver ultima_corrida_ok() y el cálculo de
+        # desde_gt en main().
         marcar_corrida_ok(today)
 
         # ── PASO 5c — CRUCE GT + PLANILLAS ───────────────────────────────────
@@ -2159,8 +1871,7 @@ async def main():
                     # Antes esto no se chequeaba (a diferencia de 5d/5e/5f, que sí
                     # avisan) — si cruce_gt.py/generar.py fallaba a medio camino,
                     # el día se quedaba sin nóminas y no quedaba ningún rastro en
-                    # el log para notarlo (mismo patrón silencioso que el bug de
-                    # backlog GT arreglado arriba).
+                    # el log para notarlo.
                     print(f"  [aviso] cruce_gt.py terminó con código {cret.returncode} — revisa si "
                           f"out_gt/{out_gt.name}/ quedó con todas las planillas esperadas.")
             else:
@@ -2250,8 +1961,10 @@ async def main():
         else:
             print("\n[7-9/9] SINCRONIZAR_TODO.bat no encontrado — omitiendo publicación.")
 
-        # ── PASO 5c2 — FUSIONAR NÓMINAS GT (auto + manual/backlog) ───────────
-        # verificar_backlog_gt() (PASO 3) puede haber generado hoy una o más
+        # ── PASO 5c2 — FUSIONAR NÓMINAS GT (auto + manual) ───────────────────
+        # Si alguien corrió GT_NOMINA_PARTICULAR.bat / agregar_gt_manual.py
+        # a mano hoy (p.ej. una receta puntual que la QF necesitaba registrar
+        # antes de la corrida automática), puede haber quedado una o más
         # "Nomina_Manual_*.xlsx" para el mismo destino que cruce_gt.py (PASO
         # 5c) también procesó. Sin este paso, ambos archivos quedaban
         # sueltos y se publicaban tal cual — la QF seguía recibiendo nóminas
@@ -2276,7 +1989,7 @@ async def main():
         # disponibles o no en este paso.
         fusion_py = MAESTRO_DIR / "fusionar_nominas_gt.py"
         if fusion_py.exists():
-            print(f"\n[5c2/9] Fusionando nóminas GT (automática + manual/backlog)...")
+            print(f"\n[5c2/9] Fusionando nóminas GT (automática + manual)...")
             fret = subprocess.run(
                 [sys.executable, str(fusion_py), "--todos"],
                 cwd=str(MAESTRO_DIR), env=env_utf8,
