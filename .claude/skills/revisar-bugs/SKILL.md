@@ -188,6 +188,7 @@ Presentar los **menores** al usuario para que decida.
 | 2026-07-15 | dedup_recetas.py | import Font/PatternFill/Alignment no usados en _guardar_gt_xlsx_sin | ✅ Corregido |
 | 2026-07-15 | publicar_escritorio.py | (falso positivo descartado) reportado "sync_gt sin filtro _RANGO_RE" — el filtro ya estaba en el código real al verificar | ⛔ No es bug (ya corregido en trabajo previo sin commitear) |
 | 2026-07-15 | publicar_drive.py | (falso positivo descartado) reportado "sync_gt con sort lexicográfico de fechas" — ya usaba _clave_cronologica (fecha real) al verificar | ⛔ No es bug (ya corregido en trabajo previo sin commitear) |
+| 2026-09-04 | publicar_drive.py | sync_gt elegía "último" rango por fecha de término más lejana (_clave_cronologica); al quitarle a AUTO_SSASUR el margen +13 días hacia el futuro (ver AUTO_SSASUR.py), cualquier rango viejo con fecha de término inflada (ej. 27-08→10-09) le ganaba a una corrida real y correcta de hoy, republicando datos obsoletos a Drive | ✅ Corregido (sort por mtime de la carpeta, igual que publicar_escritorio.py) |
 
 ## Datos sensibles
 

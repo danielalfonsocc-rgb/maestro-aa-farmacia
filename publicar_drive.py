@@ -326,13 +326,6 @@ def _mas_reciente(patron):
 
 
 # ── Sincronizadores ───────────────────────────────────────────────────────────
-def _fecha_fin_rango(nombre_carpeta):
-    """Extrae la fecha de fin del nombre de carpeta 'DD-MM-YYYY_DD-MM-YYYY' como 'DD-MM-YYYY'.
-    Si el formato no coincide, cae a mtime de la carpeta."""
-    m = re.match(r"(\d{2}-\d{2}-\d{4})_(\d{2}-\d{2}-\d{4})$", nombre_carpeta)
-    return m.group(2) if m else None
-
-
 NOMINAS_ENVIO = "Nóminas de Envío"
 
 
@@ -406,14 +399,26 @@ def sync_gt(service, raiz_id, stats, cache):
     if not os.path.isdir(src_base):
         print("  [GT] sin out_gt todavía")
         return
-    def _clave_cronologica(d):
-        fin = _fecha_fin_rango(os.path.basename(d))
-        return datetime.strptime(fin, "%d-%m-%Y") if fin else datetime.fromtimestamp(os.path.getmtime(d))
 
+    # "último" = carpeta modificada más recientemente (igual que ya hace
+    # publicar_escritorio.py), NO la de fecha de término más lejana. Antes se
+    # ordenaba por la fecha "hasta" del nombre de carpeta (ver git blame:
+    # _clave_cronologica/_fecha_fin_rango) porque un sort lexicográfico plano
+    # fallaba entre meses. Pero mientras el rango GT tuvo margen +13 días hacia
+    # el futuro (ver AUTO_SSASUR.py, corregido 04-09-2026 — el reporte de
+    # despacho no muestra nada programado a futuro, solo lo ya despachado),
+    # cualquier corrida vieja podía traer una fecha "hasta" más lejana que la
+    # de hoy (p.ej. una corrida del 27-08 terminaba el 10-09, por delante de
+    # una corrida real y correcta del 03-09 al 04-09) y se colaba como
+    # "último" en vez del rango recién generado — bug real detectado
+    # 04-09-2026 al verificar el fix de AUTO_SSASUR: publicó de nuevo un rango
+    # viejo con datos obsoletos. mtime no tiene ese problema: siempre refleja
+    # cuándo se generó/tocó por última vez, sin depender de qué tan ancho fue
+    # el rango de fechas consultado.
     rangos = sorted(
         [d for d in glob.glob(os.path.join(src_base, "*"))
          if os.path.isdir(d) and _RANGO_RE.match(os.path.basename(d))],
-        key=_clave_cronologica,
+        key=os.path.getmtime,
     )
     if not rangos:
         print("  [GT] sin rangos en out_gt")
