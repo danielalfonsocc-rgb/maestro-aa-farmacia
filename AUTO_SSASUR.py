@@ -1209,13 +1209,15 @@ async def main():
     # calendario) — si hoy es lunes, cae en viernes; si hubo feriado, lo salta.
     # Override para reintentos/backfill: --fecha-controlados dd/mm/yyyy.
     fecha_controlados = _arg_val("--fecha-controlados", fmt(dia_habil_anterior(today)))
-    # Default GT: último día hábil (no "ayer" calendario) → +13 días. El
-    # reporte 'Modalidad de Despacho' registra cada receta en su fecha REAL
-    # de despacho de forma permanente (no desaparece al ser procesada/
-    # entregada) — el rango hacia el FUTURO no es para "no perderla antes de
-    # que se pierda", es para traer con anticipación los despachos ya
-    # programados y dejar tiempo de preparar la nómina antes de que llegue
-    # esa fecha.
+    # Default GT: último día hábil (no "ayer" calendario) → HOY. El reporte
+    # 'Modalidad de Despacho' registra cada receta en su fecha REAL de
+    # despacho de forma permanente (no desaparece al ser procesada/
+    # entregada) — el despacho es un evento del mismo día en que ocurre, no
+    # algo "programado" a futuro. Verificado en vivo 04-09-2026: un rango
+    # 03/09→17/09 (13 días de margen hacia adelante) devolvió 119 filas, y
+    # el 100% con Fecha Entrega=03/09 o 04/09 (hoy) — CERO filas con fecha
+    # futura pese al margen. No hay nada que "capturar con anticipación":
+    # el límite superior es simplemente HOY.
     # dia_habil_anterior() en vez de "ayer" a secas: si "ayer" fue domingo
     # (hoy lunes), un rango que arranca en domingo nunca llega a ver
     # viernes/sábado — cualquier receta despachada ese fin de semana sin
@@ -1235,7 +1237,7 @@ async def main():
     # Se puede acotar con --desde dd/mm/yyyy o --fecha dd/mm/yyyy.
     _gt_inicio = _fecha or fmt(_gt_inicio_base)
     desde_gt = _arg_val("--desde", _gt_inicio)
-    hasta_gt = _arg_val("--hasta", _fecha or fmt(today + timedelta(days=13)))
+    hasta_gt = _arg_val("--hasta", _fecha or fmt(today))
 
     print()
     print("═" * 62)
