@@ -1397,27 +1397,63 @@ async def main():
                     print(f"  Bloque {fi} → {ff}  [{'completo → sella' if es_completo else 'parcial'}]")
                     try:
                         csv = await descargar_sabana(page, fi, ff)
-                        cabecera = csv.lstrip()[:200].lower()
-                        if "<html" in cabecera or "<!doctype" in cabecera or "iniciar sesión" in cabecera:
-                            print(f"    [ERROR] Bloque {fi}→{ff}: la respuesta parece ser la página de "
-                                  f"login (sesión expirada) — NO se guarda ni se sella. Reintenta la corrida.")
+                    except Exception as e:
+                        # El rango completo puede colgarse en el servidor (informe pesado);
+                        # se reintenta día por día — un rango de 1 día es mucho más liviano.
+                        # Si CUALQUIER día falla, se descarta todo el fallback (no se guarda
+                        # nada parcial) para no sellar jamás un bloque FULL con huecos silenciosos.
+                        print(f"    [AVISO] Falló el bloque {fi}→{ff}: {e}")
+                        print(f"    Reintentando día por día ({fi}→{ff})...")
+                        partes = []
+                        cur = bstart
+                        ok = True
+                        while cur <= q_end:
+                            dfi = fmt(cur)
+                            try:
+                                csv_dia = await descargar_sabana(page, dfi, dfi)
+                                cab_dia = csv_dia.lstrip()[:200].lower()
+                                if "<html" in cab_dia or "<!doctype" in cab_dia or "iniciar sesión" in cab_dia:
+                                    print(f"      [ERROR] día {dfi}: respuesta parece login (sesión "
+                                          f"expirada) — abortando fallback, se reintenta el bloque completo.")
+                                    ok = False
+                                    break
+                                partes.append(csv_dia)
+                                print(f"      ✓ día {dfi} OK")
+                            except Exception as e2:
+                                print(f"      [AVISO] día {dfi} también falló: {e2} — abortando fallback, "
+                                      f"se reintenta el bloque completo en la próxima corrida.")
+                                ok = False
+                                break
+                            cur += timedelta(days=1)
+                        if not ok or not partes:
                             bstart = bend + timedelta(days=1)
                             continue
-                        n_filas = max(sum(1 for l in csv.splitlines() if l.strip()) - 1, 0)
-                        if n_filas > 0 or es_completo:
-                            # Si el bloque está completo (30 días ya pasaron) se sella aunque
-                            # tenga 0 filas, o se re-descargaría indefinidamente en cada corrida.
-                            dest = full if es_completo else parcial
-                            with open(dest, "w", encoding="latin-1", newline="") as fcsv:
-                                fcsv.write(csv)
-                            if es_completo:
-                                parcial.unlink(missing_ok=True)   # borrar el incompleto al sellar
-                            print(f"    ✓ {dest.name} · {dest.stat().st_size // 1024:,} KB · {n_filas:,} filas")
-                        else:
-                            parcial.unlink(missing_ok=True)       # rango sin datos: sin incompletos
-                            print("    (0 filas en el rango — nada que guardar)")
-                    except Exception as e:
-                        print(f"    [AVISO] Falló el bloque {fi}→{ff}: {e}")
+                        lineas = []
+                        for i, parte in enumerate(partes):
+                            ls = [l for l in parte.splitlines() if l.strip()]
+                            lineas.extend(ls if i == 0 else ls[1:])
+                        csv = "\n".join(lineas) + "\n"
+                        print(f"    Recuperado día por día: {len(partes)}/{len(partes)} día(s) OK.")
+
+                    cabecera = csv.lstrip()[:200].lower()
+                    if "<html" in cabecera or "<!doctype" in cabecera or "iniciar sesión" in cabecera:
+                        print(f"    [ERROR] Bloque {fi}→{ff}: la respuesta parece ser la página de "
+                              f"login (sesión expirada) — NO se guarda ni se sella. Reintenta la corrida.")
+                        bstart = bend + timedelta(days=1)
+                        continue
+                    n_filas = max(sum(1 for l in csv.splitlines() if l.strip()) - 1, 0)
+                    if n_filas > 0 or es_completo:
+                        # Si el bloque está completo (30 días ya pasaron) se sella aunque
+                        # tenga 0 filas, o se re-descargaría indefinidamente en cada corrida.
+                        dest = full if es_completo else parcial
+                        with open(dest, "w", encoding="latin-1", newline="") as fcsv:
+                            fcsv.write(csv)
+                        if es_completo:
+                            parcial.unlink(missing_ok=True)   # borrar el incompleto al sellar
+                        print(f"    ✓ {dest.name} · {dest.stat().st_size // 1024:,} KB · {n_filas:,} filas")
+                    else:
+                        parcial.unlink(missing_ok=True)       # rango sin datos: sin incompletos
+                        print("    (0 filas en el rango — nada que guardar)")
                     bstart = bend + timedelta(days=1)
 
         if solo_recetas:
