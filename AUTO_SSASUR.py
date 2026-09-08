@@ -1999,41 +1999,18 @@ async def main():
         else:
             print("\n[7-9/9] SINCRONIZAR_TODO.bat no encontrado — omitiendo publicación.")
 
-        # ── PASO 5c2 — FUSIONAR NÓMINAS GT (auto + manual) ───────────────────
-        # Si alguien corrió GT_NOMINA_PARTICULAR.bat / agregar_gt_manual.py
-        # a mano hoy (p.ej. una receta puntual que la QF necesitaba registrar
-        # antes de la corrida automática), puede haber quedado una o más
-        # "Nomina_Manual_*.xlsx" para el mismo destino que cruce_gt.py (PASO
-        # 5c) también procesó. Sin este paso, ambos archivos quedaban
-        # sueltos y se publicaban tal cual — la QF seguía recibiendo nóminas
-        # rotuladas "manual" (esa distinción ya no aplica en Gestión
-        # Territorial, ver fusionar_nominas_gt.py) porque nadie corría
-        # fusionar_nominas_gt.py a mano.
-        #
-        # OJO — va DESPUÉS del PASO 7-9, no justo después del 5c: la Planilla
-        # "automática" que genera cruce_gt.py vive primero en out_gt/<rango>/
-        # y SOLO llega a 04_Farmacia_Gestion_Territorial/<ESTAB>/... cuando
-        # SINCRONIZAR_TODO.bat (PASO 7-9) la deposita ahí. Bug real
-        # 04-09-2026: con la fusión ANTES del depósito, fusionar_nominas_gt.py
-        # solo encontraba la nómina "manual" (la automática todavía no
-        # existía en el árbol local), la promovía sola al nombre oficial, y
-        # el depósito posterior chocaba con eso — quedaban 2 archivos
-        # separados (uno "(rango ...)") en vez de una sola nómina fusionada,
-        # el mismo problema que se suponía debía resolver este paso.
-        #
-        # Corre SIEMPRE (idempotente si no hay nada que fusionar) para que lo
-        # que termine en el árbol local sea siempre el nombre oficial
-        # "<destino>_Planilla.xlsx", sin importar si Drive/GitHub estaban
-        # disponibles o no en este paso.
-        fusion_py = MAESTRO_DIR / "fusionar_nominas_gt.py"
-        if fusion_py.exists():
-            print(f"\n[5c2/9] Fusionando nóminas GT (automática + manual)...")
-            fret = subprocess.run(
-                [sys.executable, str(fusion_py), "--todos"],
-                cwd=str(MAESTRO_DIR), env=env_utf8,
-            )
-            if fret.returncode != 0:
-                print(f"  [aviso] fusionar_nominas_gt.py terminó con código {fret.returncode}")
+        # PASO 5c2 (fusionar nóminas GT auto+manual) — RETIRADO 07-09-2026.
+        # fusionar_nominas_gt.py dependía de que corriera DESPUÉS de que
+        # SINCRONIZAR_TODO.bat depositara la Planilla "automática" en el árbol
+        # local — frágil por depender del orden (bug real 04-09-2026: con la
+        # fusión antes del depósito, encontraba solo la nómina "manual", la
+        # promovía sola, y el depósito posterior chocaba con eso, dejando 2
+        # archivos separados en vez de 1). Reemplazado por fusión al momento
+        # de escribir en cada lado: agregar_gt_manual.py ahora escribe/fusiona
+        # directo sobre "<destino>_Planilla.xlsx" (nunca crea "Nomina_Manual_
+        # *"), y publicar_drive._depositar_arbol_local() fusiona sola si la
+        # automática llega después el mismo día — ver memoria del proyecto
+        # gt-manual-vs-pipeline-auto.
     else:
         print("  [ERROR] maestro_aa.py falló — revisa los mensajes arriba")
 
