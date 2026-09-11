@@ -329,6 +329,48 @@ def _mas_reciente(patron):
 NOMINAS_ENVIO = "Nóminas de Envío"
 
 
+def _fusionar_en_deposito(dest, nuevo, destino_nombre, ddir):
+    """Fusiona por N° Receta la Planilla ya depositada (dest) con la recién
+    generada (nuevo) para el mismo destino/día, reescribe dest y regenera su
+    letrero — usado por _depositar_arbol_local cuando 2 rangos GT distintos
+    generan una Planilla distinta para el mismo destino el mismo día (bug real
+    04-09-2026: antes esto se "aparcaba" bajo un sufijo "(rango ...)" en vez de
+    fusionarse, dejando 2 nóminas sueltas — ver memoria del proyecto
+    gt-manual-vs-pipeline-auto). El más reciente gana si hay una receta con
+    datos distintos en ambos (no debería pasar — cruce_gt.py dedupea por N°
+    Receta dentro de un mismo rango)."""
+    from agregar_gt_manual import _leer_nomina_existente
+    import generar as G
+    from openpyxl import Workbook
+
+    regs_actual = {r["receta"]: r for r in _leer_nomina_existente(dest)}
+    regs_nuevo = {r["receta"]: r for r in _leer_nomina_existente(nuevo)}
+    choque = set(regs_actual) & set(regs_nuevo)
+    regs = list({**regs_actual, **regs_nuevo}.values())
+
+    fecha_txt = datetime.now().strftime("%d/%m/%Y")
+    wb = Workbook()
+    titulo = f"GESTIÓN TERRITORIAL - {destino_nombre.upper()}"
+    subtitulo = (f"Origen: Farmacia Hospital de Pitrufquén   |   Destino: {destino_nombre}   |   "
+                 f"Fecha de entrega: {fecha_txt}")
+    G.hoja_funcionarios(wb, regs, destino_nombre, titulo, subtitulo, modo="todos")
+    wb.save(dest)
+
+    lleva = any((r.get("refrigerado") or "").strip() for r in regs)
+    detalle_refri = G._detalle_refrigerados(regs, {}) if lleva else []
+    ruta_letrero_xlsx = os.path.join(ddir, f"{G.slug(destino_nombre)}_Letrero.xlsx")
+    G.FECHA = fecha_txt
+    G.letrero(destino_nombre, lleva, ruta_letrero_xlsx, detalle_refri)
+    if G.to_pdf(ruta_letrero_xlsx, ddir):
+        try:
+            os.remove(ruta_letrero_xlsx)
+        except OSError:
+            pass
+    print(f"  [GT] {os.path.basename(dest)}: fusionado en depósito -> {len(regs)} paciente(s) "
+          f"({len(regs_actual)} ya depositados + {len(regs_nuevo)} nuevos"
+          f"{f' - {len(choque)} choque' if choque else ''})")
+
+
 def _depositar_arbol_local(rango_dir):
     """Copia las planillas por establecimiento de un rango out_gt/ al árbol local
     ordenado: 04_Farmacia_Gestion_Territorial/<ESTAB>/Nóminas de Envío/<mes>/<fecha>/,
@@ -337,8 +379,11 @@ def _depositar_arbol_local(rango_dir):
     (antes esta función depositaba directo en Nóminas de Envío/<fecha>/, sin mes,
     y quedaba desordenado frente a lo que sí anida agregar_gt_manual.py; detectado
     30-07-2026, requería correr _reorganizar_nominas_por_mes.py a mano después).
-    Dedup por MD5; si existe un archivo distinto con el mismo nombre, se agrega
-    el rango como sufijo. Devuelve cuántos archivos copió."""
+    Dedup por MD5; si ya existe una Planilla/Letrero distinta con el mismo nombre
+    para el mismo destino/día (2 rangos GT distintos generados el mismo día),
+    se FUSIONA por N° Receta en vez de aparcar un archivo separado "(rango ...)"
+    — bug real 04-09-2026, ver _fusionar_en_deposito(). Devuelve cuántos
+    archivos copió o fusionó."""
     import shutil
     if not os.path.isdir(GT_SOLICITUDES_DIR):
         return 0
@@ -359,15 +404,29 @@ def _depositar_arbol_local(rango_dir):
         ddir = os.path.join(GT_SOLICITUDES_DIR, carpeta_local, NOMINAS_ENVIO, carpeta_mes, fecha)
         os.makedirs(ddir, exist_ok=True)
         dest = os.path.join(ddir, nb)
-        if os.path.exists(dest):
-            if _md5(dest) == _md5(f):
-                continue
+        if not os.path.exists(dest):
+            shutil.copy2(f, dest)
+            depositados += 1
+            continue
+        if _md5(dest) == _md5(f):
+            continue  # ya depositado, idéntico
+
+        if nb.endswith("_Planilla.xlsx") and not nb.startswith("Nomina_Manual"):
+            _fusionar_en_deposito(dest, f, destino, ddir)
+            depositados += 1
+        elif nb.endswith("_Letrero.pdf"):
+            # Se regenera solo al fusionar la Planilla del mismo destino/día
+            # (mismo ddir, procesada en esta misma corrida — "_Letrero" ordena
+            # antes que "_Planilla" alfabéticamente, así que si hay colisión
+            # real la fusión de la Planilla ocurre más abajo en este mismo
+            # bucle y sobreescribe este letrero con el correcto).
+            continue
+        else:
             base, ext = os.path.splitext(nb)
-            dest = os.path.join(ddir, f"{base} (rango {os.path.basename(rango_dir)}){ext}")
-            if os.path.exists(dest) and _md5(dest) == _md5(f):
-                continue
-        shutil.copy2(f, dest)
-        depositados += 1
+            dest2 = os.path.join(ddir, f"{base} (rango {os.path.basename(rango_dir)}){ext}")
+            if not (os.path.exists(dest2) and _md5(dest2) == _md5(f)):
+                shutil.copy2(f, dest2)
+                depositados += 1
     return depositados
 
 

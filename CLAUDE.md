@@ -10,7 +10,7 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 | `maestro_aa.py` | Consolidación principal → `Consolidado_AA_MAESTRO.xlsx` (14 hojas). Infraestructura: alimenta Pedido Fusión y el resto de las 6 categorías, aunque ya no tiene dashboard propio |
 | `sgli.py` / `sgli_historico.py` | Motor SGLI (reposición basada en demanda) y su planilla histórica ABC-XYZ. Dependencia interna de `maestro_aa.py` |
 | `utils_aa.py` | **Módulo compartido**: norm_erp, HOMOLOGACION (20 entradas), cargar_recetas_csv |
-| `cruce_gt.py`, `gt_maestro.py`, `agente_gt_pendientes.py`, `dedup_recetas.py`, `fusionar_nominas_gt.py`, `procesar_establecimiento_maestro.py`, `descargar_recetas_pdf.py`, `publicar_gt_sheets.py` y demás scripts `gt_*`/`*_gt_*` | Bloque de **Gestión Territorial** (una de las 6 categorías) |
+| `cruce_gt.py`, `gt_maestro.py`, `agente_gt_pendientes.py`, `dedup_recetas.py`, `procesar_establecimiento_maestro.py`, `descargar_recetas_pdf.py`, `publicar_gt_sheets.py` y demás scripts `gt_*`/`*_gt_*` | Bloque de **Gestión Territorial** (una de las 6 categorías) |
 | `recetas_cheque.py`, `subir_recetas_cheque_drive.py` | **Controlados**: formulario ISP recetas cheque (estupefacientes/psicotrópicos) — obligación legal |
 | `pedido_fusion.py`, `pedido_fusion_simple.py` | **Fusión AA**: Pedido_Fusion_AA_<fecha>.xlsx (Farm_Bod + Bod_Farmacos + Dialisis + Faltantes_AA) |
 | `centinela_reporte.py` | **Centinela Invierno**: reporte semanal campaña invierno (PDF MINSAL) |
@@ -25,6 +25,8 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 
 **Eliminados 04-09-2026** (dashboard Streamlit + auditorías/programación sueltas, fuera de las 6 categorías que el usuario pidió conservar): `app_pedidos.py`, `app_maestro.py` (+ `paginas/*.py` y `estilo_maestro.py`, exclusivos del hub), `agente_duplicados.py`, `auditoria_medicamento.py`, `auditoria_duplicados_profunda.py`, `auditoria_prescripcion.py`, `auditoria_cantidad_posologia.py`, `auditoria_insulinas.py`, `app_auditoria_retiros.py`, `programacion_aa.py`, `actualizar_programacion_sept.py`, `_generar_glosario.py`, `crear_acta_vencimiento.py`, `subir_prueba_sheets.py`. No reintroducir sin confirmar con el usuario (mismo criterio que otras eliminaciones — ver memoria del proyecto).
 
+**Eliminado 07-09-2026:** `fusionar_nominas_gt.py` (y el PASO 5c2 que lo llamaba en `AUTO_SSASUR.py`). Fusionaba en un paso posterior, dependiente del orden, la Planilla "automática" (`cruce_gt.py`) con la "manual" (`agregar_gt_manual.py`) — causaba el bug real de 2 nóminas separadas del 04-09-2026 (ver memoria `gt-manual-vs-pipeline-auto`). Reemplazado por fusión al momento de escribir en ambos lados: `agregar_gt_manual.py` ahora fusiona directo sobre `<destino>_Planilla.xlsx` (nunca crea `Nomina_Manual_*`), y `publicar_drive._depositar_arbol_local()` fusiona sola si la Planilla automática llega después el mismo día. No reintroducir sin confirmar.
+
 ## Reglas de arquitectura
 
 - **Nuevas homologaciones de nombres**: SOLO en `utils_aa.py → HOMOLOGACION_RAW`. Nunca duplicar en scripts individuales.
@@ -33,6 +35,20 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 - **GT raw downloads**: van a `../04_Farmacia_Gestion_Territorial/` (carpeta hermana del repo). Nombrado: `reporteGestionTerritorial_<desde>_<hasta>.xlsx`. `dedup_recetas.py` busca ahí.
 - **Reporte de Programación AA (PASO 4b de `AUTO_SSASUR.py`)**: sigue descargándose a diario (es parte del mismo scrape del módulo ABASTECIMIENTO, sin costo aparte) aunque `programacion_aa.py` ya no existe — nadie lo procesa hoy. Se dejó así porque tocar el scraper es riesgoso y de bajo beneficio; si se quiere ahorrar el tiempo de descarga, usar `--no-programacion` explícitamente.
 - **Drive/Escritorio recortados 04-09-2026**: `publicar_drive.py` y `publicar_escritorio.py` solo sincronizan las 6 categorías vigentes (Fusión AA, Gestión Territorial, Controlados, Clozapinas, Centinela Invierno/SM, Servicios Farmacéuticos) + infraestructura. Las carpetas "App Pedidos", "Auditoria Prescripcion" y "Programacion AA" (en Drive y en Escritorio\Farmacia AA\) se eliminaron — no reintroducir sin confirmar.
+- **Dedup GT (qué receta ya tiene nómina)**: la fuente es la PLANILLA en disco
+  (`cruce_gt._recetas_con_nomina`: `out_gt/**/*Planilla*.xlsx`, el árbol
+  `<ESTAB>/Nóminas de Envío/**` y los `Nomina_Manual_*` legados), reforzada con
+  las recetas que `gt_maestro.xlsx` marca en un estado avanzado (lista para
+  retiro / enviada / entregada). NUNCA usar la mera presencia de la fila en
+  `gt_maestro.xlsx`: ese libro es el registro anual de GT y lo llena
+  `_sincronizar_maestro()` con el reporte crudo COMPLETO en estado "EN
+  PREPARACIÓN" — usarlo como dedup dejó recetas de Quepe/Teodoro/Toltén sin
+  nómina para siempre (corregido 11-09-2026).
+- **Orden cronológico de los reportes GT**: se deriva de la fecha `<desde>` del
+  nombre (ancla del día de descarga), NUNCA de `<hasta>`, que es el borde de la
+  ventana consultada y puede apuntar al futuro. `dedup_recetas._clave_orden` y
+  `publicar_drive.sync_gt` ya lo hacen así; usar `<hasta>` hacía que el dedup
+  vaciara el reporte recién descargado.
 - **Drive**: NO subir CSV sábanas ni stock xlsx (RUTs / Ley 19.628). Carpeta raíz `Farmacia AA` en Drive — IDs fijos en `_drive_folders.json`. Para activar: `SETUP_DRIVE.bat`.
 - **Rutas fuera del repo (otra máquina)**: `RCH_DIR` y `PLANTILLA_BLANCO_RCH` (carpeta/plantilla del formulario ISP de Recetas Cheque) viven en `utils_aa.py`, configurables por variable de entorno — `MAESTRO_RCH_DIR` y `MAESTRO_PLANTILLA_RCH` — para no hardcodear la ruta de la QF al correr esto en otro equipo. Default = la ruta actual de esta máquina.
 

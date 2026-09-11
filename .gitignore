@@ -21,6 +21,10 @@ reporteGestionTerritorial*.xlsx
 # con NOMBRES DE PACIENTES (Ley 19.628) — NUNCA subir a este repo público ────
 _gt_arbol_sync.json
 
+# Cache del dedup GT (ruta de planilla -> Nº de receta ya despachados).
+# Sin nombres ni RUT, pero son datos de pacientes igual -> fuera del repo publico.
+_gt_nominas_generadas.json
+
 # ── Debug y temporales ────────────────────────────────────────────────────────
 debug_*.png
 _tmp_*.png

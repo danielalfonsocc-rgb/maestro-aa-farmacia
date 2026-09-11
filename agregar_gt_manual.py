@@ -40,6 +40,7 @@ Uso — dos formas de entrada (ver también GT_NOMINA_PARTICULAR.bat):
 import argparse
 import csv
 import datetime
+import glob
 import os
 import sys
 
@@ -47,6 +48,7 @@ import openpyxl
 
 import gt_maestro as GM
 import generar as G
+import cruce_gt as CG
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -182,6 +184,34 @@ def _leer_gt_excel(path, wb_maestro):
             "pendiente": "",
             "refrigerado": refrigerado,
         })
+
+    # Cruce contra el histórico (informe_completo_recetas*.csv) para completar
+    # Pendiente/Refrigerados/Controlados — misma lógica que cruce_gt.py
+    # (cruzar_historico + clasificar), reutilizada tal cual en vez de
+    # reimplementarla. Antes esta función SIEMPRE dejaba "pendiente": "" sin
+    # verificar nada — violaba la regla del proyecto de nunca dar una receta
+    # por pendiente/no pendiente sin cruzarla contra el informe completo
+    # (detectado 07-09-2026 revisando la nómina manual de CESFAM Teodoro
+    # Schmidt del 24-07-2026, 111 recetas todas sin Pendiente marcado).
+    archivos_hist = sorted(glob.glob(os.path.join(MAESTRO_DIR, "informe_completo_recetas*.csv")))
+    if archivos_hist and nuevas:
+        recetas_set = {f["receta"] for f in nuevas}
+        det = CG.cruzar_historico(recetas_set, archivos_hist)
+        sin_historico = []
+        for f in nuevas:
+            d = det.get(f["receta"])
+            if d and d["lineas"]:
+                CG.clasificar(f, d)  # sobreescribe f["pendiente"]/["refrigerado"] y agrega f["controlado"]
+            else:
+                sin_historico.append(f["receta"])
+        if sin_historico:
+            print(f"  [AVISO] {len(sin_historico)} receta(s) no se encontraron en informe_completo_recetas*.csv "
+                  f"— Pendiente queda SIN VERIFICAR para: {sin_historico}. Puede ser que el CSV esté "
+                  f"desactualizado (correr AUTO_SSASUR.bat) — revisar antes de dar esta nómina por buena.")
+    elif nuevas:
+        print(f"  [AVISO] No hay informe_completo_recetas*.csv en {MAESTRO_DIR} — Pendiente queda "
+              f"SIN VERIFICAR para las {len(nuevas)} receta(s) nueva(s).")
+
     print(f"  {len(por_receta)} receta(s) en el informe · {len(ya_registradas)} ya estaban en el maestro "
           f"(cruce_gt.py sí las tomó) · {len(con_destino)} OMITIDA(S) por ya traer Estab. Destino "
           f"(las toma sola cruce_gt.py --generar, no se duplica nómina) · {len(nuevas)} NUEVA(S) "
@@ -207,7 +237,16 @@ def _leer_nomina_existente(ruta):
     23 recetas de CESFAM QUEPE y 15 de TOLTEN HOSP. de la corrida de esa
     misma mañana (los datos seguían íntegros en gt_maestro.xlsx, que nunca
     se pisa, así que se pudieron reconstruir — pero no debería depender de
-    eso)."""
+    eso).
+
+    La columna "Refrigerados / Controlados" de generar.hoja_funcionarios
+    (modo="todos") es UNA sola columna combinada — el texto sale en rojo si
+    es controlado o verde si es refrigerado (ver generar.RED/GREEN), sin
+    ningún otro campo que distinga cuál es cuál. Antes esta función leía
+    solo el valor y siempre lo devolvía como "refrigerado", perdiendo la
+    distinción (y el color) de cualquier controlado al re-fusionar una
+    Planilla el mismo día — corregido 07-09-2026 leyendo el color de fuente
+    real de la celda en vez de asumir refrigerado."""
     if not os.path.exists(ruta):
         return []
     try:
@@ -219,41 +258,52 @@ def _leer_nomina_existente(ruta):
     ws = wb["Funcionarios"]
     HR = 5   # fila de encabezado real de hoja_funcionarios (ver generar.py)
     regs = []
-    for row in ws.iter_rows(min_row=HR + 1, values_only=True):
-        receta = row[1] if len(row) > 1 else None
+    for row in ws.iter_rows(min_row=HR + 1):
+        receta = row[1].value if len(row) > 1 else None
         if receta in (None, "", "TOTAL"):
             continue
+        celda_refri = row[8] if len(row) > 8 else None
+        texto = (celda_refri.value if celda_refri is not None else "") or ""
+        rgb = str(getattr(getattr(celda_refri, "font", None) and celda_refri.font.color, "rgb", None) or "")
+        es_controlado = bool(texto) and rgb.upper().endswith(G.RED.upper())
         regs.append({
-            "receta": str(receta), "paciente": row[2] or "", "run": row[3] or "",
-            "especialidad": row[4] or "", "periodo": row[5] or "",
-            "n_presc": row[7] or 1, "refrigerado": row[8] or "",
-            "pendiente": row[10] if len(row) > 10 else "",
+            "receta": str(receta),
+            "paciente": row[2].value or "" if len(row) > 2 else "",
+            "run": row[3].value or "" if len(row) > 3 else "",
+            "especialidad": row[4].value or "" if len(row) > 4 else "",
+            "periodo": row[5].value or "" if len(row) > 5 else "",
+            "n_presc": (row[7].value or 1) if len(row) > 7 else 1,
+            "refrigerado": "" if es_controlado else texto,
+            "controlado": texto if es_controlado else "",
+            "pendiente": (row[10].value or "") if len(row) > 10 else "",
         })
     return regs
 
 
 def _generar_nomina(destino, filas_destino, fecha_hoy):
-    """Genera la Nómina de Envío (.xlsx, mismo formato que skill_gt) y,
-    cuando alguna receta trae refrigerado, también el Letrero (.pdf) para
-    un establecimiento, con las filas manuales de esta corrida. Antes esta
-    función solo generaba la planilla — un envío armado a mano con
-    refrigerados salía sin el aviso físico ❄ REFRIGERADO en la caja.
-
-    Si ya existe una nómina del mismo destino/fecha (dos corridas el mismo
-    día), FUSIONA con la existente en vez de pisarla — ver
-    _leer_nomina_existente."""
+    """Genera/actualiza la Nómina de Envío OFICIAL (<slug(destino)>_Planilla.xlsx)
+    de un establecimiento, fusionando por N° Receta con lo que ya haya ahí ese
+    día — nunca escribe un archivo "Nomina_Manual_*" aparte. Antes esta función
+    creaba un archivo de staging separado que requería un paso posterior
+    (fusionar_nominas_gt.py) para combinarlo con la Planilla "automática" de
+    cruce_gt.py — frágil por depender del ORDEN en que corriera cada cosa
+    (bug real 04-09-2026, ver memoria del proyecto
+    gt-manual-vs-pipeline-auto). Retirado 07-09-2026: ahora cada lado fusiona
+    directo sobre el archivo oficial al escribir — si la automática llega
+    después el mismo día, publicar_drive._depositar_arbol_local() fusiona sola
+    contra lo que esta función ya dejó (misma lógica de fusión en ambos
+    lados)."""
     regs_nuevos = {f["receta"]: {
         "receta": f["receta"], "paciente": f["paciente"], "run": f["rut"],
         "especialidad": f["especialidad"], "periodo": f["periodo"],
         "n_presc": int(f["n_presc"] or 1), "pendiente": f["pendiente"],
-        "refrigerado": f.get("refrigerado", ""),
+        "refrigerado": f.get("refrigerado", ""), "controlado": f.get("controlado", ""),
     } for f in filas_destino}
 
     # "Nóminas de Envío" se organiza en dos niveles: carpeta por mes
     # ("JULIO 2026") y adentro carpeta por fecha de extracción (DD-MM-YYYY) —
     # mismo esquema que "Revisión de Solicitudes" (ver
-    # revision_solicitudes._carpeta_salida). La nómina manual queda ahí, con
-    # prefijo "Nomina_Manual_" para distinguirla de las que baja skill_gt.
+    # revision_solicitudes._carpeta_salida).
     carpeta_mes = f"{GM.MESES_ES[fecha_hoy.month - 1]} {fecha_hoy.year}"
     carpeta_fecha = fecha_hoy.strftime("%d-%m-%Y")
     carpeta_local = _CARPETA_LOCAL.get(destino)
@@ -264,39 +314,39 @@ def _generar_nomina(destino, filas_destino, fecha_hoy):
         print(f"  [AVISO] '{destino}' no está en el mapeo de carpetas — guardando en {destino_dir}")
     os.makedirs(destino_dir, exist_ok=True)
 
-    nombre = f"Nomina_Manual_{GM._norm(destino)}_{fecha_hoy.strftime('%Y-%m-%d')}.xlsx"
-    ruta = os.path.join(destino_dir, nombre)
+    ruta = os.path.join(destino_dir, f"{G.slug(destino)}_Planilla.xlsx")
 
     regs_existentes = {r["receta"]: r for r in _leer_nomina_existente(ruta)}
-    n_fusionadas = len(regs_existentes) - len(set(regs_existentes) & set(regs_nuevos))
-    if n_fusionadas:
-        print(f"  [FUSIÓN] {destino}: ya había una nómina de hoy con {len(regs_existentes)} receta(s) — "
-              f"se conservan {n_fusionadas} que no venían en esta corrida.")
+    n_previas = len(regs_existentes)
+    if n_previas:
+        print(f"  [FUSIÓN] {destino}: ya había {n_previas} receta(s) en la nómina oficial de hoy — "
+              f"se fusionan con las {len(regs_nuevos)} de esta corrida.")
     regs = list({**regs_existentes, **regs_nuevos}.values())   # los nuevos pisan si hay choque de receta
 
     wb = openpyxl.Workbook()
-    titulo = f"GESTIÓN TERRITORIAL — {destino}"
+    titulo = f"GESTIÓN TERRITORIAL - {destino.upper()}"
     subtitulo = (f"Origen: Farmacia Hospital de Pitrufquén   |   Destino: {destino}   |   "
-                 f"Nómina manual (sin destino en SSASUR) — {fecha_hoy.strftime('%d/%m/%Y')}")
-    G.hoja_funcionarios(wb, regs, destino, titulo, subtitulo)
+                 f"Fecha de entrega: {fecha_hoy.strftime('%d/%m/%Y')}")
+    G.hoja_funcionarios(wb, regs, destino, titulo, subtitulo, modo="todos")
     wb.save(ruta)
 
-    # Letrero — mismo criterio que skill_gt: solo si algún registro trae
-    # refrigerado. Aquí no hay cruce con histórico SIDRA (refri_map vacío);
-    # el detalle sale de la columna "refrigerado" del CSV/informe de entrada.
+    # Letrero — se (re)genera siempre que se toca este destino, no solo si hay
+    # refrigerado (mismo criterio que publicar_drive._fusionar_en_deposito):
+    # "lleva" solo decide si aparece el aviso ❄, no si el letrero existe. Aquí
+    # no hay cruce con histórico SIDRA (refri_map vacío); el detalle sale de
+    # la columna "refrigerado" del CSV/informe de entrada.
+    lleva = any((r.get("refrigerado") or "").strip() for r in regs)
+    G.FECHA = fecha_hoy.strftime("%d/%m/%Y")
+    detalle_refri = G._detalle_refrigerados(regs, {}) if lleva else []
+    ruta_letrero_xlsx = os.path.join(destino_dir, f"{G.slug(destino)}_Letrero.xlsx")
+    G.letrero(destino, lleva, ruta_letrero_xlsx, detalle_refri)
     ruta_letrero = None
-    if any((r.get("refrigerado") or "").strip() for r in regs):
-        G.FECHA = fecha_hoy.strftime("%d/%m/%Y")
-        detalle_refri = G._detalle_refrigerados(regs, {})
-        nombre_letrero = f"Nomina_Manual_{GM._norm(destino)}_{fecha_hoy.strftime('%Y-%m-%d')}_Letrero.xlsx"
-        ruta_letrero = os.path.join(destino_dir, nombre_letrero)
-        G.letrero(destino, True, ruta_letrero, detalle_refri)
-        if G.to_pdf(ruta_letrero, destino_dir):
-            try:
-                os.remove(ruta_letrero)
-            except OSError:
-                pass
-            ruta_letrero = os.path.splitext(ruta_letrero)[0] + ".pdf"
+    if G.to_pdf(ruta_letrero_xlsx, destino_dir):
+        try:
+            os.remove(ruta_letrero_xlsx)
+        except OSError:
+            pass
+        ruta_letrero = os.path.splitext(ruta_letrero_xlsx)[0] + ".pdf"
 
     return ruta, ruta_letrero
 

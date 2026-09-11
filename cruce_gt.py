@@ -59,6 +59,11 @@ ALIAS_DESTINO = {
     "SUR TEODORO SCHMIDT": "CESFAM TEODORO SCHMIDT",
 }
 
+# Estados de "Estado Prescripción" en los que la línea ya NO se va a despachar:
+# no están ENTREGADO, pero tampoco son un pendiente que la farmacia deba
+# preparar. Ver clasificar().
+_ESTADOS_TERMINALES = {"ANULADO", "REEMPLAZADO", "DEVUELTO", "RECHAZADO"}
+
 
 def _normalizar_destino(d):
     d = str(d or "").strip()
@@ -269,7 +274,20 @@ def clasificar(reg, d):
         # pendiente — prioriza no perder un medicamento realmente faltante
         # sobre el riesgo menor de marcar de más. Cantidad mostrada: la
         # pendiente si ya está > 0, si no la recetada completa.
+        # ...salvo los estados TERMINALES: una línea ANULADO/REEMPLAZADO/
+        # DEVUELTO/RECHAZADO tampoco está "ENTREGADO", pero ya no se va a
+        # despachar nunca — la prescripción murió (reemplazada por otra,
+        # anulada por el prescriptor, devuelta o rechazada). Contarlas como
+        # pendiente le pone a la nómina medicamentos que el establecimiento
+        # no debe esperar: son 1.428 líneas del histórico (512 ANULADO, 505
+        # REEMPLAZADO, 371 DEVUELTO, 40 RECHAZADO al 11-09-2026). Caso real:
+        # la receta 46853557 de CESFAM TEODORO SCHMIDT tenía todo entregado
+        # salvo una Atorvastatina 80 REEMPLAZADO, y salía marcada como
+        # pendiente completa. Cantidad Pendiente > 0 tampoco los rescata: en
+        # una línea anulada ese campo queda con la cantidad recetada.
         estado_presc = ln.get("estado_presc", "")
+        if estado_presc in _ESTADOS_TERMINALES:
+            continue
         no_entregado_por_estado = bool(estado_presc) and estado_presc != "ENTREGADO"
         if no_entregado_por_estado or ln["pendiente"] > 0:
             cant = ln["pendiente"] if ln["pendiente"] > 0 else ln["recetada"]
@@ -336,21 +354,120 @@ def _buscar_generar_py():
     return None
 
 
-def _recetas_en_gt_maestro():
-    """Nº de receta de TODAS las hojas de gt_maestro.xlsx (el histórico por
-    mes) — fuente de verdad de qué receta ya tiene Nómina de Envío generada.
+# Carpeta hermana del repo con el árbol de Nóminas de Envío ya depositadas
+# (ver CLAUDE.md → "GT raw downloads").
+GT_DIR = os.path.join(os.path.dirname(MAESTRO_DIR), "04_Farmacia_Gestion_Territorial")
+NOMINAS_CACHE = os.path.join(MAESTRO_DIR, "_gt_nominas_generadas.json")
 
-    Reemplaza el dedup anterior (_recetas_en_gt_previos, por presencia en
-    reportes reporteGestionTerritorial_*.xlsx ya descargados). Ese dedup
-    daba falsos positivos: una receta podía 'aparecer' en un reporte previo
-    sin que ese reporte hubiera llegado a generar/depositar su nómina (paso
-    fallido, o simplemente porque el reporte de ESE día la mostraba como
-    pendiente sin que aún se procesara) — bug real 10-08-2026: 50+ recetas
-    de Quepe/Tolten/Teodoro Schmidt/PSR Queule seguían PENDIENTES/EN
-    TRÁNSITO en SSASUR pero ya no se les generaba nómina en ninguna corrida
-    posterior porque el número ya figuraba en un reporte anterior. Con
-    gt_maestro.xlsx como fuente, una receta solo se salta si REALMENTE ya
-    quedó registrada (nómina generada), no solo 'vista'."""
+# Estados de gt_maestro.xlsx que SÍ prueban que la receta ya salió en una
+# nómina. "EN REVISIÓN" y "EN PREPARACIÓN" NO prueban nada: son los estados
+# con que se registra una receta recién vista en el reporte de despacho
+# (_sincronizar_maestro escribe "EN PREPARACIÓN" para TODAS las recetas del
+# reporte crudo, incluidas las que ese día no generaron planilla).
+_ESTADOS_YA_DESPACHADA = {"listapararetiro", "retiroenventanilla", "enviada", "entregada"}
+
+
+def _recetas_de_planilla(ruta):
+    """Nº de receta de una Nómina de Envío ya generada (hoja "Funcionarios",
+    encabezado en la fila 5, Nº Receta en la columna B — ver
+    generar.hoja_funcionarios y agregar_gt_manual._leer_nomina_existente)."""
+    from openpyxl import load_workbook
+    try:
+        wb = load_workbook(ruta, read_only=True, data_only=True)
+    except Exception:
+        return []
+    try:
+        if "Funcionarios" not in wb.sheetnames:
+            return []
+        ws = wb["Funcionarios"]
+        out = []
+        for row in ws.iter_rows(min_row=6, min_col=2, max_col=2, values_only=True):
+            v = row[0]
+            if v is None:
+                continue
+            v = str(v).strip()
+            if v and v.upper() != "TOTAL":
+                out.append(v)
+        return out
+    finally:
+        wb.close()
+
+
+def _recetas_con_nomina():
+    """Nº de receta que YA aparecen en alguna Nómina de Envío realmente
+    generada — la única prueba dura de "a esta receta ya se le hizo planilla".
+    Busca en out_gt/<rango>/ y en el árbol depositado
+    04_Farmacia_Gestion_Territorial/<ESTAB>/Nóminas de Envío/.
+
+    Cachea por archivo (ruta → mtime/tamaño/recetas) en NOMINAS_CACHE para no
+    releer ~330 xlsx en cada corrida; solo se vuelve a leer el archivo nuevo o
+    modificado."""
+    # "Nomina_Manual_*" es el nombre legado de agregar_gt_manual.py (ya no lo
+    # produce — ver CLAUDE.md, cambio del 07-09-2026), pero quedan decenas en
+    # el árbol y son nóminas reales: si no se cuentan, el pipeline volvería a
+    # generar planilla para recetas que ya se enviaron a mano.
+    patrones = [os.path.join(MAESTRO_DIR, "out_gt", "**", "*Planilla*.xlsx"),
+                os.path.join(GT_DIR, "*", "**", "*Planilla*.xlsx"),
+                os.path.join(GT_DIR, "*", "**", "Nomina_Manual*.xlsx")]
+    try:
+        with open(NOMINAS_CACHE, encoding="utf-8") as f:
+            cache = json.load(f)
+    except Exception:
+        cache = {}
+
+    nuevo, recetas = {}, set()
+    for patron in patrones:
+        for ruta in glob.glob(patron, recursive=True):
+            if os.path.basename(ruta).startswith("~$"):
+                continue
+            try:
+                st = os.stat(ruta)
+            except OSError:
+                continue
+            sello = [int(st.st_mtime), st.st_size]
+            hit = cache.get(ruta)
+            lista = hit[2] if (hit and hit[:2] == sello) else _recetas_de_planilla(ruta)
+            nuevo[ruta] = [sello[0], sello[1], lista]
+            recetas.update(lista)
+
+    if nuevo != cache:
+        try:
+            with open(NOMINAS_CACHE, "w", encoding="utf-8") as f:
+                json.dump(nuevo, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"  [aviso] no pude escribir {os.path.basename(NOMINAS_CACHE)}: {e}")
+    return recetas
+
+
+def _recetas_en_gt_maestro():
+    """Nº de receta que gt_maestro.xlsx da por YA DESPACHADAS — solo las que
+    tienen un Estado avanzado (_ESTADOS_YA_DESPACHADA), no la mera presencia
+    de la fila.
+
+    Bug real detectado 11-09-2026: esta función devolvía TODAS las recetas de
+    TODAS las hojas del maestro y cruce_gt.py las trataba como "ya tiene
+    nómina generada". Pero gt_maestro.xlsx es el registro anual de Gestión
+    Territorial — lo alimentan _sincronizar_maestro() con el reporte crudo
+    COMPLETO (estado "EN PREPARACIÓN"), agregar_gt_manual.py, la revisión de
+    solicitudes y la edición manual de la QF. Así, cualquier receta que
+    apareciera en un reporte un día en que no se le generó planilla quedaba
+    marcada como "ya procesada" para siempre y el pipeline no la volvía a
+    mirar nunca. Caso comprobado:
+    reporteGestionTerritorial_05-08-2026_24-08-2026.xlsx traía 126 recetas de
+    6 destinos (CESFAM QUEPE, CESFAM TEODORO SCHMIDT, TOLTEN HOSP., PSR
+    QUEULE, GORBEA HOSP., GORBEA DSM) y out_gt/ solo recibió la planilla de
+    GORBEA HOSP.: las otras 121 se saltaron por "ya estar en gt_maestro" —
+    en el reporte del día siguiente y en todos los posteriores también. El
+    equipo lo compensó sacando esas nóminas a mano (de ahí las decenas de
+    Nomina_Manual_* del árbol). La auditoría del 11-09-2026 dejó 26 recetas
+    que ni siquiera alcanzó el rescate manual, 5 de ellas todavía con
+    prescripciones sin entregar (CESFAM TEODORO SCHMIDT 2, CESFAM QUEPE 1,
+    LONCOCHE HOSP. 1, PSR QUEULE 1).
+
+    La prueba dura de "ya tiene nómina" es la planilla misma
+    (_recetas_con_nomina); esta función queda como refuerzo para las recetas
+    cuyo archivo de nómina ya no esté en disco pero que la QF marcó como
+    enviada/entregada en el maestro."""
     import gt_maestro as GM
     wb, _ = GM.cargar_maestro()
     recetas = set()
@@ -362,22 +479,41 @@ def _recetas_en_gt_maestro():
         except Exception:
             continue
         idx_receta = GM._col_index(headers, "receta")
-        if idx_receta is None:
+        idx_estado = GM._col_index(headers, "estado")
+        if idx_receta is None or idx_estado is None:
             continue
         for r in range(fila_header + 1, ws.max_row + 1):
             v = ws.cell(row=r, column=idx_receta + 1).value
-            if v is not None and str(v).strip():
+            if v is None or not str(v).strip():
+                continue
+            if GM._norm(ws.cell(row=r, column=idx_estado + 1).value) in _ESTADOS_YA_DESPACHADA:
                 recetas.add(str(v).strip())
+    return recetas
+
+
+def _recetas_ya_con_nomina():
+    """Set de dedup del pipeline GT: recetas que ya salieron en una nómina.
+    Une la prueba dura (planillas en disco) con el refuerzo del maestro."""
+    recetas = _recetas_con_nomina()
+    try:
+        recetas |= _recetas_en_gt_maestro()
+    except Exception as e:
+        print(f"  [aviso] no pude leer gt_maestro.xlsx para el dedup: {e} — "
+              f"sigo solo con las planillas en disco")
     return recetas
 
 
 def _sincronizar_maestro(reporte, estado_destino="EN PREPARACIÓN"):
     """Registra en gt_maestro.xlsx todas las recetas del reporte recién
-    procesado (nuevas y ya existentes — upsert idempotente), para que el
-    dedup del día siguiente (_recetas_en_gt_maestro) las vea. Sin esto, el
-    ciclo se rompe: se generan planillas pero gt_maestro nunca se entera,
-    así que el día siguiente cruce_gt.py las vuelve a considerar 'nuevas'
-    (o, con el dedup viejo, las pierde de vista para siempre)."""
+    procesado (nuevas y ya existentes — upsert idempotente): el maestro es el
+    REGISTRO anual de Gestión Territorial, así que debe reflejar todo lo que
+    SSASUR despachó, se le haya generado planilla o no.
+
+    OJO: este registro NO es el dedup del pipeline. Lo fue hasta el
+    11-09-2026 y por eso se perdían nóminas — una receta registrada acá en
+    estado "EN PREPARACIÓN" quedaba marcada como ya procesada aunque nunca
+    hubiera salido en una planilla. El dedup ahora lo decide
+    _recetas_ya_con_nomina() a partir de las planillas realmente generadas."""
     import gt_maestro as GM
     wb, path = GM.cargar_maestro()
     resumen, hojas = GM.sincronizar_gt_report(wb, reporte, estado_destino=estado_destino)
@@ -392,7 +528,7 @@ def main():
     ap.add_argument("--hist-glob", default=os.path.join(MAESTRO_DIR, "informe_completo_recetas*.csv"))
     ap.add_argument("--generar", action="store_true", help="Invocar generar.py del skill al terminar el cruce")
     ap.add_argument("--no-pdf", action="store_true", help="No generar PDFs (pasa --no-pdf a generar.py)")
-    ap.add_argument("--no-dedup", action="store_true", help="No filtrar recetas ya registradas en gt_maestro.xlsx")
+    ap.add_argument("--no-dedup", action="store_true", help="No filtrar recetas que ya salieron en una nómina")
     ap.add_argument("--no-sync-maestro", action="store_true",
                      help="No registrar en gt_maestro.xlsx después de generar (debug/pruebas)")
     a = ap.parse_args()
@@ -401,22 +537,23 @@ def main():
     regs, hdr = leer_reporte_gt(a.reporte)
     print(f"Reporte GT: {len(regs)} recetas únicas | columnas detectadas OK")
 
-    # Dedup: excluir recetas que YA tienen Nómina de Envío generada, según
-    # gt_maestro.xlsx (ver _recetas_en_gt_maestro — antes se deducía por
-    # presencia en reportes descargados previos, lo que perdía de vista
-    # recetas genuinamente aún pendientes).
+    # Dedup: excluir recetas que YA salieron en una Nómina de Envío. La fuente
+    # es la planilla misma en disco (_recetas_con_nomina), más las que el
+    # maestro marca como enviada/entregada — NO la mera presencia de la fila
+    # en gt_maestro.xlsx, que daba por procesadas recetas que nunca llegaron a
+    # tener nómina (ver _recetas_en_gt_maestro).
     if not a.no_dedup:
         try:
-            ya_procesadas = _recetas_en_gt_maestro()
+            ya_procesadas = _recetas_ya_con_nomina()
         except Exception as e:
-            print(f"  [aviso] no pude leer gt_maestro.xlsx para el dedup: {e} — sigo sin dedup")
+            print(f"  [aviso] no pude calcular el dedup GT: {e} — sigo sin dedup")
             ya_procesadas = set()
         if ya_procesadas:
             antes = len(regs)
             regs = {k: v for k, v in regs.items() if k not in ya_procesadas}
             omitidas = antes - len(regs)
             if omitidas:
-                print(f"  [dedup GT] {omitidas} receta(s) omitidas por ya estar en gt_maestro.xlsx")
+                print(f"  [dedup GT] {omitidas} receta(s) omitidas por tener ya una nómina generada")
     recetas_set = set(regs.keys())
 
     archivos = sorted(glob.glob(a.hist_glob))

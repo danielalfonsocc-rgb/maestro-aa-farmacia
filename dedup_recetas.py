@@ -34,16 +34,36 @@ GT_DIR_DEFAULT = os.path.join(os.path.dirname(MAESTRO_DIR), "04_Farmacia_Gestion
 _FECHA_RE = re.compile(r"(\d{2}-\d{2}-\d{4})")
 
 
-def _fecha_orden(path):
-    """Fecha más reciente codificada en el nombre reporteGestionTerritorial_<desde>_<hasta>.xlsx
-    — no mtime, que puede no reflejar el orden real si el archivo se copia/sincroniza después."""
+def _clave_orden(path):
+    """Orden de DESCARGA del reporte reporteGestionTerritorial_<desde>_<hasta>.xlsx,
+    para saber cuál es la captura más nueva (la que conserva las recetas
+    duplicadas) y cuáles son las viejas (las que las pierden).
+
+    Se usa la fecha <desde>, que es el ancla del día de descarga
+    (AUTO_SSASUR.py: desde = día hábil anterior, hasta = hoy), con el mtime
+    como desempate cuando dos capturas comparten <desde>.
+
+    Bug real detectado 11-09-2026: antes esta clave era max(fechas del
+    nombre), o sea <hasta>. Pero <hasta> es el borde SUPERIOR de la ventana
+    consultada, no una marca de tiempo: una corrida vieja con ventana ancha
+    (ej. reporteGestionTerritorial_27-08-2026_10-09-2026, descargado el
+    28-08) queda "más nueva" que la captura real de hoy, así que el dedup
+    conservaba la vieja y vaciaba la recién descargada. Efecto medido en
+    disco: reporteGestionTerritorial_04-09-2026_07-09-2026.xlsx pasó de 44 a
+    0 recetas y reporteGestionTerritorial_03-09-2026_04-09-2026.xlsx de 101 a
+    0 — el reporte crudo del día quedó sin ninguna fila y cualquier
+    re-ejecución de cruce_gt.py sobre él no generaba ninguna nómina. Es el
+    mismo error de criterio que publicar_drive.sync_gt ya había corregido
+    para elegir el "último" rango de out_gt (ver su comentario del
+    04-09-2026): la fecha "hasta" del nombre no es cronología."""
     fechas = _FECHA_RE.findall(os.path.basename(path))
+    mtime = datetime.fromtimestamp(os.path.getmtime(path))
     if fechas:
         try:
-            return max(datetime.strptime(f, "%d-%m-%Y") for f in fechas)
+            return (min(datetime.strptime(f, "%d-%m-%Y") for f in fechas), mtime)
         except ValueError:
             pass
-    return datetime.fromtimestamp(os.path.getmtime(path))
+    return (mtime, mtime)
 
 
 def _key(h):
@@ -129,7 +149,7 @@ def _guardar_gt_xlsx_sin(path_orig, path_dest, excluir_recetas):
 # ── GT dedup ──────────────────────────────────────────────────────────────────
 def analizar_gt(gt_dir, limpiar=False):
     patron = os.path.join(gt_dir, "reporteGestionTerritorial_*.xlsx")
-    archivos = sorted(glob.glob(patron), key=_fecha_orden)  # orden cronológico real (fecha en el nombre)
+    archivos = sorted(glob.glob(patron), key=_clave_orden)  # orden de descarga real (ver _clave_orden)
     if not archivos:
         print(f"[GT] No hay archivos GT en {gt_dir}")
         return
@@ -173,8 +193,16 @@ def analizar_gt(gt_dir, limpiar=False):
             for arch in files[:-1]:   # todos menos el más reciente
                 a_excluir[arch].add(rec)
 
+        mas_nuevo = archivos[-1]
         for arch, excluir in sorted(a_excluir.items()):
             nombre = os.path.basename(arch)
+            if arch == mas_nuevo:
+                # Red de seguridad del fix de _clave_orden: la captura más
+                # reciente nunca se recorta. Si alguna vez vuelve a colarse
+                # acá, se avisa en vez de vaciar el reporte del día.
+                print(f"    {nombre}: es la captura más reciente — NO se toca "
+                      f"({len(excluir)} duplicado(s) se dejan en ambos archivos)")
+                continue
             bak = arch + ".bak"
             if not os.path.exists(bak):
                 shutil.copy2(arch, bak)
