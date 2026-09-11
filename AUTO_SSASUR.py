@@ -1139,6 +1139,83 @@ async def _filas_resultado(page):
     }""")
 
 
+async def _estado_tabla_gt(page):
+    """Foto del listado GT: {filas, vacio, cargando}.
+
+      · filas    → nº de <tr> de datos de la tabla más grande
+      · vacio    → la tabla dice explícitamente que no hay resultados
+      · cargando → DataTables está procesando (o la tabla aún no existe)
+
+    A diferencia de _filas_resultado(), separa "confirmado vacío" de "todavía
+    no sé": es esa diferencia la que evita dar por bueno un 0 falso."""
+    return await page.evaluate(r"""() => {
+      const vis = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const proc = [...document.querySelectorAll('.dataTables_processing, .loading, .spinner, [id$=_processing]')];
+      const cargando = proc.some(vis);
+      const tablas = [...document.querySelectorAll('table')];
+      if (!tablas.length) return {filas: 0, vacio: false, cargando: true};
+      let mejor = null, max = -1;
+      for (const t of tablas) {
+        const n = t.querySelectorAll('tbody tr').length;
+        if (n > max) { max = n; mejor = t; }
+      }
+      const vacioCelda = !!mejor.querySelector('tbody td.dataTables_empty');
+      const txt = (mejor.innerText || '').toLowerCase();
+      const vacioTxt = /no se encontraron|sin datos|no hay (registros|datos|resultados)|0 registros|ning[uú]n (registro|resultado)/.test(txt);
+      const vacio = vacioCelda || (vacioTxt && max <= 1);
+      const filas = vacio ? 0 : max;
+      return {filas, vacio, cargando};
+    }""")
+
+
+async def _esperar_tabla_gt(page, timeout_ms=45_000, estable_ms=2_000):
+    """Espera a que el listado GT quede QUIETO y devuelve (estado, filas):
+
+      ("datos", n)        el listado trae n filas y el conteo se repitió
+      ("vacio", 0)        la tabla dice explícitamente que no hay resultados
+      ("indeterminado", None)  se acabó el tiempo sin que la tabla se asentara
+
+    Reemplaza al `_networkidle() + wait_for_timeout(2500)` fijo que había antes
+    de leer el resultado. Ese par de esperas ciegas era el origen del "0 filas"
+    falso: _networkidle no llega a cumplirse nunca en varios módulos de SSASUR
+    (ver _networkidle) y 2,5 s no alcanzan cuando el sitio va lento — medido el
+    11-09-2026, www.ssasur.cl tardaba 16 s en responder y login.ssasur.cl ni
+    contestaba. Con la tabla a medio pintar se leía el estado ANTERIOR, casi
+    siempre el mensaje de "sin resultados" de la búsqueda previa, y el día se
+    daba por "sin despachos".
+
+    Consecuencia real: la corrida del 09-09-2026 pidió la ventana 08-09 → 09-09
+    y no generó ningún informe, mientras ese mismo día la consulta manual traía
+    9 recetas de PSR QUEULE con Fecha Entrega 08/09/2026 (la nómina del día 9
+    cubre lo entregado el día 8). Hubo que sacarla a mano. La corrida del 10-09
+    tampoco generó informe."""
+    import time as _t
+    fin = _t.monotonic() + timeout_ms / 1000
+    ultimo, desde_cuando = None, None
+    while _t.monotonic() < fin:
+        try:
+            e = await _estado_tabla_gt(page)
+        except Exception:
+            await page.wait_for_timeout(1_000)
+            continue
+        if e.get("cargando"):
+            ultimo, desde_cuando = None, None
+            await page.wait_for_timeout(1_000)
+            continue
+        if e.get("vacio"):
+            return ("vacio", 0)
+        n = int(e.get("filas") or 0)
+        if n > 0:
+            # exigir que el conteo se repita: una tabla a medio pintar crece
+            if n == ultimo:
+                if _t.monotonic() - desde_cuando >= estable_ms / 1000:
+                    return ("datos", n)
+            else:
+                ultimo, desde_cuando = n, _t.monotonic()
+        await page.wait_for_timeout(1_000)
+    return ("indeterminado", None)
+
+
 def _contar_filas_xlsx(path):
     """Nº de filas de datos del Excel descargado (descuenta título + encabezado).
     Best-effort; -1 si no se puede leer."""
@@ -1202,35 +1279,41 @@ async def paso_gt(page, desde=None, hasta=None, debug=False):
           else "  [AVISO] No encontré el control Origen/Destino.")
     await page.wait_for_timeout(800)
 
-    # 3) Buscar y esperar el listado (DataTable tablaGestionTerritorial).
-    try:
-        await _click_primero(page, SELS_BUSCAR, "Buscar")
-    except Exception:
-        pass   # por si el listado cargara solo al marcar origen
-    await _networkidle(page)
-    await page.wait_for_timeout(2_500)
+    # 3) Buscar y ESPERAR a que el listado (DataTable tablaGestionTerritorial)
+    #    quede quieto. Un "vacío" solo se acepta después de reintentar: es el
+    #    resultado que antes se daba por bueno a la primera y hacía perder el
+    #    día entero (ver _esperar_tabla_gt).
+    INTENTOS = 3
+    estado, n = "indeterminado", None
+    for intento in range(1, INTENTOS + 1):
+        try:
+            await _click_primero(page, SELS_BUSCAR, "Buscar")
+        except Exception:
+            pass   # por si el listado cargara solo al marcar origen
+        estado, n = await _esperar_tabla_gt(page)
+        if estado == "datos":
+            break
+        if intento < INTENTOS:
+            motivo = "vacío" if estado == "vacio" else "sin asentarse"
+            print(f"  (listado {motivo} en el intento {intento}/{INTENTOS} — "
+                  f"reintento con más espera...)")
+            await page.wait_for_timeout(3_000 * intento)
     if debug:
         await _dump_formulario(page, "post-buscar")
         await page.screenshot(path=str(MAESTRO_DIR / "debug_gt.png"))
 
-    n = await _filas_resultado(page)
-    if n == 0:
-        # Reintento: puede ser el mismo tipo de condición de carrera del
-        # llenado de fechas ya visto en vivo (14-07-2026) — a veces el filtro
-        # no alcanza a aplicarse antes de leer la tabla y devuelve "sin datos"
-        # aunque SSASUR sí tenga despachos para el rango (detectado 30-07-2026:
-        # 29/07 quedó vacío una corrida y con 64 filas la siguiente, mismo rango).
-        print("  (0 filas — reintentando por si el filtro no aplicó a tiempo...)")
-        await page.wait_for_timeout(2_000)
-        try:
-            await _click_primero(page, SELS_BUSCAR, "Buscar")
-        except Exception:
-            pass
-        await _networkidle(page)
-        await page.wait_for_timeout(2_500)
-        n = await _filas_resultado(page)
-    if n == 0:
-        print("  (sin recetas en el listado — no hay despacho para esas fechas)")
+    if estado == "indeterminado":
+        # NO es lo mismo que "no hubo despachos": la tabla nunca se asentó, así
+        # que no sabemos qué había. Se devuelve -1 (error) a propósito para que
+        # registrar_consulta_gt() NO marque el día como cubierto y la próxima
+        # corrida lo vuelva a pedir (ver gt_desde_a_consultar).
+        print(f"  [AVISO] El listado GT no terminó de cargar tras {INTENTOS} intentos — "
+              f"el rango queda SIN consultar y se reintenta en la próxima corrida.")
+        await page.screenshot(path=str(MAESTRO_DIR / "debug_gt.png"))
+        return (None, -1)
+    if estado == "vacio":
+        print(f"  (sin recetas en el listado tras {INTENTOS} intentos — "
+              f"no hay despacho para esas fechas)")
         return (None, 0)
 
     # 4) Excel (la firma electrónica NO es necesaria para este reporte).
