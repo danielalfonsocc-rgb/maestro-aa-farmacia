@@ -208,6 +208,26 @@ SERVICIOS_MARCADOR = MAESTRO_DIR / "Servicios_Farmaceuticos" / "_ultimo_mes.json
 # desde_gt hacia atrás para que paso_gt() no deje un rango sin consultar
 # (ver ultima_corrida_ok() y el cálculo de desde_gt en main()).
 ULTIMA_CORRIDA_JSON = MAESTRO_DIR / "_ultima_corrida_ok.json"
+
+# Libro de cobertura del informe GT: qué fechas de despacho se consultaron de
+# verdad, y en qué día se consultaron. Es lo que permite recuperar un día en
+# que el programa no corrió (o corrió y falló), sin depender de que ningún
+# otro paso haya terminado bien. Ver cobertura_gt() y gt_desde_a_consultar().
+GT_COBERTURA_JSON = MAESTRO_DIR / "_gt_cobertura.json"
+
+# Cuántos días corridos hacia atrás se re-consultan SIEMPRE, aunque ya estén
+# cubiertos. Necesario porque la ventana de un día se consulta una sola vez,
+# a media mañana: todo lo que SSASUR registre DESPUÉS de esa consulta, con
+# fecha de entrega de ese mismo día, no lo ve nadie nunca más. Caso real
+# 11-09-2026: 9 recetas de PSR QUEULE con Fecha Entrega 08/09/2026 entraron
+# después de la corrida de las 10:28 del 08-09; el informe del 08-09 trajo 39
+# recetas sin ninguna de Queule, y del 10-09 en adelante la ventana ya no
+# incluía el 08-09. Hubo que sacar esa nómina a mano.
+GT_RECHEQUEO_DIAS = 7
+
+# Tope de retroceso de la ventana GT (días corridos). Evita que un hueco viejo
+# —o un _gt_cobertura.json recién creado— dispare una consulta desmedida.
+GT_MAX_RETRO_DIAS = 30
 SELS_PROCESO_NUEVO = ('a:has-text("Proceso_nuevo")', 'button:has-text("Proceso_nuevo")',
                        ':text("Proceso_nuevo")', 'a:has-text("Proceso Nuevo")')
 SELS_HOJA_DIARIA = ('a:has-text("Hoja Diaria de Profesional")', ':text("Hoja Diaria de Profesional")',
@@ -578,6 +598,156 @@ def marcar_corrida_ok(d: date) -> None:
         )
     except Exception as e:
         print(f"  [aviso] no se pudo escribir {ULTIMA_CORRIDA_JSON.name}: {e}")
+
+
+def cobertura_gt() -> dict:
+    """{fecha de despacho (ISO) → día en que se consultó (ISO)}. Vacío si aún
+    no existe el libro."""
+    if not GT_COBERTURA_JSON.exists():
+        return {}
+    try:
+        import json as _json
+        d = _json.loads(GT_COBERTURA_JSON.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def marcar_cobertura_gt(desde: date, hasta: date, consultado: date) -> None:
+    """Registra que el rango [desde, hasta] se consultó el día `consultado`.
+    Se llama TAMBIÉN cuando el informe vino con 0 filas: "ese día no hubo
+    despachos" es cobertura válida, y si no se anotara se re-consultaría para
+    siempre."""
+    cob = cobertura_gt()
+    d = desde
+    while d <= hasta:
+        previo = cob.get(d.isoformat())
+        # gana la consulta más tardía: es la que vio el día más completo
+        if previo is None or previo < consultado.isoformat():
+            cob[d.isoformat()] = consultado.isoformat()
+        d += timedelta(days=1)
+    try:
+        import json as _json
+        GT_COBERTURA_JSON.write_text(
+            _json.dumps(dict(sorted(cob.items())), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"  [aviso] no se pudo escribir {GT_COBERTURA_JSON.name}: {e}")
+
+
+def _sembrar_cobertura_gt() -> dict:
+    """Primera vez: deduce la cobertura de los informes GT ya descargados.
+
+    La ventana EFECTIVA de un informe es [desde, min(hasta, día de descarga)]:
+    más allá del día en que se bajó, el reporte venía necesariamente vacío.
+    Por eso no sirve leer solo el nombre del archivo — hasta el 04-09-2026 la
+    ventana llevaba +13 días hacia el futuro, así que un informe bajado el
+    28-08 se llamaba ..._27-08-2026_10-09-2026 y aparentaba cubrir hasta el
+    10-09 sin haber consultado nunca septiembre."""
+    import re as _re
+    cob = {}
+    rx = _re.compile(r"(\d{2}-\d{2}-\d{4})")
+    for f in sorted(GT_DIR.glob("reporteGestionTerritorial_*.xlsx")):
+        fechas = rx.findall(f.name)
+        if len(fechas) < 2:
+            continue
+        try:
+            ds = sorted(date(int(x[6:10]), int(x[3:5]), int(x[0:2])) for x in fechas)
+        except ValueError:
+            continue
+        # el .bak es la copia previa al primer dedup: su mtime es lo más
+        # cercano al momento real de la descarga
+        bak = f.with_suffix(f.suffix + ".bak")
+        ref = bak if bak.exists() else f
+        bajado = date.fromtimestamp(ref.stat().st_mtime)
+        desde, hasta = ds[0], min(ds[-1], bajado)
+        d = desde
+        while d <= hasta:
+            k = d.isoformat()
+            if k not in cob or cob[k] < bajado.isoformat():
+                cob[k] = bajado.isoformat()
+            d += timedelta(days=1)
+    return cob
+
+
+def _a_fecha(txt) -> date | None:
+    """'dd/mm/yyyy' (o 'dd-mm-yyyy') → date. None si no parsea."""
+    t = str(txt or "").strip().replace("-", "/")
+    try:
+        d, m, a = (int(x) for x in t.split("/"))
+        return date(a, m, d)
+    except Exception:
+        return None
+
+
+def registrar_consulta_gt(desde_txt, hasta_txt, n, hoy: date) -> None:
+    """Anota en el libro de cobertura el rango que se acaba de consultar.
+
+    Se llama con n >= 0, o sea también cuando el informe vino con 0 filas: un
+    día sin despachos igual quedó consultado. NO se llama con n = -1 (error de
+    descarga) ni cuando el paso GT se omite o revienta — esos días quedan
+    abiertos a propósito, para que la próxima corrida los recupere."""
+    d0, d1 = _a_fecha(desde_txt), _a_fecha(hasta_txt)
+    if d0 is None or d1 is None or d1 < d0:
+        return
+    marcar_cobertura_gt(d0, d1, hoy)
+
+
+def gt_desde_a_consultar(hoy: date) -> date:
+    """Desde qué fecha pedir el informe GT hoy, para no dejar ningún día fuera.
+
+    Reemplaza al esquema anterior (desde = día hábil anterior, extendido con
+    _ultima_corrida_ok.json). Ese esquema fallaba de dos formas:
+
+      · si el programa no corría un día, la ventana del día siguiente seguía
+        siendo [ayer, hoy] y ese día se perdía para siempre — el marcador solo
+        se movía cuando PASO 5 (maestro_aa.py) terminaba bien, así que una
+        corrida que bajaba GT pero fallaba después dejaba el hueco igual;
+      · aunque corriera todos los días, la ventana de cada día se consulta una
+        sola vez a media mañana y no volvía a mirarse (ver GT_RECHEQUEO_DIAS).
+
+    Ahora la fecha sale del libro de cobertura: se retrocede hasta el primer
+    día hábil que nadie haya consultado DESPUÉS de que terminara (un día
+    consultado el mismo día no cuenta como cerrado — puede seguir recibiendo
+    despachos), y en todo caso se re-consultan los últimos GT_RECHEQUEO_DIAS.
+    Con tope en GT_MAX_RETRO_DIAS.
+
+    Consultar de más es barato y ya no tiene efectos secundarios: cruce_gt.py
+    saltea toda receta que ya tenga nómina generada (ver
+    cruce_gt._recetas_ya_con_nomina), así que un rango ancho no reimprime
+    nóminas ni duplica pacientes."""
+    cob = cobertura_gt()
+    if not cob:
+        cob = _sembrar_cobertura_gt()
+        if cob:
+            try:
+                import json as _json
+                GT_COBERTURA_JSON.write_text(
+                    _json.dumps(dict(sorted(cob.items())), ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+                print(f"  [GT] cobertura sembrada desde los informes ya descargados "
+                      f"({len(cob)} día(s))")
+            except Exception:
+                pass
+
+    tope = hoy - timedelta(days=GT_MAX_RETRO_DIAS)
+    fer = _feriados_chile()
+    inicio = hoy - timedelta(days=GT_RECHEQUEO_DIAS)
+
+    d = tope
+    while d < hoy:
+        habil = d.weekday() < 5 and d not in fer
+        consultado = cob.get(d.isoformat())
+        # "cerrado" = alguien lo consultó en un día POSTERIOR
+        cerrado = consultado is not None and consultado > d.isoformat()
+        if habil and not cerrado:
+            inicio = min(inicio, d)
+            break
+        d += timedelta(days=1)
+
+    inicio = max(inicio, tope)
+    return min(inicio, dia_habil_anterior(hoy))
 
 
 def gt_salida(dest: Path) -> Path:
@@ -1230,10 +1400,7 @@ async def main():
     # último día hábil — porque se saltó un día hábil normal, no solo fin de
     # semana/feriado — se extiende el inicio hasta ahí para no dejar un hueco
     # real sin consultar (ver ultima_corrida_ok()).
-    _gt_inicio_base = dia_habil_anterior(today)
-    _ultima_ok = ultima_corrida_ok()
-    if _ultima_ok is not None and _ultima_ok + timedelta(days=1) < _gt_inicio_base:
-        _gt_inicio_base = _ultima_ok + timedelta(days=1)
+    _gt_inicio_base = gt_desde_a_consultar(today)
     # Se puede acotar con --desde dd/mm/yyyy o --fecha dd/mm/yyyy.
     _gt_inicio = _fecha or fmt(_gt_inicio_base)
     desde_gt = _arg_val("--desde", _gt_inicio)
@@ -1320,6 +1487,8 @@ async def main():
         #   py AUTO_SSASUR.py --gt --fecha 17/06/2026
         if gt_mode:
             dest, n = await paso_gt(page, desde_gt, hasta_gt, debug_gt)
+            if isinstance(n, int) and n >= 0:
+                registrar_consulta_gt(desde_gt, hasta_gt, n, today)
             await browser.close()
             print("\n" + "═" * 62)
             print("  Informe Modalidad Despacho (GT) — resumen")
@@ -1480,6 +1649,11 @@ async def main():
                 # 31-08-2026: 3 días sin ningún reporte por esta causa).
                 gt_dest, n_gt = None, None
                 print(f"  [ERROR] Informe GT falló: {e} — continúo con el resto.")
+            # Cobertura: solo si SSASUR respondió (n >= 0, incluido "0 filas").
+            # Si falló la descarga, el rango queda ABIERTO y la próxima corrida
+            # lo vuelve a pedir — eso es lo que recupera un día perdido.
+            if isinstance(n_gt, int) and n_gt >= 0:
+                registrar_consulta_gt(desde_gt, hasta_gt, n_gt, today)
             if gt_dest:
                 cnt = f"{n_gt} recetas" if isinstance(n_gt, int) and n_gt >= 0 else "recetas ?"
                 print(f"  ✓ {gt_dest.name}  ({cnt})")

@@ -39,9 +39,17 @@ def _clave_orden(path):
     para saber cuál es la captura más nueva (la que conserva las recetas
     duplicadas) y cuáles son las viejas (las que las pierden).
 
-    Se usa la fecha <desde>, que es el ancla del día de descarga
-    (AUTO_SSASUR.py: desde = día hábil anterior, hasta = hoy), con el mtime
-    como desempate cuando dos capturas comparten <desde>.
+    Se usa la fecha de descarga EFECTIVA = min(<hasta>, mtime), con el mtime
+    como desempate. <hasta> es "hoy" en toda captura hecha por AUTO_SSASUR
+    desde el 04-09-2026, así que normalmente ES el día de la descarga; el
+    min() lo acota en los informes viejos, cuando la ventana llevaba +13 días
+    hacia el futuro y <hasta> apuntaba a una fecha que nunca se consultó.
+
+    No se usa <desde>: desde que la ventana GT se calcula por cobertura
+    (AUTO_SSASUR.gt_desde_a_consultar), una corrida de recuperación retrocede
+    <desde> varios días para tapar un hueco, y ordenar por <desde> haría pasar
+    esa captura —la más nueva— por la más vieja, que es justo el archivo que el
+    dedup recorta.
 
     Bug real detectado 11-09-2026: antes esta clave era max(fechas del
     nombre), o sea <hasta>. Pero <hasta> es el borde SUPERIOR de la ventana
@@ -60,7 +68,8 @@ def _clave_orden(path):
     mtime = datetime.fromtimestamp(os.path.getmtime(path))
     if fechas:
         try:
-            return (min(datetime.strptime(f, "%d-%m-%Y") for f in fechas), mtime)
+            hasta = max(datetime.strptime(f, "%d-%m-%Y") for f in fechas)
+            return (min(hasta, mtime), mtime)
         except ValueError:
             pass
     return (mtime, mtime)

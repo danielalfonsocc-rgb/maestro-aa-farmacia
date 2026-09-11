@@ -35,6 +35,17 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 - **GT raw downloads**: van a `../04_Farmacia_Gestion_Territorial/` (carpeta hermana del repo). Nombrado: `reporteGestionTerritorial_<desde>_<hasta>.xlsx`. `dedup_recetas.py` busca ahí.
 - **Reporte de Programación AA (PASO 4b de `AUTO_SSASUR.py`)**: sigue descargándose a diario (es parte del mismo scrape del módulo ABASTECIMIENTO, sin costo aparte) aunque `programacion_aa.py` ya no existe — nadie lo procesa hoy. Se dejó así porque tocar el scraper es riesgoso y de bajo beneficio; si se quiere ahorrar el tiempo de descarga, usar `--no-programacion` explícitamente.
 - **Drive/Escritorio recortados 04-09-2026**: `publicar_drive.py` y `publicar_escritorio.py` solo sincronizan las 6 categorías vigentes (Fusión AA, Gestión Territorial, Controlados, Clozapinas, Centinela Invierno/SM, Servicios Farmacéuticos) + infraestructura. Las carpetas "App Pedidos", "Auditoria Prescripcion" y "Programacion AA" (en Drive y en Escritorio\Farmacia AA\) se eliminaron — no reintroducir sin confirmar.
+- **Ventana del informe GT**: la calcula `AUTO_SSASUR.gt_desde_a_consultar()` a
+  partir de `_gt_cobertura.json` (qué fecha de despacho se consultó y en qué día),
+  NO de `_ultima_corrida_ok.json`. Retrocede hasta el primer día hábil que nadie
+  consultó *después* de que terminara, y siempre re-consulta los últimos
+  `GT_RECHEQUEO_DIAS` (7), con tope `GT_MAX_RETRO_DIAS` (30). Motivo: la ventana
+  de un día se consulta una sola vez a media mañana, y lo que SSASur registre
+  después con esa misma fecha de entrega no lo veía nadie nunca más; además, si
+  el programa no corría un día, ese día se perdía. Un rango ancho es inofensivo
+  porque el dedup por nómina real impide reimprimir. La cobertura se anota solo
+  con `n >= 0` (incluido "0 filas"): si la descarga falla, el día queda ABIERTO
+  a propósito para que la próxima corrida lo recupere.
 - **Dedup GT (qué receta ya tiene nómina)**: la fuente es la PLANILLA en disco
   (`cruce_gt._recetas_con_nomina`: `out_gt/**/*Planilla*.xlsx`, el árbol
   `<ESTAB>/Nóminas de Envío/**` y los `Nomina_Manual_*` legados), reforzada con
