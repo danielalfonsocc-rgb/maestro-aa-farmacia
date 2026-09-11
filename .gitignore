@@ -14,6 +14,12 @@ reporte_listado_actividades*.xlsx
 # detectado 30-07-2026, reporteGestionTerritorial<timestamp>.xlsx) ───────────
 reporteGestionTerritorial*.xlsx
 
+# Solicitudes de envio GT que manda un establecimiento de la red: traen
+# RUT + NOMBRE de los pacientes que piden (Ley 19.628). Su lugar es
+# ../04_Farmacia_Gestion_Territorial/<ESTAB>/Revision de Solicitudes/,
+# no la raiz del repo -- pero quedan sueltas aca al procesarlas.
+Solicitud_*.xlsx
+
 # ── Sesión SSASUR (contiene cookies/credenciales — NUNCA subir) ──────────────
 .ssasur_session.json
 
@@ -66,6 +72,12 @@ Centinela_Inyectables_SM/
 Servicios_Farmaceuticos/
 Programacion_AA/
 Conteo_Controlados/
+# Conteo manual de Bodega AA (JSON/xlsx de trabajo, se regeneran)
+Conteo_Bodega_AA/
+Conteo_Bodega_AA_*.xlsx
+conteo_*.json
+# Material de difusion del programa GT (PDF/HTML/imagenes, no es codigo)
+presentaciones/
 Informes_Controlados_AA/
 _archivo/
 
