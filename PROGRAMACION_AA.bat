@@ -23,5 +23,11 @@ echo.
 echo  Copiando al Escritorio (Farmacia AA\8 - Inventario Bodega AA)...
 py publicar_escritorio.py --inventario
 
+if exist "token_drive.json" (
+    echo.
+    echo  Subiendo a Google Drive (Farmacia AA\7 - Inventario Bodega AA)...
+    py publicar_drive.py --solo-inventario
+)
+
 echo.
 pause

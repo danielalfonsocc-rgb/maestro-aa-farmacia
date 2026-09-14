@@ -17,7 +17,7 @@ sin entrar a la carpeta del repositorio.
     │                           pacientes NO se copian a la nube de OneDrive)
     ├── 5 - Pedido Fusionado\   Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
     ├── 6 - Centinela\          Centinela_Reportes\<Sxx>\ (json + pdf) por semana
-    ├── 8 - Inventario Bodega AA\  Programacion_AA_<fecha>.xlsx del ciclo actual (+ su
+    ├── 8 - Inventario Bodega AA\  Programacion_AA_<fecha>.xlsx + .pdf (carta vertical) del ciclo actual (+ su
     │                             Resumen_Programacion_AA_* si ya se aplicó el conteo)
     ├── 9 - Clozapina\          Accesos a carpetas locales de reportes/hemogramas
     │                             (RUT pacientes, NO se copian a la nube)
@@ -391,6 +391,11 @@ def sync_inventario():
     vigentes = {os.path.basename(planilla)}
     _copiar(planilla, dst)
     msg = f"[Inventario] {os.path.basename(planilla)}"
+    pdf = os.path.splitext(planilla)[0] + ".pdf"      # versión para imprimir en carta vertical
+    if os.path.isfile(pdf):
+        _copiar(pdf, dst)
+        vigentes.add(os.path.basename(pdf))
+        msg += " + PDF"
 
     resumen = _mas_reciente(os.path.join(carpeta, "Resumen_Programacion_AA_*.xlsx"))
     if resumen and os.path.getmtime(resumen) >= os.path.getmtime(planilla):
@@ -398,7 +403,7 @@ def sync_inventario():
         vigentes.add(os.path.basename(resumen))
         msg += f" + {os.path.basename(resumen)}"
 
-    for viejo in glob.glob(os.path.join(dst, "*Programacion_AA_*.xlsx")):
+    for viejo in glob.glob(os.path.join(dst, "*Programacion_AA_*.*")):
         if os.path.basename(viejo) not in vigentes:
             try:
                 os.remove(viejo)

@@ -217,14 +217,16 @@ def _sugerencia(key, requerimiento_real, programado, periodo, hist):
 
 # ─────────────── modo 1: generar planilla del ciclo ────────────────────────
 
+# Anchos pensados para imprimir en CARTA VERTICAL (ajuste a 1 página de ancho):
+# Medicamento y Sugerencia van con ajuste de texto en vez de columnas anchas.
 HDRS = [
-    ('Medicamento',                46),
-    ('Cantidad Programada',        17),
-    ('Cantidad Solicitada',        17),
-    ('Stock Bodega AA',            15),
-    ('Stock Real',                 13),
-    ('Consumo Promedio Mensual',   20),
-    ('Sugerencia',                 30),
+    ('Medicamento',                40),
+    ('Cantidad Programada',        11),
+    ('Cantidad Solicitada',        11),
+    ('Stock Bodega AA',            10),
+    ('Stock Real',                 12),
+    ('Consumo Promedio Mensual',   11),
+    ('Sugerencia',                 22),
 ]
 
 
@@ -362,6 +364,15 @@ def generar(ruta_reporte=None, forzar=False, nota=None):
     os.makedirs(OUT_DIR, exist_ok=True)
     sal = os.path.join(OUT_DIR, f'Programacion_AA_{hoy.strftime("%Y%m%d")}.xlsx')
     _escribir_planilla(sal, filas, mae, ruta_reporte, meta_txt, hoy, nota)
+    sal_pdf = os.path.splitext(sal)[0] + '.pdf'
+    sub_pdf = (f'Reporte SSASUR: {meta_txt or os.path.basename(ruta_reporte)}  ·  '
+               f'Stock Bodega AA según {os.path.basename(mae)}  ·  '
+               f'Sugerencia con tolerancia ±{int(TOL_PCT*100)}%'
+               + (f'  ·  {nota}' if nota else ''))
+    try:
+        _escribir_pdf(sal_pdf, filas, hoy, sub_pdf)
+    except PermissionError:
+        print(f'  [aviso] {os.path.basename(sal_pdf)} está abierto — no se pudo regenerar el PDF.')
 
     n_subir = sum(1 for f in filas if f['Sugerencia'].startswith('Subir programación'))
     n_bajar = sum(1 for f in filas if f['Sugerencia'].startswith('Bajar programación'))
@@ -372,6 +383,7 @@ def generar(ruta_reporte=None, forzar=False, nota=None):
     print(f'{len(filas)} medicamentos | {n_sin_reporte} sin programación en el reporte')
     print(f'Sugerencias: Subir {n_subir} | Bajar {n_bajar} | Incorporar a programación {n_incorp}')
     print(f'\nExcel: {sal}')
+    print(f'PDF (carta vertical, para imprimir): {sal_pdf}')
     print('\nImprime esta planilla, cuenta físicamente Bodega AA y llena "Stock Real" a mano.')
     print('Cuando esté escaneada, avisa para transcribirla y correr --aplicar-conteo.')
 
@@ -427,9 +439,11 @@ def _escribir_planilla(sal, filas, mae, ruta_reporte, meta_txt, hoy, nota=None,
             if j >= 2:
                 c.fill = _pfill(bg)
                 c.font = Font(name='Arial', size=10, color=fg)
-                c.alignment = Alignment(horizontal='center')
+                c.alignment = Alignment(horizontal='center', vertical='center',
+                                        wrap_text=(j == 7))
             else:
                 c.font = Font(name='Arial', size=10)
+                c.alignment = Alignment(vertical='center', wrap_text=True)
         if es_resumen and f.get('Diferencia') not in (None, 0):
             dc = ws.cell(i, len(hdrs))
             dc.font = Font(name='Arial', size=10, color='7F1D1D', bold=True)
@@ -440,10 +454,105 @@ def _escribir_planilla(sal, filas, mae, ruta_reporte, meta_txt, hoy, nota=None,
     if filas:
         ws.auto_filter.ref = f'A3:{get_column_letter(ncols)}{last}'
         ws.print_area = f'A1:{get_column_letter(ncols)}{last}'
+    # Impresión: CARTA VERTICAL, 1 página de ancho, encabezado repetido en cada hoja.
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
-    ws.page_setup.orientation = 'landscape'
+    ws.page_setup.orientation = 'portrait'
+    ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
+    ws.page_margins.left = ws.page_margins.right = 0.4
+    ws.page_margins.top = ws.page_margins.bottom = 0.5
+    ws.print_title_rows = '3:3'
+    ws.print_options.horizontalCentered = True
+    ws.oddFooter.center.text = 'Página &P de &N'
     wb.save(sal)
+
+
+# ─────────────── PDF para imprimir (carta vertical) ─────────────────────────
+
+def _fuente_pdf():
+    """Arial del sistema (tildes, ñ, ±) si está disponible; si no, Helvetica."""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    fonts = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
+    try:
+        pdfmetrics.registerFont(TTFont('ArialAA', os.path.join(fonts, 'arial.ttf')))
+        pdfmetrics.registerFont(TTFont('ArialAA-Bold', os.path.join(fonts, 'arialbd.ttf')))
+        return 'ArialAA', 'ArialAA-Bold'
+    except Exception:
+        return 'Helvetica', 'Helvetica-Bold'
+
+
+def _escribir_pdf(sal_pdf, filas, hoy, subtitulo):
+    """Misma planilla que el Excel, lista para imprimir en CARTA VERTICAL:
+    encabezado repetido en cada página, columna "Stock Real" en blanco con
+    espacio para escribir a mano, y colores tenues por sugerencia (paleta de
+    impresión económica)."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from xml.sax.saxutils import escape
+
+    fuente, fuente_b = _fuente_pdf()
+    margen = 10 * mm
+    titulo = f'HOJA DE INVENTARIO — Bodega AA  ·  Ciclo {hoy.strftime("%d/%m/%Y")}'
+
+    st_cel = ParagraphStyle('cel', fontName=fuente, fontSize=7.5, leading=9)
+    st_sug = ParagraphStyle('sug', fontName=fuente, fontSize=6.5, leading=8, alignment=1)
+    st_hdr = ParagraphStyle('hdr', fontName=fuente_b, fontSize=7, leading=8.5, alignment=1,
+                            textColor=colors.HexColor('#065F46'))
+    st_tit = ParagraphStyle('tit', fontName=fuente_b, fontSize=12, leading=15,
+                            textColor=colors.HexColor('#065F46'))
+    st_sub = ParagraphStyle('sub', fontName=fuente, fontSize=7, leading=9,
+                            textColor=colors.HexColor('#555555'))
+
+    encabezados = ['Medicamento', 'Cant. Programada', 'Cant. Solicitada', 'Stock Bodega AA',
+                   'Stock Real (conteo)', 'Consumo Prom. Mensual', 'Sugerencia']
+    datos = [[Paragraph(h, st_hdr) for h in encabezados]]
+    estilos = []
+    for i, f in enumerate(filas, 1):
+        num = lambda v: '' if v is None else f'{v:,}'.replace(',', '.')
+        datos.append([
+            Paragraph(escape(str(f['Medicamento'])), st_cel),
+            num(f['Cantidad Programada']), num(f['Cantidad Solicitada']),
+            num(f['Stock Bodega AA']), '', num(f['Consumo Promedio Mensual']),
+            Paragraph(escape(f['Sugerencia'] or ''), st_sug),
+        ])
+        bg, fg = _color_sugerencia(f['Sugerencia'])
+        if f['Sugerencia']:
+            estilos.append(('BACKGROUND', (6, i), (6, i), colors.HexColor('#' + bg)))
+        elif i % 2 == 0:
+            estilos.append(('BACKGROUND', (0, i), (-1, i), colors.HexColor('#F7F7F7')))
+
+    ancho = letter[0] - 2 * margen
+    cols = [0.33, 0.10, 0.10, 0.085, 0.12, 0.085, 0.18]   # "Programada" no cabe en menos
+    tabla = Table(datos, colWidths=[ancho * c for c in cols], repeatRows=1, rowHeights=None)
+    tabla.setStyle(TableStyle([
+        ('FONT', (0, 1), (-1, -1), fuente, 8),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#D1FAF5')),
+        ('GRID', (0, 0), (-1, -1), 0.3, colors.HexColor('#BDBDBD')),
+        ('BOX', (4, 0), (4, -1), 0.9, colors.HexColor('#424242')),   # columna a llenar a mano
+        ('BACKGROUND', (4, 1), (4, -1), colors.white),
+        ('ALIGN', (1, 1), (5, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 1), (-1, -1), 4), ('BOTTOMPADDING', (0, 1), (-1, -1), 4),
+        *estilos,
+    ]))
+
+    def _pie(canvas, doc):
+        canvas.saveState()
+        canvas.setFont(fuente, 7)
+        canvas.setFillColor(colors.HexColor('#666666'))
+        canvas.drawString(margen, 6 * mm, titulo)
+        canvas.drawRightString(letter[0] - margen, 6 * mm, f'Página {doc.page}')
+        canvas.restoreState()
+
+    doc = SimpleDocTemplate(sal_pdf, pagesize=letter, leftMargin=margen, rightMargin=margen,
+                            topMargin=margen, bottomMargin=12 * mm,
+                            title=titulo, author='Farmacia AT Abierta — Hospital de Pitrufquén')
+    doc.build([Paragraph(escape(titulo), st_tit), Paragraph(escape(subtitulo), st_sub),
+               Spacer(1, 3 * mm), tabla], onFirstPage=_pie, onLaterPages=_pie)
 
 
 BODEGA_FISICA_AA = 'BODEGA AT ABIERTA'  # debe calzar con BODEGAS_AA_BODEGA en maestro_aa.py

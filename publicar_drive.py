@@ -27,6 +27,10 @@ del proyecto "drive-carpetas-recorte-6-categorias"):
                                        sin carpetas Historial/Acumulados desde el 21-07-2026)
     3 - Pedido Fusionado/     Pedido_Fusion_AA.xlsx + Pedido_Fusion_Simple_AA.xlsx
     6 - Centinela/<Sxx>/      centinela_Sxx.json + centinela_Sxx.pdf por semana
+    7 - Inventario Bodega AA/ Programacion_AA_<fecha> (hoja de inventario de cada ciclo, como
+                              Sheet + Programacion_AA_<fecha>.pdf carta vertical para imprimir)
+                              + Resumen_Programacion_AA_* cuando se aplica el conteo.
+                              Se suben UNA vez y nunca se reescriben (ver sync_inventario)
     8 - Servicios Farmaceuticos/<MES AÑO>/  Resumen_Servicios_Farmaceuticos_<mes>_<año>.xlsx
                               (agregado QF × actividad, SIN RUT — el reporte crudo de
                               Agenda Médica con RUT de paciente nunca se sube, igual que
@@ -39,7 +43,7 @@ Primera vez (requiere Google Cloud credentials.json):
 
 Uso normal (token ya generado):
   py publicar_drive.py           # sube todo
-  py publicar_drive.py --solo-gt  --solo-pedido  --solo-centinela  --solo-servicios  --solo-centinela-sm
+  py publicar_drive.py --solo-gt  --solo-pedido  --solo-centinela  --solo-inventario  --solo-servicios  --solo-centinela-sm
 """
 import argparse, glob, hashlib, json, os, re, sys
 from datetime import datetime
@@ -60,6 +64,7 @@ NOMBRE_RAIZ = "Farmacia AA"
 SUB_GT      = "2 - Gestion Territorial"
 SUB_PEDIDO  = "3 - Pedido Fusionado"
 SUB_CENTINELA = "6 - Centinela"
+SUB_INVENTARIO = "7 - Inventario Bodega AA"   # hoja de inventario del ciclo (programacion_aa.py), 14-09-2026
 SUB_SERVICIOS = "8 - Servicios Farmaceuticos"
 SUB_CENTINELA_SM = "9 - Centinela Inyectables SM"
 
@@ -685,6 +690,45 @@ def sync_centinela(service, raiz_id, stats, cache=None):
     print(f"  [Centinela] {len(semanas)} semana(s): {', '.join(os.path.basename(d) for d in semanas)}")
 
 
+def sync_inventario(service, raiz_id, stats, cache=None):
+    """Sube la hoja de inventario del ciclo MÁS RECIENTE (Programacion_AA_<AAAAMMDD>.xlsx)
+    y los Resumen_Programacion_AA_* generados después de ella. Sin RUT: son
+    cifras de stock por medicamento.
+
+    Se suben SOLO si todavía no están en Drive y nunca se actualizan. Los .xlsx
+    se convierten a Google Sheets, que no tiene md5, así que _subir() los
+    re-subiría en cada corrida diaria. Eso pisaría un conteo anotado a mano en
+    la columna "Stock Real" del Sheet. Cada ciclo y cada resumen tienen nombre
+    propio con fecha, así que el historial se va acumulando en la carpeta."""
+    carpeta = os.path.join(WORK_DIR, "Programacion_AA")
+    planillas = [f for f in glob.glob(os.path.join(carpeta, "Programacion_AA_*.xlsx"))
+                 if re.fullmatch(r"Programacion_AA_\d{8}\.xlsx", os.path.basename(f))]
+    if not planillas:
+        print("  [Inventario] sin planilla todavía (la genera AUTO_SSASUR al reiniciar el ciclo)")
+        return
+    planilla = max(planillas, key=os.path.basename)   # AAAAMMDD en el nombre → orden cronológico
+    resumenes = [f for f in glob.glob(os.path.join(carpeta, "Resumen_Programacion_AA_*.xlsx"))
+                 if not os.path.basename(f).startswith("~$")
+                 and os.path.getmtime(f) >= os.path.getmtime(planilla)]
+
+    pdf = os.path.splitext(planilla)[0] + ".pdf"   # versión para imprimir en carta vertical
+    archivos = [planilla, *([pdf] if os.path.isfile(pdf) else []), *sorted(resumenes)]
+
+    fid = _obtener_o_crear_carpeta(service, SUB_INVENTARIO, raiz_id, cache)
+    for f in archivos:
+        base = os.path.basename(f)
+        # los .xlsx quedan como Sheet sin extensión; el PDF conserva su nombre
+        nombre = os.path.splitext(base)[0] if base.lower().endswith(".xlsx") else base
+        ya, _, _ = _buscar_archivo(service, nombre, fid)
+        if ya:
+            stats["skip"] += 1
+            continue
+        r = _subir(service, f, fid, stats=stats)
+        print(f"  {nombre}: {r}")
+    print(f"  [Inventario] ciclo {os.path.basename(planilla)[16:24]}"
+          f" + {len(resumenes)} resumen(es)")
+
+
 def sync_servicios(service, raiz_id, stats, cache=None):
     """Sube Servicios_Farmaceuticos/<MES AÑO>/Resumen_Servicios_Farmaceuticos_*.xlsx
     — el agregado QF × actividad (sin RUT). Una subcarpeta por mes, mismo
@@ -783,6 +827,7 @@ def main():
     ap.add_argument("--solo-gt",       action="store_true")
     ap.add_argument("--solo-pedido",   action="store_true")
     ap.add_argument("--solo-centinela",action="store_true")
+    ap.add_argument("--solo-inventario", action="store_true")
     ap.add_argument("--solo-servicios", action="store_true")
     ap.add_argument("--solo-centinela-sm", action="store_true")
     ap.add_argument("--solo-clozapina", action="store_true",
@@ -837,7 +882,7 @@ def main():
     stats = {"ok": 0, "skip": 0, "fail": 0}
 
     todos = not any([a.solo_gt, a.solo_pedido,
-                     a.solo_centinela, a.solo_servicios,
+                     a.solo_centinela, a.solo_inventario, a.solo_servicios,
                      a.solo_centinela_sm, a.solo_clozapina, a.solo_gt_confidencial])
     # Clozapina y GT Confidencial viven en su PROPIA carpeta (fuera de
     # "Farmacia AA") — si son lo ÚNICO que se pidió subir, no hace falta
@@ -845,7 +890,7 @@ def main():
     # engañoso "Subiendo a «Farmacia AA»" cuando en realidad va a una
     # carpeta totalmente distinta).
     necesita_raiz_farmacia = todos or any([a.solo_gt, a.solo_pedido,
-                                            a.solo_centinela, a.solo_servicios,
+                                            a.solo_centinela, a.solo_inventario, a.solo_servicios,
                                             a.solo_centinela_sm])
 
     raiz_id = None
@@ -854,7 +899,7 @@ def main():
         if NOMBRE_RAIZ in known:
             raiz_id = known[NOMBRE_RAIZ]
             # Pre-carga sub-carpetas fijas para evitar búsquedas API
-            for sub in (SUB_GT, SUB_PEDIDO, SUB_CENTINELA, SUB_SERVICIOS, SUB_CENTINELA_SM):
+            for sub in (SUB_GT, SUB_PEDIDO, SUB_CENTINELA, SUB_INVENTARIO, SUB_SERVICIOS, SUB_CENTINELA_SM):
                 if sub in known:
                     cache[(sub, raiz_id)] = known[sub]
         else:
@@ -889,6 +934,14 @@ def main():
             sync_centinela(svc, raiz_id, stats, cache)
         except Exception as e:
             print(f"  [error] {SUB_CENTINELA}: {e}")
+            stats["fail"] += 1
+
+    if todos or a.solo_inventario:
+        print(f"\n  ── {SUB_INVENTARIO} ──")
+        try:
+            sync_inventario(svc, raiz_id, stats, cache)
+        except Exception as e:
+            print(f"  [error] {SUB_INVENTARIO}: {e}")
             stats["fail"] += 1
 
     if todos or a.solo_servicios:
