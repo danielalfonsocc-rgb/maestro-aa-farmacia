@@ -667,6 +667,15 @@ def registrar_consulta_gt(desde_txt, hasta_txt, n, hoy: date) -> None:
     d0, d1 = _a_fecha(desde_txt), _a_fecha(hasta_txt)
     if d0 is None or d1 is None or d1 < d0:
         return
+    # Resguardo: GT despacha prácticamente todos los días hábiles, y la ventana
+    # siempre re-consulta GT_RECHEQUEO_DIAS. Un "0 recetas" en varios días
+    # seguidos es mucho más probable que sea una lectura falsa que un dato
+    # real (14-09-2026: 17-08 → 14-09 quedó anotado vacío así). Dejarlo abierto
+    # cuesta solo volver a consultarlo mañana.
+    if n == 0 and (d1 - d0).days >= 3:
+        print(f"  [AVISO] 0 recetas en {desde_txt} → {hasta_txt} no es creíble para "
+              f"{(d1 - d0).days + 1} días — NO lo marco como consultado; se repite en la próxima corrida.")
+        return
     marcar_cobertura_gt(d0, d1, hoy)
 
 
@@ -1101,45 +1110,119 @@ async def _set_fechas(page, desde, hasta, id_ini=SEL_FECHA_INI, id_fin=SEL_FECHA
         pass
 
 
+# Piezas JS compartidas por _preparar_busqueda_gt() y _estado_tabla_gt().
+#   · visible(el): de verdad en pantalla (no display:none / visibility:hidden / opacity 0)
+#   · cargadores(): elementos de "cargando" visibles AHORA. Busca por clase
+#     (DataTables, blockUI, SweetAlert, spinners genéricos) Y por texto
+#     ("Cargando…", "Procesando…", "Espere…"), porque el indicador que muestra
+#     SSASUR en este informe no es el de DataTables: el 14-09-2026 se veía
+#     "cargando" en pantalla y el script igual lo leía como listado vacío.
+#   · tablaGT(): la tabla del resultado (#tablaGestionTerritorial; si cambiara
+#     el id, la tabla más grande que no sea un calendario).
+_JS_GT_COMUN = r"""
+  const visible = el => {
+    if (!el || !(el.offsetWidth || el.offsetHeight || el.getClientRects().length)) return false;
+    const cs = getComputedStyle(el);
+    return cs.visibility !== 'hidden' && parseFloat(cs.opacity || '1') > 0.05;
+  };
+  const SEL_CARGA = '.dataTables_processing, [id$=_processing], .blockUI, .blockOverlay, ' +
+                    '.swal2-loading, .loading, .loader, .spinner, .spinner-border, ' +
+                    '[class*="loading" i], [class*="spinner" i], [class*="loader" i]';
+  const RX_CARGA = /cargando|procesando|espere|loading/i;
+  const cargadores = () => {
+    const out = [];
+    for (const el of document.querySelectorAll(SEL_CARGA)) if (visible(el)) out.push(el);
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    while (w.nextNode()) {
+      const t = w.currentNode.nodeValue || '';
+      if (t.length < 80 && RX_CARGA.test(t) && visible(w.currentNode.parentElement))
+        out.push(w.currentNode.parentElement);
+    }
+    return out;
+  };
+  const tablaGT = () => {
+    const porId = document.getElementById('tablaGestionTerritorial');
+    if (porId) return porId;
+    let mejor = null, max = -1;
+    for (const t of document.querySelectorAll('table')) {
+      if (t.closest('.datepicker, .ui-datepicker, .daterangepicker')) continue;
+      const n = t.querySelectorAll('tbody tr').length;
+      if (n > max) { max = n; mejor = t; }
+    }
+    return mejor;
+  };
+"""
+
+
+async def _preparar_busqueda_gt(page):
+    """Se llama JUSTO ANTES de clicar Buscar. Marca las filas que muestra la
+    tabla en ese momento (data-gt-vieja) y los "cargando" que ya estuvieran a la
+    vista (data-gt-base), para que _estado_tabla_gt() pueda distinguir:
+
+      · la tabla de ANTES de buscar — al abrir el formulario el DataTable ya
+        dice "Ningún dato disponible", y eso NO es la respuesta de SSASUR;
+      · la tabla redibujada con la respuesta (DataTables crea filas nuevas en
+        cada dibujo, incluida la fila de "sin datos", y un POST normal trae un
+        DOM nuevo entero: en ambos casos las filas nuevas no llevan la marca)."""
+    try:
+        await page.evaluate("() => {" + _JS_GT_COMUN + r"""
+          const t = tablaGT();
+          if (t) t.querySelectorAll('tbody tr').forEach(tr => tr.setAttribute('data-gt-vieja', '1'));
+          cargadores().forEach(el => el.setAttribute('data-gt-base', '1'));
+        }""")
+    except Exception:
+        pass
 
 
 async def _estado_tabla_gt(page):
-    """Foto del listado GT: {filas, vacio, cargando}.
+    """Foto del listado GT: {filas, vacio, fresca, cargando, texto_carga}.
 
-      · filas    → nº de <tr> de datos de la tabla más grande
+      · filas    → nº de <tr> de datos de la tabla del resultado
       · vacio    → la tabla dice explícitamente que no hay resultados
-      · cargando → DataTables está procesando (o la tabla aún no existe)
+      · fresca   → la tabla ya se redibujó DESPUÉS de Buscar (ver
+                   _preparar_busqueda_gt); si es False, lo que se ve es la
+                   tabla vieja y no dice nada sobre la consulta
+      · cargando → hay un indicador de carga visible que no estaba antes de
+                   Buscar (o la tabla todavía no existe)
 
     A diferencia de contar filas a secas, separa "confirmado vacío" de "todavía
     no sé": es esa diferencia la que evita dar por bueno un 0 falso."""
-    return await page.evaluate(r"""() => {
-      const vis = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
-      const proc = [...document.querySelectorAll('.dataTables_processing, .loading, .spinner, [id$=_processing]')];
-      const cargando = proc.some(vis);
-      const tablas = [...document.querySelectorAll('table')];
-      if (!tablas.length) return {filas: 0, vacio: false, cargando: true};
-      let mejor = null, max = -1;
-      for (const t of tablas) {
-        const n = t.querySelectorAll('tbody tr').length;
-        if (n > max) { max = n; mejor = t; }
-      }
-      const vacioCelda = !!mejor.querySelector('tbody td.dataTables_empty');
-      const txt = (mejor.innerText || '').toLowerCase();
-      const vacioTxt = /no se encontraron|sin datos|no hay (registros|datos|resultados)|0 registros|ning[uú]n (registro|resultado)/.test(txt);
-      const vacio = vacioCelda || (vacioTxt && max <= 1);
-      const filas = vacio ? 0 : max;
-      return {filas, vacio, cargando};
+    return await page.evaluate("() => {" + _JS_GT_COMUN + r"""
+      const activos = cargadores().filter(el => !el.hasAttribute('data-gt-base'));
+      const texto_carga = activos.length ? (activos[0].innerText || activos[0].className || '').trim().slice(0, 40) : '';
+      const t = tablaGT();
+      if (!t) return {filas: 0, vacio: false, fresca: false, cargando: true, texto_carga: texto_carga || 'sin tabla'};
+      const rows = [...t.querySelectorAll('tbody tr')];
+      const fresca = rows.length > 0 && !rows.some(tr => tr.hasAttribute('data-gt-vieja'));
+      const vacioCelda = !!t.querySelector('tbody td.dataTables_empty');
+      const txt = (t.innerText || '').toLowerCase();
+      const vacioTxt = /no se encontraron|sin datos|no hay (registros|datos|resultados)|0 registros|ning[uú]n (registro|resultado|dato)/.test(txt);
+      const vacio = vacioCelda || (vacioTxt && rows.length <= 1);
+      // "Cargando..." dentro de la propia tabla (sLoadingRecords) también es carga
+      const cargandoTabla = RX_CARGA.test(txt) && rows.length <= 1;
+      return {filas: vacio ? 0 : rows.length, vacio: vacio && !cargandoTabla, fresca,
+              cargando: activos.length > 0 || cargandoTabla, texto_carga};
     }""")
 
 
-async def _esperar_tabla_gt(page, timeout_ms=45_000, estable_ms=2_000):
-    """Espera a que el listado GT quede QUIETO y devuelve (estado, filas):
+async def _esperar_tabla_gt(page, timeout_ms=300_000, sin_reaccion_ms=60_000, estable_ms=3_000):
+    """Espera la RESPUESTA a Buscar y devuelve (estado, filas):
 
-      ("datos", n)        el listado trae n filas y el conteo se repitió
-      ("vacio", 0)        la tabla dice explícitamente que no hay resultados
-      ("indeterminado", None)  se acabó el tiempo sin que la tabla se asentara
+      ("datos", n)              tabla redibujada con n filas, quieta estable_ms
+      ("vacio", 0)              tabla redibujada diciendo "sin resultados", quieta estable_ms
+      ("sin_reaccion", None)    pasaron sin_reaccion_ms sin carga visible ni tabla
+                                nueva: el clic en Buscar no llegó a disparar nada
+      ("indeterminado", None)   se agotó timeout_ms (SSASUR seguía cargando)
 
-    Reemplaza al `_networkidle() + wait_for_timeout(2500)` fijo que había antes
+    Mientras haya un "cargando" a la vista se espera y NADA MÁS — el llamador no
+    vuelve a clicar Buscar, porque eso reinicia la consulta desde cero. Eso es lo
+    que pasó el 14-09-2026: la tabla vieja ("Ningún dato disponible") se leía
+    como respuesta vacía al instante, se volvía a Buscar dos veces encima de la
+    consulta en curso, y al tercer "vacío" se anotaron 4 semanas (17-08 → 14-09)
+    como consultadas sin despachos. Por eso ahora un vacío solo vale si la tabla
+    se redibujó después del clic.
+
+    Historia: reemplaza al `_networkidle() + wait_for_timeout(2500)` fijo que había antes
     de leer el resultado. Ese par de esperas ciegas era el origen del "0 filas"
     falso: _networkidle no llega a cumplirse nunca en varios módulos de SSASUR
     (ver _networkidle) y 2,5 s no alcanzan cuando el sitio va lento — medido el
@@ -1154,28 +1237,48 @@ async def _esperar_tabla_gt(page, timeout_ms=45_000, estable_ms=2_000):
     cubre lo entregado el día 8). Hubo que sacarla a mano. La corrida del 10-09
     tampoco generó informe."""
     import time as _t
-    fin = _t.monotonic() + timeout_ms / 1000
+    t0 = _t.monotonic()
+    fin = t0 + timeout_ms / 1000
+    ultima_actividad = t0          # último instante con carga visible (o el clic)
+    ultimo_aviso = t0
     ultimo, desde_cuando = None, None
     while _t.monotonic() < fin:
+        ahora = _t.monotonic()
         try:
             e = await _estado_tabla_gt(page)
         except Exception:
+            # p.ej. la página está navegando (POST normal): es actividad
+            ultima_actividad = ahora
             await page.wait_for_timeout(1_000)
             continue
         if e.get("cargando"):
+            ultima_actividad = ahora
             ultimo, desde_cuando = None, None
+            if ahora - ultimo_aviso >= 30:
+                print(f"  … SSASUR sigue cargando el listado ({e.get('texto_carga') or 'cargando'}) — "
+                      f"espero sin volver a buscar ({int(ahora - t0)} s)")
+                ultimo_aviso = ahora
+            await page.wait_for_timeout(1_000)
+            continue
+        if not e.get("fresca"):
+            # lo que se ve es la tabla de antes de Buscar: no dice nada
+            ultimo, desde_cuando = None, None
+            if ahora - ultima_actividad >= sin_reaccion_ms / 1000:
+                return ("sin_reaccion", None)
             await page.wait_for_timeout(1_000)
             continue
         if e.get("vacio"):
-            return ("vacio", 0)
-        n = int(e.get("filas") or 0)
-        if n > 0:
-            # exigir que el conteo se repita: una tabla a medio pintar crece
-            if n == ultimo:
-                if _t.monotonic() - desde_cuando >= estable_ms / 1000:
-                    return ("datos", n)
-            else:
-                ultimo, desde_cuando = n, _t.monotonic()
+            clave = ("vacio", 0)
+        else:
+            n = int(e.get("filas") or 0)
+            clave = ("datos", n) if n > 0 else None
+        # exigir que el resultado se repita: una tabla a medio pintar crece, y
+        # algunos sitios dibujan "sin datos" un instante antes de las filas
+        if clave is not None and clave == ultimo:
+            if ahora - desde_cuando >= estable_ms / 1000:
+                return clave
+        else:
+            ultimo, desde_cuando = clave, ahora
         await page.wait_for_timeout(1_000)
     return ("indeterminado", None)
 
@@ -1243,25 +1346,35 @@ async def paso_gt(page, desde=None, hasta=None, debug=False):
           else "  [AVISO] No encontré el control Origen/Destino.")
     await page.wait_for_timeout(800)
 
-    # 3) Buscar y ESPERAR a que el listado (DataTable tablaGestionTerritorial)
-    #    quede quieto. Un "vacío" solo se acepta después de reintentar: es el
-    #    resultado que antes se daba por bueno a la primera y hacía perder el
-    #    día entero (ver _esperar_tabla_gt).
+    # 3) Buscar y ESPERAR la respuesta (DataTable tablaGestionTerritorial).
+    #    Solo se vuelve a clicar Buscar si la anterior NO está en curso: si
+    #    SSASUR respondió vacío (se re-fijan fechas y origen, por la carrera del
+    #    filtro vista el 14-07 y 30-07) o si el clic no provocó nada. Mientras
+    #    haya "cargando" a la vista, se espera (ver _esperar_tabla_gt).
     INTENTOS = 3
     estado, n = "indeterminado", None
     for intento in range(1, INTENTOS + 1):
+        await _preparar_busqueda_gt(page)
         try:
             await _click_primero(page, SELS_BUSCAR, "Buscar")
         except Exception:
             pass   # por si el listado cargara solo al marcar origen
         estado, n = await _esperar_tabla_gt(page)
-        if estado == "datos":
-            break
+        if estado in ("datos", "indeterminado"):
+            break   # indeterminado = siguió cargando hasta el tope: re-buscar solo la reinicia
         if intento < INTENTOS:
-            motivo = "vacío" if estado == "vacio" else "sin asentarse"
-            print(f"  (listado {motivo} en el intento {intento}/{INTENTOS} — "
-                  f"reintento con más espera...)")
-            await page.wait_for_timeout(3_000 * intento)
+            if estado == "vacio":
+                print(f"  (SSASUR respondió listado vacío en el intento {intento}/{INTENTOS} — "
+                      f"re-fijo fechas y origen y busco de nuevo...)")
+                if desde or hasta:
+                    await _set_fechas(page, desde or hasta, hasta or desde)
+                await _marcar_origen(page)
+            else:
+                print(f"  (Buscar no provocó respuesta en el intento {intento}/{INTENTOS} — "
+                      f"busco de nuevo...)")
+            await page.wait_for_timeout(2_000)
+    if estado == "sin_reaccion":
+        estado = "indeterminado"
     if debug:
         await _dump_formulario(page, "post-buscar")
         await page.screenshot(path=str(MAESTRO_DIR / "debug_gt.png"))
