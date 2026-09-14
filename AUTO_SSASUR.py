@@ -13,9 +13,9 @@ Flujo:
        a) Clic en la tarjeta RECETA → informe de recetas → descarga
        b) Vuelve al dashboard → clic en ABASTECIMIENTO → stock → descarga
        c) Mismo módulo ABASTECIMIENTO → reporte Programación AA (mes en curso) → descarga
-          (AUTO_SSASUR.bat lo omite con --no-programacion: nadie lo procesa)
   4. Ejecuta maestro_aa.py para actualizar el Consolidado
-  5. Pedido Fusión, planillas GT, Centinela, y publica (Escritorio + Drive)
+  5. Pedido Fusión, planillas GT, hoja de inventario (al reiniciar el ciclo),
+     Centinela, y publica (Escritorio + Drive)
 
 NOTA TÉCNICA — cómo navega SSASUR (verificado por inspección del DOM):
   · Las tarjetas del dashboard son <button> de Vue (no <a>): hay que
@@ -70,9 +70,10 @@ PASO 5d, o sea dos veces seguidas — retirado 14-09-2026.
 
 PASO 4b — Programación AA: dentro del mismo módulo ABASTECIMIENTO (después del
 stock), baja el reporte "Consumos por centro de costo" del MES EN CURSO
-(FARMACOS/LOCAL/FARMACIA). Lo consumía programacion_aa.py (eliminado
-04-09-2026); hoy nadie lo procesa y AUTO_SSASUR.bat pasa --no-programacion.
-El código de descarga se deja por si se vuelve a necesitar.
+(FARMACOS/LOCAL/FARMACIA) — lo consume programacion_aa.py para la hoja de
+inventario de cada reinicio de ciclo (Cantidad Programada / Solicitada). Se baja
+todos los días. No se adelanta a meses futuros: la Cantidad Solicitada de un mes
+que no ha empezado siempre viene en 0.
 
 PASO 3b — Informe Medicamentos Controlados: ELIMINADO 14-09-2026. Nadie
 consumía el archivo (era del conteo de controlados, eliminado 27-08-2026) y
@@ -131,8 +132,7 @@ STOCK_REPORTE    = "https://www.ssasur.cl/abastecimiento/reportes/stock_en_momen
 BODEGA_TODAS     = "0"    # bodega → "TODAS" (todas las bodegas en un archivo)
 
 # ── Programación AA (reporte "Consumos por centro de costo") ───────────────────
-# Lo consumía programacion_aa.py (eliminado 04-09-2026); hoy nadie lo procesa y
-# AUTO_SSASUR.bat pasa --no-programacion. Ir directo por URL SOLO funciona después de
+# Consumido por programacion_aa.py. Ir directo por URL SOLO funciona después de
 # entrar_modulo(page, "ABASTECIMIENTO") (acuña la sesión del módulo) — igual que
 # STOCK_REPORTE; probado en vivo 15-07-2026 (403 sin el módulo acuñado antes).
 PROGRAMACION_REPORTE = "https://www.ssasur.cl/abastecimiento/reportes/consumo_por_cc_desplegado"
@@ -799,7 +799,7 @@ async def descargar_como(page, dest_path: Path, accion, timeout=TIMEOUT_DESCARGA
 def _limpiar_versiones_previas(dest_dir: Path, patron: str, mantener: Path):
     """Borra copias anteriores de un reporte con nombre fechado por SSASUR
     (mismo patrón glob), conservando solo `mantener` (la recién descargada).
-    maestro_aa.py SIEMPRE usa la copia más reciente por
+    maestro_aa.py y programacion_aa.py SIEMPRE usan la copia más reciente por
     mtime (glob + max) — las versiones viejas nunca se vuelven a leer y solo
     se acumulan como basura en la carpeta del proyecto, run tras run."""
     borrados = 0
@@ -1808,9 +1808,8 @@ async def main():
         # ════════════════════════════════════════════════════════════════════
         #  PASO 4b — PROGRAMACIÓN AA  (mismo módulo ABASTECIMIENTO, mes en curso)
         # ════════════════════════════════════════════════════════════════════
-        # Lo consumía programacion_aa.py (eliminado 04-09-2026); hoy nadie lo
-        # procesa y AUTO_SSASUR.bat pasa --no-programacion, así que en la corrida
-        # diaria este bloque no se ejecuta. A diferencia del stock, este reporte
+        # Consumido por programacion_aa.py (Cantidad Programada / Cantidad
+        # Solicitada del ciclo Bodega AA). A diferencia del stock, este reporte
         # SÍ tiene <select> nativos (confirmado por inspección del DOM
         # 15-07-2026) — no hace falta clic+búsqueda por texto:
         #   #ano, #mes (1-12), #distribucion (5=FARMACOS),
@@ -2165,6 +2164,22 @@ async def main():
             )
             if psret.returncode != 0:
                 print(f"  [aviso] pedido_fusion_simple.py terminó con código {psret.returncode}")
+
+        # ── PASO 5g — HOJA DE INVENTARIO DEL CICLO (programacion_aa.py --auto) ─
+        # Al reiniciarse el ciclo Bod→BodFarm (cada 14 días) genera la planilla
+        # para el conteo físico de Bodega AA. Necesita el Consolidado recién
+        # hecho (PASO 5) y el reporte de Programación de HOY (PASO 4b). El propio
+        # script decide: una vez por ciclo, con recuperación si el primer día
+        # hábil no corrió; el resto de los días solo imprime "omitido".
+        prog_py = MAESTRO_DIR / "programacion_aa.py"
+        if prog_py.exists():
+            print(f"\n[5g/9] Hoja de inventario del ciclo (Programación AA)...")
+            gret = subprocess.run(
+                [sys.executable, str(prog_py), "--auto"],
+                cwd=str(MAESTRO_DIR), env=env_utf8,
+            )
+            if gret.returncode != 0:
+                print(f"  [aviso] programacion_aa.py --auto terminó con código {gret.returncode}")
 
         # ── PASO 6 — DEDUPLICAR RECETAS GT ────────────────────────────────────
         # Detecta y limpia recetas duplicadas entre archivos GT descargados con

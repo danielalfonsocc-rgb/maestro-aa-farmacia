@@ -1,8 +1,4 @@
 {
-  "ACIDO FOLICO CM 1 MG": {
-    "racha": 3,
-    "ultimo_mes": "2026-09"
-  },
   "ADALIMUMAB 40 MG/0,4 ML JER.PC 1 UD (HUMIRA)": {
     "racha": 3,
     "ultimo_mes": "2026-09"
@@ -36,10 +32,6 @@
     "ultimo_mes": "2026-09"
   },
   "DILTIAZEM 90 MG CM": {
-    "racha": 3,
-    "ultimo_mes": "2026-09"
-  },
-  "DOXAZOSINA 4 MG CM UD": {
     "racha": 3,
     "ultimo_mes": "2026-09"
   },
@@ -99,10 +91,6 @@
     "racha": 3,
     "ultimo_mes": "2026-09"
   },
-  "CIPROFLOXACINO 0,3% GOTAS OTICAS 5 ML": {
-    "racha": 3,
-    "ultimo_mes": "2026-09"
-  },
   "FENTANILO 8,4 MG (50 MCG/HORA) PARCHE": {
     "racha": 3,
     "ultimo_mes": "2026-09"
@@ -135,15 +123,7 @@
     "racha": 2,
     "ultimo_mes": "2026-09"
   },
-  "HALOPERIDOL DECANOATO 50 MG. A": {
-    "racha": 2,
-    "ultimo_mes": "2026-09"
-  },
   "INSULINA ASPARTA 300 UI/3 ML (100 UI/ML) INYECTABLE EN LAPIZ PRELLENADO": {
-    "racha": 2,
-    "ultimo_mes": "2026-09"
-  },
-  "LAMIVUDINA 150 MG + ZIDOVUDINA 300 MG COMPRIMIDO": {
     "racha": 2,
     "ultimo_mes": "2026-09"
   },
@@ -155,28 +135,12 @@
     "racha": 2,
     "ultimo_mes": "2026-09"
   },
-  "SACUBITRILO VALSARTAN 100 MG": {
-    "racha": 2,
-    "ultimo_mes": "2026-09"
-  },
-  "WARFARINA 5 MG COMPRIMIDO": {
-    "racha": 2,
-    "ultimo_mes": "2026-09"
-  },
   "HIDROXICLOROQUINA 200 MG COMPRIMIDO": {
     "racha": 2,
     "ultimo_mes": "2026-09"
   },
   "LEVOTIROXINA 100 MCG CM UNIDAD": {
     "racha": 2,
-    "ultimo_mes": "2026-09"
-  },
-  "METILDOPA 250 MG COMPRIMIDO": {
-    "racha": 2,
-    "ultimo_mes": "2026-09"
-  },
-  "APIXABAN 2,5 MG CM": {
-    "racha": 1,
     "ultimo_mes": "2026-09"
   },
   "AZITROMICINA 200 MG/5 ML POLVO PARA PREPARADO ORAL": {
@@ -247,10 +211,6 @@
     "racha": 1,
     "ultimo_mes": "2026-09"
   },
-  "SACUBITRILO VALSARTAN 50 MG": {
-    "racha": 1,
-    "ultimo_mes": "2026-09"
-  },
   "TAPENTADOL 50 MG CM LIBERACION MODIFICADA": {
     "racha": 1,
     "ultimo_mes": "2026-09"
@@ -263,11 +223,27 @@
     "racha": 1,
     "ultimo_mes": "2026-09"
   },
-  "TRIMETAZIDINA 35 MG CM LIBERACION PROLONGADA (XR)": {
+  "ZOLPIDEM 10 MG COMPRIMIDO": {
     "racha": 1,
     "ultimo_mes": "2026-09"
   },
-  "ZOLPIDEM 10 MG COMPRIMIDO": {
+  "DICLOFENACO SODICO 15 MG/ML GOTAS ORALES": {
+    "racha": 1,
+    "ultimo_mes": "2026-09"
+  },
+  "METRONIDAZOL 125 MG/5 ML SUSPENSION ORAL": {
+    "racha": 1,
+    "ultimo_mes": "2026-09"
+  },
+  "SODIO CLORURO 0.9% MATRAZ 500 ML": {
+    "racha": 1,
+    "ultimo_mes": "2026-09"
+  },
+  "TRAMADOL 100 MG/ML SOL.GOTAS 10 ML": {
+    "racha": 1,
+    "ultimo_mes": "2026-09"
+  },
+  "VASELINA LIQUIDA ESTERIL AMPOLLA 5 ML.": {
     "racha": 1,
     "ultimo_mes": "2026-09"
   }
