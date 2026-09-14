@@ -74,12 +74,7 @@ if errorlevel 1 (
     echo.
     echo  ================================================================
     echo   EXITO - Tu repositorio esta en GitHub
-    echo.
-    echo   Proximos pasos:
-    echo   1. Ve a https://share.streamlit.io
-    echo   2. Conecta tu cuenta de GitHub
-    echo   3. Selecciona el repo: %GH_URL%
-    echo   4. Haz clic en Deploy
+    echo   (solo codigo: los datos de salida no se versionan)
     echo  ================================================================
 )
 

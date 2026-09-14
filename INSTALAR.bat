@@ -48,11 +48,11 @@ echo   INSTALACION COMPLETADA
 echo.
 echo   Ahora puedes usar:
 echo.
-echo   > ACTUALIZAR_DATOS.bat
-echo     Para generar el consolidado con tus archivos de SSASUR
+echo   > AUTO_SSASUR.bat
+echo     Descarga de SSASUR, recalcula todo y publica
 echo.
-echo   > ABRIR_APP.bat
-echo     Para abrir el dashboard interactivo
+echo   > ACTUALIZAR_DATOS.bat
+echo     Solo recalcula el consolidado con los archivos ya descargados
 echo  ============================================================
 echo.
 pause

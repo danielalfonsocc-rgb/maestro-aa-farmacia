@@ -8,7 +8,7 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 | Archivo | Rol |
 |---|---|
 | `maestro_aa.py` | Consolidación principal → `Consolidado_AA_MAESTRO.xlsx` (14 hojas). Infraestructura: alimenta Pedido Fusión y el resto de las 6 categorías, aunque ya no tiene dashboard propio |
-| `sgli.py` / `sgli_historico.py` | Motor SGLI (reposición basada en demanda) y su planilla histórica ABC-XYZ. Dependencia interna de `maestro_aa.py` |
+| `sgli.py` / `sgli_historico.py` | Motor SGLI (reposición basada en demanda; `sgli.py` es dependencia interna de `maestro_aa.py`). `sgli_historico.py` (planilla ABC-XYZ) queda solo para correrlo a mano: desde 14-09-2026 `maestro_aa.py` ya no lo llama |
 | `utils_aa.py` | **Módulo compartido**: norm_erp, HOMOLOGACION (20 entradas), cargar_recetas_csv |
 | `cruce_gt.py`, `gt_maestro.py`, `agente_gt_pendientes.py`, `dedup_recetas.py`, `procesar_establecimiento_maestro.py`, `descargar_recetas_pdf.py`, `publicar_gt_sheets.py` y demás scripts `gt_*`/`*_gt_*` | Bloque de **Gestión Territorial** (una de las 6 categorías) |
 | `recetas_cheque.py`, `subir_recetas_cheque_drive.py` | **Controlados**: formulario ISP recetas cheque (estupefacientes/psicotrópicos) — obligación legal |
@@ -17,7 +17,7 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 | `centinela_inyectables_sm.py` | **Centinela SM**: stock de antipsicóticos de depósito (salud mental ambulatoria) |
 | `clozapina_consolidar.py`, `clozapina_hce_hemogramas.py`, `motor_reglas_clozapina_v3.py` | **Clozapinas**: consolidado de hemogramas MINSAL |
 | `servicios_farmaceuticos.py` | **Servicios Farmacéuticos**: recuento mensual QF desde "Hoja Diaria de Profesional" (Agenda Médica SSASUR) → `Servicios_Farmaceuticos/<MES AÑO>/Resumen_Servicios_Farmaceuticos_*.xlsx`, SIN RUT. Lo llama AUTO_SSASUR |
-| `AUTO_SSASUR.py` | Descarga automatizada SSASur (recetas + stock + GT) → dedup → Drive |
+| `AUTO_SSASUR.py` | Descarga automatizada SSASur (recetas + stock + GT) → dedup → Escritorio + Drive (vía `SINCRONIZAR_TODO.bat`) |
 | `publicar_drive.py` | Sube salidas a Google Drive (requiere `credentials.json` + `SETUP_DRIVE.bat`) — recortado 04-09-2026 a solo las 6 categorías |
 | `publicar_escritorio.py` | Copia salidas al Escritorio\Farmacia AA\ (acceso rápido local) — recortado 04-09-2026 a solo las 6 categorías |
 | `aa_colors.py` | Paleta de colores compartida (impresión económica) |
@@ -27,13 +27,21 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 
 **Eliminado 07-09-2026:** `fusionar_nominas_gt.py` (y el PASO 5c2 que lo llamaba en `AUTO_SSASUR.py`). Fusionaba en un paso posterior, dependiente del orden, la Planilla "automática" (`cruce_gt.py`) con la "manual" (`agregar_gt_manual.py`) — causaba el bug real de 2 nóminas separadas del 04-09-2026 (ver memoria `gt-manual-vs-pipeline-auto`). Reemplazado por fusión al momento de escribir en ambos lados: `agregar_gt_manual.py` ahora fusiona directo sobre `<destino>_Planilla.xlsx` (nunca crea `Nomina_Manual_*`), y `publicar_drive._depositar_arbol_local()` fusiona sola si la Planilla automática llega después el mismo día. No reintroducir sin confirmar.
 
+**Eliminado 14-09-2026** (cosas que seguían corriendo cada día sin que nadie usara el resultado):
+- **PASO 3b de `AUTO_SSASUR.py`**: el Informe de Medicamentos Controlados (`paso_controlados`, `Informes_Controlados_AA/`, `--no-controlados`, `--fecha-controlados`). Nadie lo leía (era del conteo de controlados, eliminado 27-08) y nunca bajó un archivo.
+- **PASO 5d de `AUTO_SSASUR.py`**: `recetas_cheque.py` corría dos veces. Ahora corre una sola vez, dentro de `SINCRONIZAR_TODO.bat`, aunque no haya token de Drive.
+- **`Resumen_Pedidos_AA.xlsx`** (sección 20 de `maestro_aa.py`) y la llamada automática a `sgli_historico.main()`, que dejaba un `SGLI_Historico_*.xlsx` por corrida. Los dos eran para la app Streamlit.
+- **`PUBLICAR_DATOS.bat`** (commit diario "Datos …" a GitHub) y el flag `--no-publicar`. `Consolidado_AA_MAESTRO.xlsx` ya no se versiona (está en `.gitignore`).
+- `EJECUTAR_MAESTRO.bat` (duplicaba `ACTUALIZAR_DATOS.bat`), el acceso directo `Clozapina.lnk` y las configuraciones de Streamlit en `.claude/launch.json`.
+No reintroducir sin confirmar.
+
 ## Reglas de arquitectura
 
 - **Nuevas homologaciones de nombres**: SOLO en `utils_aa.py → HOMOLOGACION_RAW`. Nunca duplicar en scripts individuales.
 - **El modelo SGLI no tiene techo de capacidad**: el Nivel Objetivo T se calcula desde la demanda; Cap_Max es informativo y solo activa [ALERTA_ESTRES].
 - **RUTs**: nunca a la API. `agente_gt_pendientes.py` no incluye RUT ni nombre en el prompt (solo medicamento/fecha/estado).
 - **GT raw downloads**: van a `../04_Farmacia_Gestion_Territorial/` (carpeta hermana del repo). Nombrado: `reporteGestionTerritorial_<desde>_<hasta>.xlsx`. `dedup_recetas.py` busca ahí.
-- **Reporte de Programación AA (PASO 4b de `AUTO_SSASUR.py`)**: sigue descargándose a diario (es parte del mismo scrape del módulo ABASTECIMIENTO, sin costo aparte) aunque `programacion_aa.py` ya no existe — nadie lo procesa hoy. Se dejó así porque tocar el scraper es riesgoso y de bajo beneficio; si se quiere ahorrar el tiempo de descarga, usar `--no-programacion` explícitamente.
+- **Reporte de Programación AA (PASO 4b de `AUTO_SSASUR.py`)**: desde 14-09-2026 `AUTO_SSASUR.bat` pasa `--no-programacion`, así que la corrida diaria ya no lo baja (nadie lo procesa desde que se eliminó `programacion_aa.py`). El código de descarga se dejó en el scraper por si se vuelve a necesitar: basta con correr `AUTO_SSASUR.py` sin ese flag.
 - **Drive/Escritorio recortados 04-09-2026**: `publicar_drive.py` y `publicar_escritorio.py` solo sincronizan las 6 categorías vigentes (Fusión AA, Gestión Territorial, Controlados, Clozapinas, Centinela Invierno/SM, Servicios Farmacéuticos) + infraestructura. Las carpetas "App Pedidos", "Auditoria Prescripcion" y "Programacion AA" (en Drive y en Escritorio\Farmacia AA\) se eliminaron — no reintroducir sin confirmar.
 - **Ventana del informe GT**: la calcula `AUTO_SSASUR.gt_desde_a_consultar()` a
   partir de `_gt_cobertura.json` (qué fecha de despacho se consultó y en qué día),
@@ -70,12 +78,10 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 - Verificar un import o nombre de variable
 - Formatear o convertir una lista pequeña
 - "¿Cuál es el dtype de esta columna pandas?"
-- Dudas de sintaxis Python/Streamlit puntuales
+- Dudas de sintaxis Python puntuales
 
 ### Sonnet — trabajo estándar (mayoría de las tareas)
-- Agregar/modificar columnas en `maestro_aa.py`
-- Nuevos filtros o vistas en `app_pedidos.py`
-- Ajustar CSS/layout Streamlit
+- Agregar/modificar columnas en `maestro_aa.py` o `pedido_fusion.py`
 - Bugs predecibles (KeyError, dtype mismatch, merge incorrecto)
 - Scripts nuevos similares a los existentes (nueva auditoría, nuevo cruce)
 - Ajustar umbrales o fórmulas en `sgli.py`
@@ -92,7 +98,7 @@ Universo: **378 medicamentos AA**. Fuente de datos: SSASur (stock + recetas).
 
 ### 1. Declarar el archivo al inicio
 ```
-Archivo: app_pedidos.py, función cargar_datos(), línea ~180.
+Archivo: pedido_fusion.py, función cargar_datos(), línea ~180.
 Problema: [descripción concreta].
 Solución esperada: [qué cambio quiero].
 ```
@@ -128,13 +134,6 @@ pueden contener **RUT de pacientes** sujetos a la **Ley 19.628**.
 ## Stack técnico
 
 - Python 3.10 vía lanzador `py`
-- Streamlit ≥ 1.35 en puerto **8501**
-- pandas, numpy, openpyxl, reportlab, rapidfuzz, anthropic
-
-## Iniciar el servidor
-
-```bat
-py -m streamlit run app_pedidos.py --server.headless true --browser.gatherUsageStats false --server.port 8501
-```
-
-O simplemente: `ABRIR_APP.bat`
+- pandas, numpy, openpyxl, reportlab, rapidfuzz, anthropic, playwright
+- Sin servidor/dashboard: todo corre por lotes desde `AUTO_SSASUR.bat` (tarea
+  programada `MaestroAA_AutoSSASUR`, 9:00) y los .bat de cada categoría.

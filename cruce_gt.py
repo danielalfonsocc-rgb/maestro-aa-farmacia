@@ -261,8 +261,7 @@ def clasificar(reg, d):
         # de ese día salía con "Pendiente" en blanco pese a que el medicamento
         # genuinamente no se había entregado (caso real: Aripiprazol 15mg,
         # receta 48212191, corregido a mano — ver [[gt-manual-vs-pipeline-auto]]).
-        # El resto del proyecto (agente_duplicados.py, auditoria_prescripcion.py,
-        # centinela_reporte.py, etc.) ya usa Estado Prescripción=='ENTREGADO'
+        # El resto del proyecto (centinela_reporte.py, etc.) ya usa Estado Prescripción=='ENTREGADO'
         # como criterio de "ya se despachó" — cruce_gt.py era el único que no
         # lo miraba. PERO Estado Prescripción tampoco es 100% confiable solo:
         # auditoría 07-09-2026 sobre 560 líneas GT encontró 5 con Estado

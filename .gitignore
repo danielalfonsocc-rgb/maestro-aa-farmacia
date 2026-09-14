@@ -107,6 +107,12 @@ Requerimiento_Dialisis_No_Inyectables_*.xlsx
 SGLI_Historico_*.xlsx
 *.log
 
+# ── Salidas de maestro_aa.py (14-09-2026) ────────────────────────────────────
+# Antes PUBLICAR_DATOS.bat las comiteaba a diario para la app Streamlit; la app
+# y ese .bat ya no existen. Son datos regenerables, no código.
+Consolidado_AA_MAESTRO.xlsx
+Resumen_Pedidos_AA*.xlsx
+
 # ── Workspace de evals de skill-creator (artefactos de prueba, no código) ────
 .claude/skills/*-workspace/
 

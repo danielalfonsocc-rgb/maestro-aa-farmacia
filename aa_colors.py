@@ -1,8 +1,8 @@
 """Paleta de colores compartida para los niveles de Criticidad de AA.
 
-Fuente unica de verdad usada por maestro_aa.py y app_pedidos.py, para que
-todos los Excel generados (Consolidado, Resumen, descargas del dashboard)
-muestren siempre el mismo color para el mismo nivel de criticidad.
+Fuente unica de verdad usada por maestro_aa.py, sgli.py y los demas scripts
+que generan Excel, para que todos muestren siempre el mismo color para el
+mismo nivel de criticidad.
 
 Escalas de Criticidad usadas en el proyecto:
   Crit_Farm (crit_farm): 5-OK, 1-CRITICO, 2-URGENTE, 3-MODERADO, 4-BAJO
@@ -124,8 +124,8 @@ def fill_hex(fill, default='FFFFFF'):
 
 
 # ─────────────────────────────────────────────
-# PALETA UI REPORTES — colores de interfaz compartidos (agentes, reportes Excel)
-# Fuente única de verdad para agente_duplicados.py y auditoria_duplicados_profunda.py.
+# PALETA UI REPORTES — colores de interfaz compartidos (reportes Excel)
+# Hoy la usa servicios_farmaceuticos.py (TEAL, GRIS).
 # ─────────────────────────────────────────────
 TEAL     = "0F766E"   # encabezados principales
 ROJO     = "DC2626"   # prioridad ALTA / alerta / distintos médicos
@@ -133,4 +133,3 @@ NARANJA  = "EA580C"   # prioridad MEDIA / mismo médico
 AMBAR    = "F59E0B"   # prioridad BAJA / advertencia
 VERDE    = "16A34A"   # estado OK / positivo
 GRIS     = "F3F4F6"   # filas alternadas / fondos neutros
-GRIS_CLR = GRIS       # alias (usado en agente_duplicados)

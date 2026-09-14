@@ -160,7 +160,7 @@ def leer_recetas(csv_paths):
     df = df[df["semana"].apply(lambda t: t[0] == max_epi_year)].copy()
     df["semana"] = df["semana"].apply(lambda t: t[1]).astype(int)
     # Evento = RUN+Prescripción+Fecha Entrega Receta: SSASUR emite un Número
-    # Receta separado por cada cuota de una receta crónica anual (ver auditoria_prescripcion.py).
+    # Receta separado por cada cuota de una receta crónica anual (ver memoria ssasur-cuotas-receta).
     if "RUN" in df.columns:
         num_recetas = df.drop_duplicates(subset=["RUN", "Prescripción", "Fecha Entrega Receta"]).shape[0]
     else:

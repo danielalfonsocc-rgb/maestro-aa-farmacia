@@ -3,8 +3,6 @@
 Fuente UNICA de verdad de la reposicion **basada en demanda** (sin techo de
 capacidad fisica), usada por:
   - maestro_aa.py  -> persiste la hoja 'SGLI_Estres' en el Consolidado.
-  - app_pedidos.py -> pestana 'SGLI / Capacidad' que recalcula EN VIVO al mover
-                      el Factor_Carga.
 
 Reglas (spec Farmacia AA, Hospital Pitrufquen):
   1. Limite fisico (Capacidad_Max), EN UNIDADES:

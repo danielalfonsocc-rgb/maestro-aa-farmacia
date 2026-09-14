@@ -43,7 +43,6 @@ if %errorlevel% == 0 (
     echo  ============================================================
     echo   LISTO
     echo   - Consolidado_AA_MAESTRO.xlsx
-    echo   - Resumen_Pedidos_AA.xlsx
     echo  ============================================================
 ) else (
     echo.

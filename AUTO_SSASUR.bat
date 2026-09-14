@@ -50,7 +50,9 @@ rem --clozapina va siempre (31-08-2026): antes era opt-in y solo lo activaba
 rem CLOZAPINA.bat por separado; ahora la corrida diaria (tarea programada)
 rem saca tambien el consolidado de hemogramas sin necesidad de un acceso
 rem directo aparte. CLOZAPINA.bat fue eliminado por quedar redundante.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& { py AUTO_SSASUR.py --clozapina %* 2> 'auto_ssasur_error.log' | Tee-Object -FilePath 'auto_ssasur_stdout.log'; exit $LASTEXITCODE }"
+rem --no-programacion (14-09-2026): el reporte de Programacion AA lo procesaba
+rem programacion_aa.py, eliminado 04-09-2026; bajarlo cada dia no servia a nadie.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& { py AUTO_SSASUR.py --clozapina --no-programacion %* 2> 'auto_ssasur_error.log' | Tee-Object -FilePath 'auto_ssasur_stdout.log'; exit $LASTEXITCODE }"
 
 echo.
 echo  ============================================================

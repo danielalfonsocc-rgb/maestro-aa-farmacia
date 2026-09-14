@@ -13,8 +13,9 @@ Flujo:
        a) Clic en la tarjeta RECETA → informe de recetas → descarga
        b) Vuelve al dashboard → clic en ABASTECIMIENTO → stock → descarga
        c) Mismo módulo ABASTECIMIENTO → reporte Programación AA (mes en curso) → descarga
+          (AUTO_SSASUR.bat lo omite con --no-programacion: nadie lo procesa)
   4. Ejecuta maestro_aa.py para actualizar el Consolidado
-  5. Publica los datos en GitHub (si está configurado)
+  5. Pedido Fusión, planillas GT, Centinela, y publica (Escritorio + Drive)
 
 NOTA TÉCNICA — cómo navega SSASUR (verificado por inspección del DOM):
   · Las tarjetas del dashboard son <button> de Vue (no <a>): hay que
@@ -46,17 +47,11 @@ Modos (CLI):
                        vuelca el formulario [DESCUBRIR …] y guarda screenshots.
   · --no-rch           no actualiza el registro ISP de recetas cheque
   · --no-programacion  no baja el reporte de Programación AA (PASO 4b)
-  · --no-controlados   no baja el informe de medicamentos controlados (PASO 3b)
-  · --no-publicar      no publica en GitHub (debug). OJO: SOLO afecta GitHub —
-                       el PASO 7-9 (Escritorio + Google Drive) corre igual, con
-                       datos reales. No existe un flag que frene Escritorio/Drive;
-                       para una corrida de prueba realmente acotada hay que
-                       combinarlo con --no-gt --no-controlados --no-programacion
-                       --no-servicios-farmaceuticos --no-rch,
-                       y aun así el Escritorio y Drive se actualizan de verdad.
-                       Confundido en vivo 07-08-2026 probando el fix de clozapina:
-                       se asumió que --no-publicar frenaba todo, y terminó
-                       corriendo la sincronización completa a Escritorio+Drive.
+  OJO: no existe un flag que frene el PASO 7-9 (Escritorio + Google Drive): corre
+  siempre con datos reales. Ni combinando --no-gt --no-programacion
+  --no-servicios-farmaceuticos --no-rch se obtiene una corrida de prueba aislada.
+  (--no-publicar, que solo frenaba el commit diario a GitHub, se eliminó el
+  14-09-2026 junto con PUBLICAR_DATOS.bat.)
   · --servicios-farmaceuticos  fuerza el PASO 4e (recuento mensual QF, Agenda
                        Médica) ignorando el gatillo de "primeros días hábiles
                        del mes" — úsalo para la 1ª prueba supervisada o para
@@ -67,30 +62,21 @@ Modos (CLI):
   · --debug-agenda     vuelca el formulario [DESCUBRIR …] y guarda screenshots
                        del PASO 4e (Agenda Médica)
 
-El registro ISP de recetas cheque (recetas_cheque.py) corre como PASO 5d: usa
-la MISMA sábana ya descargada para agregar los folios cheque nuevos de Farmacia
-AT Abierta al formulario ISP del mes vigente (carpeta de la QF, fuera del repo).
+El registro ISP de recetas cheque (recetas_cheque.py) corre UNA vez por corrida,
+dentro de SINCRONIZAR_TODO.bat (PASO 7-9): usa la MISMA sábana ya descargada
+para agregar los folios cheque nuevos de Farmacia AT Abierta al formulario ISP
+del mes vigente (carpeta de la QF, fuera del repo). Antes corría también como
+PASO 5d, o sea dos veces seguidas — retirado 14-09-2026.
 
 PASO 4b — Programación AA: dentro del mismo módulo ABASTECIMIENTO (después del
 stock), baja el reporte "Consumos por centro de costo" del MES EN CURSO
-(FARMACOS/LOCAL/FARMACIA) — lo consume programacion_aa.py para Cantidad
-Programada / Cantidad Solicitada del ciclo Bodega AA. No se adelanta a meses
-futuros: la Cantidad Solicitada de un mes que no ha empezado siempre viene en 0.
+(FARMACOS/LOCAL/FARMACIA). Lo consumía programacion_aa.py (eliminado
+04-09-2026); hoy nadie lo procesa y AUTO_SSASUR.bat pasa --no-programacion.
+El código de descarga se deja por si se vuelve a necesitar.
 
-PASO 3b — Informe Medicamentos Controlados: dentro del módulo RECETA
-(Receta → Reportes → Informe Medicamentos Controlados, misma sesión proyecto
-629 que la sábana), baja el listado de despacho de controlados de Farmacia AT
-Abierta del DÍA HÁBIL ANTERIOR (sin filtrar por medicamento → trae todos los
-productos controlados). Solo se guarda localmente en Informes_Controlados_AA/
-(no se publica a Drive/GitHub por defecto — no se confirmó si trae RUT de
-pacientes; ver regla de privacidad de CLAUDE.md antes de agregarlo al publish).
-
-(sgli_historico.py → SGLI_Historico_<fecha>.xlsx NO se agrega aquí: maestro_aa.py
-YA lo corre solo, al final de su propio main() — agregarlo lo duplicaba.)
-
-NOTA: agente_duplicados.py y auditoria_duplicados_profunda.py (llaman a la API
-de Claude) NO corren aquí — se mantienen en sus .bat propios para ejecutarse
-a demanda y no gastar tokens en cada corrida de AUTO_SSASUR.
+PASO 3b — Informe Medicamentos Controlados: ELIMINADO 14-09-2026. Nadie
+consumía el archivo (era del conteo de controlados, eliminado 27-08-2026) y
+nunca llegó a bajar uno — siempre leía "sin despachos".
 
 PASO 4e — Servicios Farmacéuticos (recuento mensual QF): módulo NUEVO y
 separado (Agenda Médica, araucaniasur/agenda_medica) — no comparte sesión con
@@ -108,7 +94,7 @@ _marcar_tipo_reporte_actividades) son heurísticos por TEXTO, nunca verificados
 contra el DOM real de Agenda Médica. Antes de dejarlo corriendo desatendido,
 corre una vez con `py AUTO_SSASUR.py --servicios-farmaceuticos --debug-agenda`
 delante de una persona y ajusta lo que no calce leyendo los volcados
-[DESCUBRIR] — mismo protocolo de bootstrap que ya se usó para GT y Controlados.
+[DESCUBRIR] — mismo protocolo de bootstrap que ya se usó para GT.
 ═══════════════════════════════════════════════════════════════
 """
 import asyncio
@@ -145,7 +131,8 @@ STOCK_REPORTE    = "https://www.ssasur.cl/abastecimiento/reportes/stock_en_momen
 BODEGA_TODAS     = "0"    # bodega → "TODAS" (todas las bodegas en un archivo)
 
 # ── Programación AA (reporte "Consumos por centro de costo") ───────────────────
-# Consumido por programacion_aa.py. Ir directo por URL SOLO funciona después de
+# Lo consumía programacion_aa.py (eliminado 04-09-2026); hoy nadie lo procesa y
+# AUTO_SSASUR.bat pasa --no-programacion. Ir directo por URL SOLO funciona después de
 # entrar_modulo(page, "ABASTECIMIENTO") (acuña la sesión del módulo) — igual que
 # STOCK_REPORTE; probado en vivo 15-07-2026 (403 sin el módulo acuñado antes).
 PROGRAMACION_REPORTE = "https://www.ssasur.cl/abastecimiento/reportes/consumo_por_cc_desplegado"
@@ -178,27 +165,16 @@ SELS_EXCEL  = ('button:has-text("Excel")', 'a:has-text("Excel")',
                '[id*="xls" i]', '[id*="excel" i]', '[class*="excel" i]',
                'img[src*="excel" i]', 'i.fa-file-excel')
 
-# ── RECETA · Informe Medicamentos Controlados (Farmacia AT Abierta) ────────────
-# Vive DENTRO del módulo RECETA (Reportes → Informe Medicamentos Controlados),
-# misma sesión proyecto 629 que la sábana. Formulario: Medicamento (se deja
-# vacío a propósito — el propio formulario indica que así trae TODOS los
-# productos controlados que pasaron por la bodega), Bodega (elegir "FARMACIA AT
-# ABIERTA"), Fecha Inicio/Término (mismo id fechaInicio/fechaTermino que GT,
-# confirmado por inspección visual del formulario 23-07-2026) y botón Buscar.
-CONTROLADOS_URL = "https://www.ssasur.cl/receta/informes/controlados"
-CONTROLADOS_DIR = MAESTRO_DIR / "Informes_Controlados_AA"
-
-
 # ── SERVICIOS FARMACÉUTICOS · Agenda Médica (recuento mensual de actividades QF) ─
 # Módulo NUEVO y separado de RECETA/ABASTECIMIENTO: vive en otra app dentro de
 # SSASUR (araucaniasur/agenda_medica), con su propio menú "Proceso_nuevo" →
 # "Hoja Diaria de Profesional". A diferencia de los demás pasos, este NUNCA se
 # probó en vivo — los selectores de abajo son heurísticos (por TEXTO, mismo
-# patrón que _marcar_origen/_seleccionar_bodega_at_abierta) para maximizar la
+# patrón que _marcar_origen) para maximizar la
 # chance de acertar a la primera, pero la 1ª corrida real DEBE hacerse con
 # --debug-agenda delante de una persona para leer los volcados [DESCUBRIR] y
 # ajustar lo que no calce — exactamente el mismo protocolo de bootstrap que ya
-# se usó para GT y Controlados (ver sus comentarios arriba).
+# se usó para GT (ver sus comentarios arriba).
 AGENDA_MEDICA_URL = "https://www.ssasur.cl/araucaniasur/agenda_medica/index_menu.php"
 SERVICIOS_MARCADOR = MAESTRO_DIR / "Servicios_Farmaceuticos" / "_ultimo_mes.json"
 # Última fecha en que AUTO_SSASUR completó el PASO 5 (maestro_aa.py) sin
@@ -814,7 +790,7 @@ async def descargar_como(page, dest_path: Path, accion, timeout=TIMEOUT_DESCARGA
 def _limpiar_versiones_previas(dest_dir: Path, patron: str, mantener: Path):
     """Borra copias anteriores de un reporte con nombre fechado por SSASUR
     (mismo patrón glob), conservando solo `mantener` (la recién descargada).
-    maestro_aa.py y programacion_aa.py SIEMPRE usan la copia más reciente por
+    maestro_aa.py SIEMPRE usa la copia más reciente por
     mtime (glob + max) — las versiones viejas nunca se vuelven a leer y solo
     se acumulan como basura en la carpeta del proyecto, run tras run."""
     borrados = 0
@@ -1125,18 +1101,6 @@ async def _set_fechas(page, desde, hasta, id_ini=SEL_FECHA_INI, id_fin=SEL_FECHA
         pass
 
 
-async def _filas_resultado(page):
-    """Heurística de cuántos pacientes trae el resultado: filas de la tabla más
-    grande. 0 si hay mensaje de 'sin datos'; None si no hay tabla (desconocido)."""
-    return await page.evaluate(r"""() => {
-      const body = (document.body.innerText || '').toLowerCase();
-      if (/no se encontraron|sin datos|no hay (registros|datos|resultados)|0 registros/.test(body)) return 0;
-      const tablas = [...document.querySelectorAll('table')];
-      if (!tablas.length) return null;
-      let max = 0;
-      for (const t of tablas) max = Math.max(max, t.querySelectorAll('tbody tr').length);
-      return max;
-    }""")
 
 
 async def _estado_tabla_gt(page):
@@ -1146,7 +1110,7 @@ async def _estado_tabla_gt(page):
       · vacio    → la tabla dice explícitamente que no hay resultados
       · cargando → DataTables está procesando (o la tabla aún no existe)
 
-    A diferencia de _filas_resultado(), separa "confirmado vacío" de "todavía
+    A diferencia de contar filas a secas, separa "confirmado vacío" de "todavía
     no sé": es esa diferencia la que evita dar por bueno un 0 falso."""
     return await page.evaluate(r"""() => {
       const vis = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
@@ -1331,83 +1295,6 @@ async def paso_gt(page, desde=None, hasta=None, debug=False):
     return (dest, _contar_filas_xlsx(dest))
 
 
-async def _seleccionar_bodega_at_abierta(page):
-    """Selecciona 'FARMACIA AT ABIERTA' en el <select> Bodega del informe de
-    controlados. Busca por TEXTO de la opción (no por id/value fijo, porque no
-    se conoce de antemano) — mismo patrón que _marcar_origen()."""
-    return await page.evaluate(r"""() => {
-      for (const s of document.querySelectorAll('select')) {
-        const o = [...s.options].find(o => /farmacia\s*at\s*abierta/i.test(o.textContent || ''));
-        if (o) {
-          if (s.value !== o.value) {
-            s.value = o.value;
-            s.dispatchEvent(new Event('change', {bubbles: true}));
-          }
-          return {sel: s.id || s.name || 'bodega', val: o.value, label: (o.textContent || '').trim()};
-        }
-      }
-      return null;
-    }""")
-
-
-async def paso_controlados(page, fecha: str, debug=False):
-    """RECETA → Reportes → Informe Medicamentos Controlados. Bodega = FARMACIA
-    AT ABIERTA, Medicamento vacío (trae todos los controlados), misma fecha en
-    Inicio/Término (día hábil anterior). Devuelve (archivo|None, n_filas):
-    n = 0 → sin despachos ese día (no descarga); n = -1 → error."""
-    CONTROLADOS_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"\n[Controlados] Informe Medicamentos Controlados — Farmacia AT Abierta ({fecha})")
-    await entrar_receta(page)
-    await page.goto(CONTROLADOS_URL)
-    await _networkidle(page)
-    await page.wait_for_timeout(1_500)
-
-    if not await page.evaluate("() => !!document.querySelector('select')"):
-        print("  [ERROR] No cargó el formulario de controlados.")
-        await _dump_formulario(page, "controlados-fallo")
-        await page.screenshot(path=str(MAESTRO_DIR / "debug_controlados.png"))
-        return (None, -1)
-    if debug:
-        await _dump_formulario(page, "controlados")
-
-    bodega = await _seleccionar_bodega_at_abierta(page)
-    print(f"  Bodega → FARMACIA AT ABIERTA ({bodega})" if bodega
-          else "  [AVISO] No encontré el select de Bodega — sigo con el default del formulario.")
-    await page.wait_for_timeout(500)
-
-    await _set_fechas(page, fecha, fecha)
-    print(f"  Fecha: {fecha} (día hábil anterior)")
-    await page.wait_for_timeout(500)
-
-    try:
-        await _click_primero(page, SELS_BUSCAR, "Buscar")
-    except Exception as e:
-        print(f"  [ERROR] No encontré el botón Buscar: {e}")
-        await _dump_formulario(page, "controlados-sin-buscar")
-        await page.screenshot(path=str(MAESTRO_DIR / "debug_controlados.png"))
-        return (None, -1)
-    await _networkidle(page)
-    await page.wait_for_timeout(2_000)
-    if debug:
-        await _dump_formulario(page, "controlados-post-buscar")
-        await page.screenshot(path=str(MAESTRO_DIR / "debug_controlados.png"))
-
-    n = await _filas_resultado(page)
-    if n == 0:
-        print("  (sin despachos de controlados ese día — no hay Excel que bajar)")
-        return (None, 0)
-
-    dest = CONTROLADOS_DIR / f"Informe_Controlados_AT_Abierta_{fecha.replace('/', '-')}.xlsx"
-    try:
-        await descargar_como(page, dest,
-                             lambda: _click_primero(page, SELS_EXCEL, "Excel", force=True))
-    except Exception as e:
-        print(f"  [ERROR] No se pudo bajar el Excel: {e}")
-        await page.screenshot(path=str(MAESTRO_DIR / "debug_controlados.png"))
-        return (None, -1)
-    return (dest, _contar_filas_xlsx(dest))
-
-
 async def main():
     no_pause = "--no-pause" in sys.argv
     # ── Verificar Playwright ───────────────────────────────────────────────────
@@ -1425,11 +1312,6 @@ async def main():
 
     # Modo prueba: descarga SOLO recetas y termina (sin stock, maestro ni publicar).
     solo_recetas = "--solo-recetas" in sys.argv
-    # No publicar en GitHub al final (útil para corridas de prueba/debug). SOLO
-    # frena GitHub — PASO 7-9 sigue copiando al Escritorio y subiendo a Drive
-    # con datos reales pase lo que pase (ver nota en SINCRONIZAR_TODO.bat más
-    # abajo). No asumir que "no_publicar" == "no toca nada externo".
-    no_publicar  = "--no-publicar" in sys.argv
     # Modo GT exclusivo: solo gestión territorial y termina (sin sábana/stock/maestro).
     gt_mode  = ("--gt" in sys.argv) or ("--solo-gt" in sys.argv)
     # Solo stock: salta recetas y GT, baja solo stock y corre maestro.
@@ -1444,8 +1326,6 @@ async def main():
     con_clozapina = "--clozapina" in sys.argv
     # Saltar la descarga del reporte de Programación AA con --no-programacion.
     no_programacion = "--no-programacion" in sys.argv
-    # Saltar el informe de medicamentos controlados con --no-controlados.
-    no_controlados = "--no-controlados" in sys.argv or solo_stock
     debug_gt = "--debug-gt" in sys.argv        # volcados [DESCUBRIR …] + screenshots
     # Servicios Farmacéuticos (Agenda Médica): dispara solo en los primeros días
     # hábiles del mes (catch-up si el 1er día hábil no corrió), o forzado con
@@ -1458,10 +1338,6 @@ async def main():
     _fecha   = _arg_val("--fecha")             # atajo: mismo día en desde/hasta
     today = date.today()
     ayer  = today - timedelta(days=1)
-    # Informe Medicamentos Controlados: día hábil anterior a HOY (no a "ayer"
-    # calendario) — si hoy es lunes, cae en viernes; si hubo feriado, lo salta.
-    # Override para reintentos/backfill: --fecha-controlados dd/mm/yyyy.
-    fecha_controlados = _arg_val("--fecha-controlados", fmt(dia_habil_anterior(today)))
     # Default GT: último día hábil (no "ayer" calendario) → HOY. El reporte
     # 'Modalidad de Despacho' registra cada receta en su fecha REAL de
     # despacho de forma permanente (no desaparece al ser procesada/
@@ -1749,27 +1625,6 @@ async def main():
                 print(f"    Revisa debug_gt.png en {MAESTRO_DIR}")
 
         # ════════════════════════════════════════════════════════════════════
-        #  PASO 3b — INFORME MEDICAMENTOS CONTROLADOS (Farmacia AT Abierta)
-        # ════════════════════════════════════════════════════════════════════
-        if no_controlados:
-            print("\n[3b/9] Informe Medicamentos Controlados — omitido (--no-controlados).")
-        else:
-            print(f"\n[3b/9] Informe Medicamentos Controlados (AT Abierta, {fecha_controlados})...")
-            try:
-                ctrl_dest, n_ctrl = await paso_controlados(page, fecha_controlados, debug_gt)
-                if ctrl_dest:
-                    cnt = f"{n_ctrl} filas" if isinstance(n_ctrl, int) and n_ctrl >= 0 else "filas ?"
-                    print(f"  ✓ {ctrl_dest.name}  ({cnt})")
-                    print(f"  → {ctrl_dest}")
-                elif n_ctrl == 0:
-                    print(f"  · Sin despachos de controlados en {fecha_controlados}.")
-                else:
-                    print("  [AVISO] No se generó el Excel de controlados — continúo con el resto.")
-                    print(f"    Revisa debug_controlados.png en {MAESTRO_DIR}")
-            except Exception as e:
-                print(f"  [AVISO] Informe de controlados falló: {e} — continúo con el resto.")
-
-        # ════════════════════════════════════════════════════════════════════
         #  PASO 4 — ABASTECIMIENTO  (volver al dashboard → entrar → stock)
         # ════════════════════════════════════════════════════════════════════
         print("\n[4/9] Módulo ABASTECIMIENTO...")
@@ -1797,8 +1652,8 @@ async def main():
         except Exception as e:
             # Igual que paso_gt (ver fix 31-08-2026): la navegación de entrada no
             # estaba protegida — un fallo transitorio del paso anterior (ej. la
-            # página quedó en chrome-error:// tras un ERR_CONNECTION_TIMED_OUT de
-            # [3b/9]) hacía que este goto() chocara con una navegación aún en
+            # página quedó en chrome-error:// tras un ERR_CONNECTION_TIMED_OUT del
+            # paso anterior) hacía que este goto() chocara con una navegación aún en
             # curso y tumbara TODO el resto del pipeline (4b/4c/5-9, sin llegar
             # nunca a maestro_aa.py). Detectado en vivo el mismo día.
             print(f"  [ERROR] No se pudo entrar a ABASTECIMIENTO — omito stock: {e}")
@@ -1840,8 +1695,9 @@ async def main():
         # ════════════════════════════════════════════════════════════════════
         #  PASO 4b — PROGRAMACIÓN AA  (mismo módulo ABASTECIMIENTO, mes en curso)
         # ════════════════════════════════════════════════════════════════════
-        # Consumido por programacion_aa.py (Cantidad Programada / Cantidad
-        # Solicitada del ciclo Bodega AA). A diferencia del stock, este reporte
+        # Lo consumía programacion_aa.py (eliminado 04-09-2026); hoy nadie lo
+        # procesa y AUTO_SSASUR.bat pasa --no-programacion, así que en la corrida
+        # diaria este bloque no se ejecuta. A diferencia del stock, este reporte
         # SÍ tiene <select> nativos (confirmado por inspección del DOM
         # 15-07-2026) — no hace falta clic+búsqueda por texto:
         #   #ano, #mes (1-12), #distribucion (5=FARMACOS),
@@ -2005,7 +1861,7 @@ async def main():
                     # mira el día calendario anterior. Reemplaza el barrido de "todo
                     # el mes" que se usaba antes (más lento, revisaba pacientes que no
                     # tenían nada nuevo). OJO: si un día se salta la corrida de
-                    # CLOZAPINA.bat, los despachos de ESE día quedan sin buscar en HCE
+                    # AUTO_SSASUR, los despachos de ESE día quedan sin buscar en HCE
                     # (no hay reintento automático más adelante, a diferencia del
                     # barrido mensual anterior) — correr manualmente con
                     # --desde/--hasta si se detecta un día saltado.
@@ -2142,7 +1998,6 @@ async def main():
         print("═" * 62)
         print("  ✓ COMPLETADO")
         print("  → Consolidado_AA_MAESTRO.xlsx  actualizado")
-        print("  → Resumen_Pedidos_AA.xlsx       actualizado")
         print("═" * 62)
 
         # Marca HOY como la última corrida exitosa — la próxima corrida usa
@@ -2163,7 +2018,7 @@ async def main():
                     cwd=str(MAESTRO_DIR), env=env_utf8,
                 )
                 if cret.returncode != 0:
-                    # Antes esto no se chequeaba (a diferencia de 5d/5e/5f, que sí
+                    # Antes esto no se chequeaba (a diferencia de 5e/5f, que sí
                     # avisan) — si cruce_gt.py/generar.py fallaba a medio camino,
                     # el día se quedaba sin nóminas y no quedaba ningún rastro en
                     # el log para notarlo.
@@ -2172,19 +2027,9 @@ async def main():
             else:
                 print(f"  [aviso] cruce_gt.py no encontrado — omitiendo cruce.")
 
-        # ── PASO 5d — REGISTRO ISP RECETAS CHEQUE ────────────────────────────
-        # Consume la MISMA sábana ya descargada: filtra recetas cheque AT Abierta
-        # y agrega los folios nuevos al formulario ISP del mes vigente. El
-        # formulario vive fuera del repo (carpeta de la QF) → no se publica.
-        rch_py = MAESTRO_DIR / "recetas_cheque.py"
-        if not no_rch and rch_py.exists():
-            print(f"\n[5d/9] Registro ISP de recetas cheque (Farmacia AT Abierta)...")
-            dret = subprocess.run(
-                [sys.executable, str(rch_py), "--no-pause"],
-                cwd=str(MAESTRO_DIR), env=env_utf8,
-            )
-            if dret.returncode != 0:
-                print(f"  [aviso] recetas_cheque.py terminó con código {dret.returncode}")
+        # PASO 5d (registro ISP recetas cheque) — RETIRADO 14-09-2026: corría
+        # recetas_cheque.py y SINCRONIZAR_TODO.bat lo volvía a correr enseguida.
+        # Ahora corre una sola vez, dentro de SINCRONIZAR_TODO.bat (PASO 7-9).
 
         # ── PASO 5e — PEDIDO FUSIONADO ───────────────────────────────────────
         pedido_py = MAESTRO_DIR / "pedido_fusion.py"
@@ -2208,18 +2053,12 @@ async def main():
             if psret.returncode != 0:
                 print(f"  [aviso] pedido_fusion_simple.py terminó con código {psret.returncode}")
 
-        # NOTA: sgli_historico.py NO se corre aquí — maestro_aa.py YA lo llama
-        # internamente al final de su propio main() (import sgli_historico;
-        # sgli_historico.main()). Correrlo de nuevo en este paso lo duplicaba
-        # (2 Excel SGLI_Historico_*.xlsx por corrida, ~15s desperdiciados) —
-        # visto en vivo el 2026-07-13: SGLI_Historico_..._1801 y _1802.
-
         # ── PASO 6 — DEDUPLICAR RECETAS GT ────────────────────────────────────
         # Detecta y limpia recetas duplicadas entre archivos GT descargados con
         # rangos solapados (sobre-extracción). Actúa en modo --limpiar: crea .bak
         # antes de modificar cualquier archivo. Corre ANTES de publicar para que
-        # GitHub/Escritorio/Drive reciban la versión ya limpia (antes el dedup
-        # corría a mitad del publicado y GitHub/Escritorio se quedaban con la
+        # Escritorio/Drive reciban la versión ya limpia (antes el dedup
+        # corría a mitad del publicado y el Escritorio se quedaba con la
         # versión sin deduplicar hasta la corrida siguiente).
         dedup_py = MAESTRO_DIR / "dedup_recetas.py"
         if dedup_py.exists():
@@ -2231,22 +2070,21 @@ async def main():
             if ddup.returncode != 0:
                 print(f"  [aviso] dedup_recetas.py terminó con código {ddup.returncode}")
 
-        # ── PASO 7-9 — SINCRONIZAR TODO (Escritorio + GitHub + Drive + RCh) ────
+        # ── PASO 7-9 — SINCRONIZAR TODO (Escritorio + Drive + RCh) ────────────
         # SINCRONIZAR_TODO.bat es el mismo script que corre el acceso directo
         # "Sincronizar Todo" del Escritorio — una sola fuente de verdad para
-        # "cómo se publica todo", en vez de duplicar las 4 llamadas aquí y allá.
-        # Incluye Recetas Cheque ISP → Drive (excepción autorizada por el usuario
-        # 2026-06-30, confirmada AUTOMÁTICA en cada corrida 2026-07-15 — sube RUT
-        # de pacientes sin confirmación puntual; --no-rch la desactiva).
-        # OJO: --no-publicar solo agrega "--no-git" acá abajo — Escritorio y Drive
-        # se sincronizan SIEMPRE que exista SINCRONIZAR_TODO.bat, con datos
-        # reales. No hay flag para saltarse este paso completo.
+        # "cómo se publica todo", en vez de duplicar las llamadas aquí y allá.
+        # Incluye el registro ISP de Recetas Cheque (recetas_cheque.py) y su
+        # subida a Drive (excepción autorizada por el usuario 2026-06-30,
+        # confirmada AUTOMÁTICA en cada corrida 2026-07-15 — sube RUT de
+        # pacientes sin confirmación puntual; --no-rch desactiva ambas cosas).
+        # OJO: Escritorio y Drive se sincronizan SIEMPRE que exista
+        # SINCRONIZAR_TODO.bat, con datos reales. No hay flag para saltarse
+        # este paso completo.
         sync_bat = MAESTRO_DIR / "SINCRONIZAR_TODO.bat"
         if sync_bat.exists():
-            print("\n[7-9/9] Sincronizando todo (Escritorio + GitHub + Drive + Recetas Cheque)...")
+            print("\n[7-9/9] Sincronizando todo (Escritorio + Drive + Recetas Cheque)...")
             args = ["cmd", "/c", str(sync_bat)]
-            if no_publicar:
-                args.append("--no-git")
             if no_rch:
                 args.append("--no-rch")
             args.append("--no-pause")

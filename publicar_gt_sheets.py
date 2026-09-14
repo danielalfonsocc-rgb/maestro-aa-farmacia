@@ -4,9 +4,7 @@ Google Sheet permanente y compartido — versión DEFINITIVA aprobada por el
 usuario el 19-07-2026 para poder editar desde cualquier equipo de la
 farmacia sin depender de un .xlsx local sin sincronizar.
 
-A diferencia de subir_prueba_sheets.py (crea una copia descartable nueva
-cada vez, para previsualizar cambios de formato antes de aprobarlos), este
-script SIEMPRE actualiza el mismo documento: su ID queda guardado en
+Este script SIEMPRE actualiza el mismo documento: su ID queda guardado en
 _gt_sheets_id.json (versionado en el repo — así cualquier equipo que hace
 `git pull` apunta automáticamente al mismo Sheet compartido).
 

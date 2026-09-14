@@ -25,8 +25,8 @@ sin entrar a la carpeta del repositorio.
                                     de antipsicóticos de depósito, SIN RUT — sí se copia)
 
 IMPORTANTE: este script COPIA, no mueve. El repositorio sigue siendo la fuente de
-verdad — la app Streamlit lee el Consolidado del repo y PUBLICAR_DATOS.bat publica
-desde el repo. Aquí solo dejamos copias legibles, ordenadas por proceso.
+verdad — pedido_fusion.py y el resto leen el Consolidado del repo. Aquí solo
+dejamos copias legibles, ordenadas por proceso.
 
 Uso:
     py publicar_escritorio.py            # sincroniza TODO
@@ -423,7 +423,7 @@ cada vez que corres cada proceso.
   AUTO_SSASUR                 ← descarga de SSASUR + recalcula + publica (todo)
   Gestion Territorial         ← solo descarga y genera planillas GT
   Recetas Cheque ISP          ← solo actualiza el registro ISP del mes
-  Sincronizar Todo            ← publica lo YA generado en Escritorio+GitHub+Drive
+  Sincronizar Todo            ← publica lo YA generado en Escritorio+Drive
                                  + Recetas Cheque ISP a Drive (carpeta CONFIDENCIAL,
                                  RUT pacientes — excepción autorizada 2026-06-30)
                                  (no descarga de SSASUR ni recalcula — usa esto
@@ -486,8 +486,7 @@ _ACCESOS = [
     ("AUTO_SSASUR.lnk",                 "AUTO_SSASUR.bat",    "Descarga de SSASUR, recalcula todo y publica",  _ICON_REFRESH),
     ("Gestion Territorial.lnk",         "GT.bat",             "Descarga y genera las planillas de GT",         _ICON_DOC),
     ("Recetas Cheque ISP.lnk",          "RECETAS_CHEQUE.bat", "Actualiza el registro ISP del mes",             _ICON_RUN),
-    ("Clozapina.lnk",                   "CLOZAPINA.bat",      "AUTO_SSASUR + hemogramas HCE -> Excel para ingreso MINSAL", _ICON_RUN),
-    ("Sincronizar Todo.lnk",            "SINCRONIZAR_TODO.bat","Publica lo ya generado: Escritorio + GitHub + Drive + Recetas Cheque (sin SSASUR)", _ICON_REFRESH),
+    ("Sincronizar Todo.lnk",            "SINCRONIZAR_TODO.bat","Publica lo ya generado: Escritorio + Drive + Recetas Cheque (sin SSASUR)", _ICON_REFRESH),
 ]
 
 

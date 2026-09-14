@@ -16,7 +16,8 @@ FLUJO (secciones numeradas en el código):
   17.   Comparación de stocks por bodega del hospital
   18.   Resumen ejecutivo KPIs
   19.   Escritura Excel → Consolidado_AA_MAESTRO.xlsx (19 hojas)
-  20.   Resumen Semanal operativo → Resumen_Pedidos_AA.xlsx (5 hojas)
+  (20. Resumen_Pedidos_AA.xlsx y la llamada a sgli_historico.py se eliminaron
+   14-09-2026: eran para la app Streamlit y nadie más los leía.)
 
 ARCHIVOS DE ENTRADA (en la misma carpeta):
   - informe_completo_recetas*.csv   → recetas del ERP SSASUR (módulo RECETA)
@@ -24,8 +25,7 @@ ARCHIVOS DE ENTRADA (en la misma carpeta):
   Ambos se descargan con AUTO_SSASUR.bat → AUTO_SSASUR.py (Playwright)
 
 ARCHIVOS DE SALIDA:
-  - Consolidado_AA_MAESTRO.xlsx     → leído por la app Streamlit (19 hojas)
-  - Resumen_Pedidos_AA.xlsx         → Excel operativo simplificado (5 hojas)
+  - Consolidado_AA_MAESTRO.xlsx     → leído por pedido_fusion.py y el resto (19 hojas)
 
 GLOSARIO:
   CDL     Consumo Diario Laboral (ud/día hábil) — base de todos los cálculos
@@ -43,7 +43,7 @@ from datetime import datetime, timedelta
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
-from aa_colors import CRIT_FILL_HEX, crit_fill, crit_hex, crit_nivel, soften, darken, fill_hex
+from aa_colors import CRIT_FILL_HEX, crit_fill, crit_hex, crit_nivel, fill_hex
 from sgli import calcular_sgli, cargar_tallas, FACTOR_CARGA_DEFAULT
 from utils_aa import norm_erp, HOMOLOGACION
 
@@ -1374,7 +1374,7 @@ df_farm_pedido = (
 
 # Universo completo para la hoja Pedido_Farm_Bodega (consumida por pedido_fusion.py
 # --todos): df_farm_pedido de arriba queda filtrado a Necesidad_Farm>0 a propósito
-# para el Resumen_Pedidos_AA (solo lo accionable). Acá se arma el equivalente de
+# (solo lo accionable). Acá se arma el equivalente de
 # _bod_pedido_sin_consumo pero para Farmacia, para que --todos pueda listar los
 # 378 medicamentos igual que ya hace Pedido_Repos_Bodega.
 _farm_pedido_con_datos = (
@@ -2263,161 +2263,6 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
         else:                            ws_sgli.column_dimensions[ltr].width = 13
     ws_sgli.freeze_panes = 'B2'
 
-# ═══════════════════════════════════════════════
-# 20. RESUMEN SEMANAL — Resumen_Pedidos_AA.xlsx
-#     Excel operativo simplificado para imprimir o compartir:
-#     5 hojas: Faltantes_Semana | Pedido_Farmacia_AA | Pedido_Bodega_AA |
-#              Dialisis_Farmacia | Dialisis_Bodega
-# ═══════════════════════════════════════════════
-_RES_BASE  = os.path.join(WORK_DIR, "Resumen_Pedidos_AA.xlsx")
-_RES_DATED = os.path.join(WORK_DIR,
-    f"Resumen_Pedidos_AA_{datetime.now().strftime('%Y%m%d')}.xlsx")
-
-def _resumen_path():
-    if not os.path.exists(_RES_BASE):
-        return _RES_BASE
-    try:
-        with open(_RES_BASE, 'a'): pass
-        return _RES_BASE
-    except PermissionError:
-        return _RES_DATED
-
-RESUMEN_XLS = _resumen_path()
-
-semana_actual = _semana_mes(HOY)
-periodo_label = f"S{semana_actual}  {HOY.strftime('%d/%m/%Y')}"
-
-# Columnas resumidas — solo lo accionable
-_farm_res = ['Medicamento','Criticidad','Stock_Farm_Actual','Cob_Farm_Actual_Dias',
-             'Consumo_5D_Trend','Necesidad_5D_Farm','A_Traspasar',
-             'Deficit_Post_Traspaso','Accion_1_Traspaso_Bodega','Accion_2_Gestion_Externa']
-_bod_res  = ['Medicamento','Criticidad','Stock_Bod_Post_Traspaso','Cob_Bod_Post_Dias',
-             'Consumo_10D_Trend','Reponer_Bodega','Stock_BODEGA_FARMACOS',
-             'Accion_1_Traspaso_Hospital','Accion_2_Compra_Externa']
-_falt_res = ['Medicamento','Stock_AA_Total','Faltante_Neto',
-             'Pacientes_Afectados','N_Recetas','Criticidad','Accion_Sugerida']
-
-df_farm_res = df_farm_pedido[[c for c in _farm_res if c in df_farm_pedido.columns]].copy()
-df_bod_res  = df_bod_pedido [[c for c in _bod_res  if c in df_bod_pedido.columns]].copy()
-df_falt_res = df_f3[[c for c in _falt_res if c in df_f3.columns]].copy() if len(df_f3) else \
-              pd.DataFrame(columns=_falt_res)
-
-# Dialisis — columnas resumidas + desglose de la demanda combinada
-# (Consumo_5D_Trend ya es la suma farm no-dial + diálisis; se añade el desglose).
-_farm_res_dial = _farm_res[:5] + ['Consumo_5D_Solo_Dialisis','Consumo_5D_Farm_NoDial'] + _farm_res[5:]
-_bod_res_dial  = _bod_res[:5]  + ['Consumo_5D_Solo_Dialisis','Consumo_5D_Farm_NoDial'] + _bod_res[5:]
-df_dial_farm_res = df_dial_farm_pedido[[c for c in _farm_res_dial if c in df_dial_farm_pedido.columns]].copy() \
-                   if len(df_dial_farm_pedido) else pd.DataFrame(columns=_farm_res_dial)
-df_dial_bod_res  = df_dial_bod_pedido [[c for c in _bod_res_dial  if c in df_dial_bod_pedido.columns]].copy() \
-                   if len(df_dial_bod_pedido) else pd.DataFrame(columns=_bod_res_dial)
-
-def _titulo(ws, texto, color_hex):
-    ws.insert_rows(1)
-    ws['A1'] = texto
-    ws['A1'].fill = PatternFill('solid', fgColor=soften(color_hex))
-    ws['A1'].font = Font(bold=True, color=darken(color_hex), name='Arial', size=12)
-    ws.row_dimensions[1].height = 24
-    ws.freeze_panes = 'A3'
-
-with pd.ExcelWriter(RESUMEN_XLS, engine='openpyxl') as rw:
-
-    # ── Hoja 1: Faltantes_Semana ──────────────────
-    df_falt_res.to_excel(rw, sheet_name='Faltantes_Semana', index=False)
-    ws_r1 = rw.sheets['Faltantes_Semana']
-    style_sheet(ws_r1, df_falt_res, row_color_fn=color_falt,
-                header_fill=PatternFill('solid', fgColor='0D47A1'))
-    _titulo(ws_r1, f'FALTANTES REALES — {periodo_label}', 'B71C1C')
-    for ci, col in enumerate(list(df_falt_res.columns), 1):
-        ltr = get_column_letter(ci)
-        if   col == 'Medicamento':    ws_r1.column_dimensions[ltr].width = 52
-        elif col == 'Criticidad':     ws_r1.column_dimensions[ltr].width = 36
-        elif col == 'Accion_Sugerida':ws_r1.column_dimensions[ltr].width = 36
-        else:                         ws_r1.column_dimensions[ltr].width = 16
-    add_leyenda(ws_r1, len(df_falt_res) + 4)
-
-    # ── Hoja 2: Pedido_Farmacia_AA ────────────────
-    df_farm_res.to_excel(rw, sheet_name='Pedido_Farmacia_AA', index=False)
-    ws_r2 = rw.sheets['Pedido_Farmacia_AA']
-    style_sheet(ws_r2, df_farm_res, row_color_fn=color_pedido_farm,
-                header_fill=PatternFill('solid', fgColor='880E4F'))
-    _titulo(ws_r2, f'PEDIDO FARMACIA AA → BODEGA AA — {periodo_label}', '880E4F')
-    for ci, col in enumerate(list(df_farm_res.columns), 1):
-        ltr = get_column_letter(ci)
-        if   col == 'Medicamento':                ws_r2.column_dimensions[ltr].width = 52
-        elif col == 'Accion_1_Traspaso_Bodega':   ws_r2.column_dimensions[ltr].width = 38
-        elif col == 'Accion_2_Gestion_Externa':   ws_r2.column_dimensions[ltr].width = 28
-        elif col == 'Criticidad':                 ws_r2.column_dimensions[ltr].width = 14
-        else:                                     ws_r2.column_dimensions[ltr].width = 16
-    # Negrita filas CRITICO — fuente oscura sobre fondo rosa claro
-    for ri, row_t in enumerate(df_farm_res.itertuples(index=False), 2):
-        if str(getattr(row_t, 'Criticidad', '')) == '1-CRITICO':
-            for ci in range(1, len(df_farm_res.columns)+1):
-                ws_r2.cell(row=ri+1, column=ci).font = Font(bold=True, color='7F1D1D',
-                                                             name='Arial', size=11)
-    add_leyenda(ws_r2, len(df_farm_res) + 4)
-
-    # ── Hoja 3: Pedido_Bodega_AA ──────────────────
-    df_bod_res.to_excel(rw, sheet_name='Pedido_Bodega_AA', index=False)
-    ws_r3 = rw.sheets['Pedido_Bodega_AA']
-    style_sheet(ws_r3, df_bod_res, row_color_fn=color_pedido_bod,
-                header_fill=PatternFill('solid', fgColor='1A237E'))
-    _titulo(ws_r3, f'PEDIDO REPOSICION BODEGA AA — {periodo_label}', '1A237E')
-    for ci, col in enumerate(list(df_bod_res.columns), 1):
-        ltr = get_column_letter(ci)
-        if   col == 'Medicamento':                   ws_r3.column_dimensions[ltr].width = 52
-        elif col == 'Accion_1_Traspaso_Hospital':    ws_r3.column_dimensions[ltr].width = 40
-        elif col == 'Accion_2_Compra_Externa':       ws_r3.column_dimensions[ltr].width = 26
-        elif col == 'Criticidad':                    ws_r3.column_dimensions[ltr].width = 14
-        else:                                        ws_r3.column_dimensions[ltr].width = 18
-    for ri, row_t in enumerate(df_bod_res.itertuples(index=False), 2):
-        if str(getattr(row_t, 'Criticidad', '')) == '1-CRITICO':
-            for ci in range(1, len(df_bod_res.columns)+1):
-                ws_r3.cell(row=ri+1, column=ci).font = Font(bold=True, color='7F1D1D',
-                                                             name='Arial', size=11)
-    add_leyenda(ws_r3, len(df_bod_res) + 4)
-
-    # ── Hoja 4: Dialisis_Farmacia (Farmacia AA ← Bodega AA, solo nefrologos) ──
-    df_dial_farm_res.to_excel(rw, sheet_name='Dialisis_Farmacia', index=False)
-    ws_r4 = rw.sheets['Dialisis_Farmacia']
-    style_sheet(ws_r4, df_dial_farm_res, row_color_fn=color_pedido_farm,
-                header_fill=PatternFill('solid', fgColor='0F766E'))
-    _titulo(ws_r4, f'DIALISIS · PEDIDO FARMACIA AA → BODEGA AA — {periodo_label}', '0F766E')
-    for ci, col in enumerate(list(df_dial_farm_res.columns), 1):
-        ltr = get_column_letter(ci)
-        if   col == 'Medicamento':                ws_r4.column_dimensions[ltr].width = 52
-        elif col == 'Accion_1_Traspaso_Bodega':   ws_r4.column_dimensions[ltr].width = 38
-        elif col == 'Accion_2_Gestion_Externa':   ws_r4.column_dimensions[ltr].width = 28
-        elif col == 'Criticidad':                 ws_r4.column_dimensions[ltr].width = 14
-        else:                                     ws_r4.column_dimensions[ltr].width = 16
-    for ri, row_t in enumerate(df_dial_farm_res.itertuples(index=False), 2):
-        if str(getattr(row_t, 'Criticidad', '')) == '1-CRITICO':
-            for ci in range(1, len(df_dial_farm_res.columns)+1):
-                ws_r4.cell(row=ri+1, column=ci).font = Font(bold=True, color='7F1D1D',
-                                                             name='Arial', size=11)
-    add_leyenda(ws_r4, len(df_dial_farm_res) + 4)
-
-    # ── Hoja 5: Dialisis_Bodega (Bodega AA ← Bodega Farmacos, solo nefrologos) ──
-    df_dial_bod_res.to_excel(rw, sheet_name='Dialisis_Bodega', index=False)
-    ws_r5 = rw.sheets['Dialisis_Bodega']
-    style_sheet(ws_r5, df_dial_bod_res, row_color_fn=color_pedido_bod,
-                header_fill=PatternFill('solid', fgColor='0E7490'))
-    _titulo(ws_r5, f'DIALISIS · PEDIDO BODEGA AA → BODEGA FARMACOS — {periodo_label}', '0E7490')
-    for ci, col in enumerate(list(df_dial_bod_res.columns), 1):
-        ltr = get_column_letter(ci)
-        if   col == 'Medicamento':                   ws_r5.column_dimensions[ltr].width = 52
-        elif col == 'Accion_1_Traspaso_Hospital':    ws_r5.column_dimensions[ltr].width = 40
-        elif col == 'Accion_2_Compra_Externa':       ws_r5.column_dimensions[ltr].width = 26
-        elif col == 'Criticidad':                    ws_r5.column_dimensions[ltr].width = 14
-        else:                                        ws_r5.column_dimensions[ltr].width = 18
-    for ri, row_t in enumerate(df_dial_bod_res.itertuples(index=False), 2):
-        if str(getattr(row_t, 'Criticidad', '')) == '1-CRITICO':
-            for ci in range(1, len(df_dial_bod_res.columns)+1):
-                ws_r5.cell(row=ri+1, column=ci).font = Font(bold=True, color='7F1D1D',
-                                                             name='Arial', size=11)
-    add_leyenda(ws_r5, len(df_dial_bod_res) + 4)
-
-print(f"  [OK] Resumen semanal: {os.path.basename(RESUMEN_XLS)}")
-
 _duracion = datetime.now() - _T_INICIO
 print(f"\n{'='*60}")
 print(f"  [OK] Excel generado : {os.path.basename(OUTPUT_XLS)}")
@@ -2441,14 +2286,6 @@ with open(log_file, 'w', encoding='utf-8') as _lf:
     _lf.write(f"Salida  : {os.path.basename(OUTPUT_XLS)}\n")
     _lf.write(f"Duracion: {_duracion.seconds}s\n")
 print(f"  Log guardado en: logs/{os.path.basename(log_file)}")
-
-# ─── Generar planilla SGLI histórica ─────────────────────────────────────────
-try:
-    import sgli_historico
-    print("\n[SGLI] Generando planilla histórica SGLI...")
-    sgli_historico.main()
-except Exception as _e_sgli:
-    print(f"  [WARN] SGLI histórico no generado: {_e_sgli}")
 
 # ─── Centinela de Inyectables de Salud Mental Ambulatoria ────────────────────
 # Revisa en CADA corrida de maestro_aa.py si corresponde regenerar el reporte

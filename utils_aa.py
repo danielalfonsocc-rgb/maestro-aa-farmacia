@@ -53,13 +53,6 @@ RECETAS_HIST_DIRS = [
         r"C:\Users\danie\Downloads",
     ).split(";") if d.strip()
 ]
-# Planilla oficial de Actas de Vencimiento (documento legal firmado, vive fuera
-# del repo). Usada por crear_acta_vencimiento.py:
-#   set MAESTRO_ACTAS_VENCIMIENTO=D:\OtraCarpeta\ACTAS DE VENCIMIENTO 2026.xlsx
-ACTAS_VENCIMIENTO_PATH = os.environ.get(
-    "MAESTRO_ACTAS_VENCIMIENTO",
-    r"C:\Users\danie\Downloads\ACTAS DE VENCIMIENTO 2026.xlsx",
-)
 
 
 # Blindaje contra datos auto-detectados desactualizados (incidente 2026-07-13:
@@ -100,8 +93,6 @@ def norm_erp(s: str) -> str:
 
 
 # Tabla canónica de homologación (fuente: maestro_aa.py, versión más completa).
-# Los subsets que tenían auditoria_prescripcion.py y agente_duplicados.py
-# son estrictamente un subconjunto de esta tabla.
 HOMOLOGACION_RAW: dict[str, str] = {
     "VITAMINA D3 800 UI CAPS":                                 "VITAMINA D3 800 UI CM",
     "BUPROPION 150 MG COMPRIMIDO LIBERACION MODIFICADA":       "BUPROPION (ANFEBUTAMONA) 150 MG CM LIBERACION MODIFICADA",
