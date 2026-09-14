@@ -329,7 +329,7 @@ def _mas_reciente(patron):
 NOMINAS_ENVIO = "Nóminas de Envío"
 
 
-def _fusionar_en_deposito(dest, nuevo, destino_nombre, ddir):
+def _fusionar_en_deposito(dest, nuevo, destino_nombre, ddir, fecha_txt):
     """Fusiona por N° Receta la Planilla ya depositada (dest) con la recién
     generada (nuevo) para el mismo destino/día, reescribe dest y regenera su
     letrero — usado por _depositar_arbol_local cuando 2 rangos GT distintos
@@ -338,7 +338,12 @@ def _fusionar_en_deposito(dest, nuevo, destino_nombre, ddir):
     fusionarse, dejando 2 nóminas sueltas — ver memoria del proyecto
     gt-manual-vs-pipeline-auto). El más reciente gana si hay una receta con
     datos distintos en ambos (no debería pasar — cruce_gt.py dedupea por N°
-    Receta dentro de un mismo rango)."""
+    Receta dentro de un mismo rango).
+
+    `fecha_txt` (dd/mm/aaaa) es la fecha de la carpeta de depósito, NO la de
+    hoy: antes se usaba datetime.now(), y el 14-09-2026 un rango viejo que se
+    depositó tarde reescribió las nóminas del 11-09 de Quepe y Toltén con
+    "Fecha de entrega: 14/09/2026" en planilla y letrero."""
     from agregar_gt_manual import _leer_nomina_existente
     import generar as G
     from openpyxl import Workbook
@@ -348,7 +353,6 @@ def _fusionar_en_deposito(dest, nuevo, destino_nombre, ddir):
     choque = set(regs_actual) & set(regs_nuevo)
     regs = list({**regs_actual, **regs_nuevo}.values())
 
-    fecha_txt = datetime.now().strftime("%d/%m/%Y")
     wb = Workbook()
     titulo = f"GESTIÓN TERRITORIAL - {destino_nombre.upper()}"
     subtitulo = (f"Origen: Farmacia Hospital de Pitrufquén   |   Destino: {destino_nombre}   |   "
@@ -412,7 +416,7 @@ def _depositar_arbol_local(rango_dir):
             continue  # ya depositado, idéntico
 
         if nb.endswith("_Planilla.xlsx") and not nb.startswith("Nomina_Manual"):
-            _fusionar_en_deposito(dest, f, destino, ddir)
+            _fusionar_en_deposito(dest, f, destino, ddir, fecha.replace("-", "/"))
             depositados += 1
         elif nb.endswith("_Letrero.pdf"):
             # Se regenera solo al fusionar la Planilla del mismo destino/día
