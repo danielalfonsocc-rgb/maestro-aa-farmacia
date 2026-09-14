@@ -17,6 +17,8 @@ sin entrar a la carpeta del repositorio.
     │                           pacientes NO se copian a la nube de OneDrive)
     ├── 5 - Pedido Fusionado\   Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
     ├── 6 - Centinela\          Centinela_Reportes\<Sxx>\ (json + pdf) por semana
+    ├── 8 - Inventario Bodega AA\  Programacion_AA_<fecha>.xlsx del ciclo actual (+ su
+    │                             Resumen_Programacion_AA_* si ya se aplicó el conteo)
     ├── 9 - Clozapina\          Accesos a carpetas locales de reportes/hemogramas
     │                             (RUT pacientes, NO se copian a la nube)
     ├── 10 - Servicios Farmaceuticos\  Servicios_Farmaceuticos\<MES AÑO>\ (agregado
@@ -34,6 +36,7 @@ Uso:
     py publicar_escritorio.py --rch          # solo el acceso directo de recetas cheque
     py publicar_escritorio.py --pedido       # solo Pedido_Fusion_AA.xlsx
     py publicar_escritorio.py --centinela    # solo Centinela_Reportes\
+    py publicar_escritorio.py --inventario   # solo la hoja de inventario del ciclo (Programacion_AA\)
     py publicar_escritorio.py --servicios    # solo Servicios_Farmaceuticos\ (recuento QF)
     py publicar_escritorio.py --centinela-sm # solo Centinela_Inyectables_SM\ (antipsicóticos depósito)
     py publicar_escritorio.py --enlaces      # solo (re)crea carpetas, LEEME y accesos
@@ -79,6 +82,7 @@ SUB_GT    = "2 - Gestion Territorial"
 SUB_RCH    = "3 - Recetas Cheque"
 SUB_PEDIDO = "5 - Pedido Fusionado"
 SUB_CENTINELA = "6 - Centinela"
+SUB_INVENTARIO = "8 - Inventario Bodega AA"   # hoja de inventario del ciclo (programacion_aa.py), restaurada 14-09-2026
 SUB_CLOZAPINA = "9 - Clozapina"
 SUB_SERVICIOS = "10 - Servicios Farmaceuticos"
 SUB_CENTINELA_SM = "11 - Centinela Inyectables SM"
@@ -369,6 +373,40 @@ def sync_pedido():
     _copiar(src, dst, nuevo_nombre="Pedido_Fusion_AA.xlsx")
     REP.say(f"[Pedido Fusionado] {os.path.basename(src)} → «{SUB_PEDIDO}»")
 
+def sync_inventario():
+    """Hoja de inventario del ciclo Bodega AA (programacion_aa.py): la planilla
+    del ciclo MÁS RECIENTE, para imprimir y contar, y su Resumen con el conteo
+    aplicado cuando exista. Se conservan los nombres con fecha, para saber de
+    qué ciclo es. Las copias de ciclos anteriores se quitan de esta carpeta: el
+    historial completo queda en Programacion_AA/ del programa. Sin RUT: son
+    cifras de stock por medicamento."""
+    dst = os.path.join(BASE, SUB_INVENTARIO)
+    carpeta = os.path.join(WORK_DIR, "Programacion_AA")
+    planillas = [f for f in glob.glob(os.path.join(carpeta, "Programacion_AA_*.xlsx"))
+                 if re.fullmatch(r"Programacion_AA_\d{8}\.xlsx", os.path.basename(f))]
+    if not planillas:
+        REP.say("[Inventario] (aún no generada — la genera AUTO_SSASUR al reiniciar el ciclo)")
+        return
+    planilla = max(planillas, key=os.path.basename)   # AAAAMMDD en el nombre → orden cronológico
+    vigentes = {os.path.basename(planilla)}
+    _copiar(planilla, dst)
+    msg = f"[Inventario] {os.path.basename(planilla)}"
+
+    resumen = _mas_reciente(os.path.join(carpeta, "Resumen_Programacion_AA_*.xlsx"))
+    if resumen and os.path.getmtime(resumen) >= os.path.getmtime(planilla):
+        _copiar(resumen, dst)
+        vigentes.add(os.path.basename(resumen))
+        msg += f" + {os.path.basename(resumen)}"
+
+    for viejo in glob.glob(os.path.join(dst, "*Programacion_AA_*.xlsx")):
+        if os.path.basename(viejo) not in vigentes:
+            try:
+                os.remove(viejo)
+            except OSError:
+                pass   # abierto en Excel: se quita en la próxima sincronización
+    REP.say(f"{msg} → «{SUB_INVENTARIO}»")
+
+
 def sync_centinela():
     dst = os.path.join(BASE, SUB_CENTINELA)
     src = os.path.join(WORK_DIR, "Centinela_Reportes")
@@ -433,6 +471,9 @@ cada vez que corres cada proceso.
   3 - Recetas Cheque       Acceso directo a la carpeta LOCAL (no sube datos de pacientes a la nube)
   5 - Pedido Fusionado     Pedido_Fusion_AA.xlsx (Farm_Bod + Bod_Farmacos + Dialisis)
   6 - Centinela             Reportes semanales (json + pdf) por semana epidemiológica
+  8 - Inventario Bodega AA  Hoja de inventario del ciclo actual (imprimir, contar y anotar
+                            "Stock Real"); sale sola el día que se reinicia el ciclo de
+                            pedidos, más su Resumen cuando se aplica el conteo
   9 - Clozapina             Accesos a carpetas locales de reportes/hemogramas (RUT pacientes, NO se copian a la nube)
   10 - Servicios Farmaceuticos  Recuento mensual QF x actividad (Agenda Médica), un Excel por mes, SIN RUT
   11 - Centinela Inyectables SM  Stock de antipsicóticos de depósito (salud mental ambulatoria),
@@ -492,7 +533,7 @@ _ACCESOS = [
 
 def crear_estructura(forzar_lnk=False):
     """Crea carpetas, LEEME y (si faltan o forzar_lnk) los accesos directos."""
-    for sub in (SUB_GT, SUB_RCH, SUB_PEDIDO, SUB_CENTINELA, SUB_CLOZAPINA, SUB_SERVICIOS, SUB_CENTINELA_SM):
+    for sub in (SUB_GT, SUB_RCH, SUB_PEDIDO, SUB_CENTINELA, SUB_INVENTARIO, SUB_CLOZAPINA, SUB_SERVICIOS, SUB_CENTINELA_SM):
         os.makedirs(os.path.join(BASE, sub), exist_ok=True)
     try:
         with open(os.path.join(BASE, "LEEME.txt"), "w", encoding="utf-8") as fh:
@@ -541,7 +582,7 @@ def main():
         return
 
     selectivo = args & {"--gt", "--rch", "--pedido",
-                         "--centinela", "--clozapina",
+                         "--centinela", "--inventario", "--clozapina",
                          "--servicios", "--centinela-sm"}
     todo = not selectivo
 
@@ -553,6 +594,8 @@ def main():
         sync_pedido()
     if todo or "--centinela" in args:
         sync_centinela()
+    if todo or "--inventario" in args:
+        sync_inventario()
     if todo or "--clozapina" in args:
         sync_clozapina()
     if todo or "--servicios" in args:

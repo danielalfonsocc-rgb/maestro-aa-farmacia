@@ -20,4 +20,8 @@ echo.
 py programacion_aa.py %*
 
 echo.
+echo  Copiando al Escritorio (Farmacia AA\8 - Inventario Bodega AA)...
+py publicar_escritorio.py --inventario
+
+echo.
 pause
