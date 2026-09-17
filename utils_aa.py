@@ -63,6 +63,33 @@ RECETAS_HIST_DIRS = [
 UMBRAL_DIAS_STALE = 10
 
 
+# ── Ciclo de pedido Bodega AA → Bodega Fármacos (cada 2 semanas) ─────────────
+# Días hábiles que se suman al consumo del ciclo al calcular cuánto pedir
+# (decisión usuario 17-09-2026). Los usan maestro_aa.py (Necesidad_Bod) y
+# pedido_fusion.py (hoja Bod_Farmacos), que deben calcular igual:
+#   ENTREGA: el pedido del ciclo siguiente llega 1 día hábil después de
+#            pedirlo, así que el stock de este ciclo tiene que durar hasta ese día.
+#   RESERVA: stock de seguridad al cierre del ciclo. Antes se pedía justo lo que
+#            se iba a consumir y la bodega quedaba en 0 el último día.
+ENTREGA_BODFARM_DIAS = 1
+RESERVA_BODFARM_DIAS = 2
+
+
+def cargar_feriados(work_dir: str) -> set:
+    """Fechas (datetime.date) de feriados_chile.csv, formato 'fecha;nombre;confianza'."""
+    fer = set()
+    try:
+        with open(os.path.join(work_dir, "feriados_chile.csv"), encoding="utf-8") as fh:
+            next(fh)
+            for ln in fh:
+                p = ln.rstrip().split(";")
+                if p[0].strip():
+                    fer.add(datetime.date.fromisoformat(p[0].strip()))
+    except FileNotFoundError:
+        pass
+    return fer
+
+
 def verificar_frescura(fecha_dato: "datetime.date | None", etiqueta: str,
                         hoy: "datetime.date | None" = None) -> None:
     """Aborta con exit(1) si `fecha_dato` (la más reciente encontrada en una

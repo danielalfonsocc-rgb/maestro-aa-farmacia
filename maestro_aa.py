@@ -45,7 +45,8 @@ from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 from aa_colors import CRIT_FILL_HEX, crit_fill, crit_hex, crit_nivel, fill_hex
 from sgli import calcular_sgli, cargar_tallas, FACTOR_CARGA_DEFAULT
-from utils_aa import norm_erp, HOMOLOGACION
+from utils_aa import (norm_erp, HOMOLOGACION, cargar_feriados,
+                      ENTREGA_BODFARM_DIAS, RESERVA_BODFARM_DIAS)
 
 warnings.filterwarnings('ignore')
 
@@ -1088,18 +1089,44 @@ pat_tot   = patron_global.sum(axis=1).replace(0, np.nan)
 patron_pct = patron_global.div(pat_tot, axis=0).fillna(0).mul(100).round(1)
 patron_pct.columns = [c.replace('Total_', '%_') for c in patron_global.columns]
 
-# ── D) Semana pico (mayor consumo global) ────────────────────────────────────
-# apply condicional para evitar ValueError en filas con todo cero
-semana_pico = patron_global.apply(
-    lambda r: r.idxmax().replace('Total_', '') if r.sum() > 0 else 'Sin_Consumo',
-    axis=1
+# ── C2) Factor de carga POR DÍA HÁBIL de cada semana del mes ─────────────────
+# Factor_Sx = (consumo Sx / días hábiles Sx) ÷ (consumo total / días hábiles total)
+# S4 abarca los días 22-31 (6-8 días hábiles contra 5 de S1-S3). Antes se usaba
+# %_Sx / 25, que le atribuía a S4 el volumen de esos días extra como si fuera
+# consumo más alto por día: en sep-25..ago-26 el modelo daba S1 0,89 y S4 1,17,
+# y lo real por día hábil era S1 0,98 y S4 0,94 (fix 17-09-2026). Se mide solo
+# hasta FECHA_MAX y sin feriados, para que numerador y denominador cubran lo mismo.
+_FERIADOS = cargar_feriados(WORK_DIR)
+_dh_hist  = [d for d in pd.bdate_range(FECHA_INICIO_OP.normalize(), FECHA_MAX)
+             if d.date() not in _FERIADOS]
+_dh_seg   = (pd.Series([min((d.day - 1) // 7 + 1, 4) for d in _dh_hist], dtype=int)
+             .value_counts().reindex(range(1, 5), fill_value=0))
+_vol_seg  = (
+    df_op_consumo[df_op_consumo['Fecha_Entrega'] <= FECHA_MAX]
+    .groupby(['Prescripcion_norm', 'Semana_Mes'], observed=True)['Cantidad_Recetada']
+    .sum()
+    .unstack(fill_value=0)
+    .reindex(index=idx, columns=range(1, 5), fill_value=0)
 )
+_tasa_tot = (_vol_seg.sum(axis=1) / max(int(_dh_seg.sum()), 1)).replace(0, np.nan)
+factor_semana = pd.DataFrame(index=patron_global.index)
+for s in range(1, 5):
+    if _dh_seg[s] > 0:
+        factor_semana[f'Factor_S{s}'] = (_vol_seg[s] / _dh_seg[s] / _tasa_tot).fillna(1.0).round(3)
+    else:   # histórico tan corto que aún no pasa por esa semana del mes
+        factor_semana[f'Factor_S{s}'] = 1.0
+print(f"  Días hábiles por semana del mes (histórico, sin feriados): {_dh_seg.to_dict()}")
+
+# ── D) Semana pico (mayor consumo por día hábil) ─────────────────────────────
+semana_pico = (factor_semana.idxmax(axis=1).str.replace('Factor_', '')
+               .where(_vol_seg.sum(axis=1) > 0, 'Sin_Consumo'))
 
 # ── E) Construir DataFrame final ─────────────────────────────────────────────
 df_tendencia = pd.concat([
     wp,
     patron_global,
     patron_pct,
+    factor_semana,
     semana_pico.rename('Semana_Pico'),
 ], axis=1).reset_index().rename(columns={'Prescripcion_norm': 'Medicamento'})
 
@@ -1113,9 +1140,9 @@ df_tendencia.sort_values('Medicamento', inplace=True)
 
 print(f"  Tabla tendencia semanal: {len(df_tendencia):,} medicamentos x {len(df_tendencia.columns)} columnas")
 
-# Extraer % por semana para usar en pedidos (columnas %_S1 … %_S4)
-_pct_cols = [c for c in df_tendencia.columns if c.startswith('%_S')]
-df_pct_semana = df_tendencia[['Medicamento'] + _pct_cols].copy()
+# Factor por día hábil de cada semana para usar en pedidos (Factor_S1 … Factor_S4)
+_factor_cols = [c for c in df_tendencia.columns if c.startswith('Factor_S')]
+df_factor_semana = df_tendencia[['Medicamento'] + _factor_cols].copy()
 
 # Validacion en consola: top 10 medicamentos por CMP + patron semanal
 top10 = df_master.nlargest(10, 'CMP_Mensual')['Medicamento'].tolist()
@@ -1155,20 +1182,19 @@ _n_con_fe = int((df_master['Factor_Empaque'] > 1).sum())
 print(f"  Factor de empaque CENABAST: {len(FACTOR_EMPAQUE)} claves · {_n_con_fe}/{len(df_master)} meds con empaque")
 
 # ── A) CDL ajustado por semana del mes ───────────────────────────────────────
-# Fórmula: CDL_Sx = CDL × (% consumo semana x / 25)
-# Baseline = 25 % (distribución plana entre 4 semanas)
-# Si un medicamento tiene pico S4 (28 %), CDL_S4 = CDL × 1.12 (+12 %)
-# Si tiene semana baja S1 (21 %), CDL_S1 = CDL × 0.84 (-16 %)
+# Fórmula: CDL_Sx = CDL × Factor_Sx  (consumo por día hábil de la semana x ÷
+# consumo por día hábil promedio, ver sección 13-C2). Factor 1 = semana normal;
+# si un medicamento consume 12 % más por día en S4, CDL_S4 = CDL × 1.12.
 
 df_ped = df_master[df_master['CDL'] > 0].copy()
-df_ped = df_ped.merge(df_pct_semana, on='Medicamento', how='left')
+df_ped = df_ped.merge(df_factor_semana, on='Medicamento', how='left')
 
 for s in range(1, 5):
-    col_pct = f'%_S{s}'
-    if col_pct not in df_ped.columns:
-        df_ped[col_pct] = 25.0
-    df_ped[col_pct] = df_ped[col_pct].fillna(25.0)
-    df_ped[f'CDL_S{s}'] = (df_ped['CDL'] * df_ped[col_pct] / 25.0).round(4)
+    col_fac = f'Factor_S{s}'
+    if col_fac not in df_ped.columns:
+        df_ped[col_fac] = 1.0
+    df_ped[col_fac] = df_ped[col_fac].fillna(1.0)
+    df_ped[f'CDL_S{s}'] = (df_ped['CDL'] * df_ped[col_fac]).round(4)
 
 # ── B) Días hábiles próximos 5 y 10 jornadas → semana del mes ───────────────
 def _semana_mes(d):
@@ -1276,14 +1302,18 @@ df_ped['Accion_Traspaso'] = df_ped.apply(accion_farm_traspaso, axis=1)
 df_ped['Accion_Externo']  = df_ped.apply(accion_farm_externo,  axis=1)
 
 # ── G) Necesidad Bodega → Bodega Fármacos (decisión usuario 2026-06-18) ──────
-# Pedido = requerimiento de 10 días hábiles (con factor de semana pico)
+# Pedido = consumo de 10 días hábiles (con factor de semana del mes)
+#          + 1 día de entrega + 2 días de reserva (usuario 17-09-2026, ver utils_aa)
 #          − TODO el stock de Atención Abierta (Farmacia AA + Bodega AA).
 # Así no se pide a Bodega Fármacos lo que Atención Abierta ya tiene en mano.
-# Luego se redondea al factor de empaque.
+# Luego se redondea al factor de empaque. Mismo cálculo que la hoja
+# Bod_Farmacos de pedido_fusion.py.
+_DIAS_OBJ_BOD = CICLO_PEDIDO_BODEGA_DIAS + ENTREGA_BODFARM_DIAS + RESERVA_BODFARM_DIAS
 df_ped['Req_2_Semanas']    = (df_ped['CDL'] * CICLO_PEDIDO_BODEGA_DIAS).round(0)
-df_ped['Target_Stock_Bod'] = df_ped['Consumo_10D_Trend']   # 10 días háb. ajustado por tendencia
+df_ped['Target_Stock_Bod'] = (df_ped['Consumo_10D_Trend'] / CICLO_PEDIDO_BODEGA_DIAS
+                              * _DIAS_OBJ_BOD).round(1)
 _nec_bod_bruta = np.maximum(
-    df_ped['Consumo_10D_Trend'] - df_ped['Stock_AA_Total'], 0
+    df_ped['Target_Stock_Bod'] - df_ped['Stock_AA_Total'], 0
 ).round(1)
 df_ped['Necesidad_Bod'] = [
     redondear_empaque(n, m, FACTOR_EMPAQUE)
@@ -1514,13 +1544,13 @@ def _pipeline_ped_dial(df_base):
     """Mismo flujo que la seccion 14, aplicado al master de dialisis.
     Reusa los helpers crit_farm/crit_bod/accion_* y _farm_cols/_bod_cols."""
     dp = df_base[df_base['CDL'] > 0].copy()
-    dp = dp.merge(df_pct_semana, on='Medicamento', how='left')
+    dp = dp.merge(df_factor_semana, on='Medicamento', how='left')
     for s in range(1, 5):
-        col_pct = f'%_S{s}'
-        if col_pct not in dp.columns:
-            dp[col_pct] = 25.0
-        dp[col_pct] = dp[col_pct].fillna(25.0)
-        dp[f'CDL_S{s}'] = (dp['CDL'] * dp[col_pct] / 25.0).round(4)
+        col_fac = f'Factor_S{s}'
+        if col_fac not in dp.columns:
+            dp[col_fac] = 1.0
+        dp[col_fac] = dp[col_fac].fillna(1.0)
+        dp[f'CDL_S{s}'] = (dp['CDL'] * dp[col_fac]).round(4)
 
     dp['Consumo_5D']        = (dp['CDL'] * 5).round(1)   # plano COMBINADO (farm no-dial + dial)
     # Desglose de referencia (solo se muestra en las hojas de diálisis): cuánto
@@ -1566,7 +1596,8 @@ def _pipeline_ped_dial(df_base):
     dp['Accion_Externo']   = dp.apply(accion_farm_externo,  axis=1)
 
     dp['Req_2_Semanas']    = (dp['CDL'] * CICLO_PEDIDO_BODEGA_DIAS).round(0)
-    dp['Target_Stock_Bod'] = dp['Consumo_10D_Trend']
+    dp['Target_Stock_Bod'] = (dp['Consumo_10D_Trend'] / CICLO_PEDIDO_BODEGA_DIAS
+                              * _DIAS_OBJ_BOD).round(1)
     _nec_bod_bruta = np.maximum(dp['Target_Stock_Bod'] - dp['Stock_AA_Total'], 0).round(1)
     dp['Necesidad_Bod'] = [
         redondear_empaque(n, m, FACTOR_EMPAQUE)
@@ -2092,7 +2123,7 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
     ws11.freeze_panes = 'B2'
 
     # ── 12. Tendencia_Semanal ─────────────────────
-    # Filas = medicamento | Col_1..N = "Mes S#" (detalle) + Total_S1..4 + %_S1..4 + Semana_Pico
+    # Filas = medicamento | Col_1..N = "Mes S#" (detalle) + Total_S1..4 + %_S1..4 + Factor_S1..4 + Semana_Pico
     df_tendencia.to_excel(writer, sheet_name='Tendencia_Semanal', index=False)
     ws12 = writer.sheets['Tendencia_Semanal']
 
@@ -2100,7 +2131,7 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
     detail_cols = [c for c in tend_cols
                    if c not in (['Medicamento','Semana_Pico','CMP_Mensual','CDL',
                                   'Stock_Farmacia_AA','Cobertura_Lab'])
-                   and not c.startswith('Total_S') and not c.startswith('%_S')]
+                   and not c.startswith(('Total_S', '%_S', 'Factor_S'))]
 
     def color_tendencia(row_t, ri):
         sp = str(getattr(row_t, 'Semana_Pico', ''))
@@ -2118,7 +2149,7 @@ with pd.ExcelWriter(OUTPUT_XLS, engine='openpyxl') as writer:
             ws12.column_dimensions[ltr].width = 52
         elif col in detail_cols:          # columnas "Mes S#"
             ws12.column_dimensions[ltr].width = 10
-        elif col.startswith('Total_S') or col.startswith('%_S'):
+        elif col.startswith(('Total_S', '%_S', 'Factor_S')):
             ws12.column_dimensions[ltr].width = 12
         else:
             ws12.column_dimensions[ltr].width = 14

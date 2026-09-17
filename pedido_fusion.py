@@ -33,7 +33,7 @@ import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from utils_aa import norm_erp
+from utils_aa import norm_erp, ENTREGA_BODFARM_DIAS, RESERVA_BODFARM_DIAS
 
 WORK_DIR     = os.path.dirname(os.path.abspath(__file__))
 FERIADOS_CSV = os.path.join(WORK_DIR, 'feriados_chile.csv')
@@ -378,7 +378,7 @@ HDRS2 = [
     ('Cob. Bod.AA (días)',       15),   # Stock_Bod_Actual / CDL (antes del pedido)
     ('Stock Farm. AA',           12),
     ('Stock Bod. Fármacos',      14),
-    ('Req. ciclo (ud)',          13),   # CDL × dias_ciclo; header dinámico en write_h2
+    ('Req. ciclo (ud)',          13),   # CDL × (dias_ciclo + entrega + reserva); header dinámico en write_h2
     ('A Reponer (ud)',           13),   # max(0, req_ciclo - (sbod+sfarm)), redondeado al Fe
     ('Accion',                   44),
 ]
@@ -403,11 +403,14 @@ def calc_h2(df_bod, fe_map, hoy, fer):
         # Cobertura actual de Bodega AA (antes del pedido)
         cob_bod = round(sbod / cdl, 1) if cdl > 0 else 0.0
 
-        # Stock requerido para el ciclo actual (días restantes). Se descuenta TODO
-        # el stock de Atención Abierta (Bodega AA + Farmacia AA) — el de Bodega
-        # Fármacos vive en otra ubicación física y solo decide la acción (traspaso
-        # vs. compra externa), no reduce la necesidad.
-        req_ciclo   = math.ceil(cdl * dc) if cdl > 0 else 0
+        # Stock requerido: días que quedan del ciclo + 1 día hasta que llegue el
+        # pedido del ciclo siguiente + 2 días de reserva (utils_aa, usuario
+        # 17-09-2026). Antes era solo CDL × días restantes y la bodega quedaba en 0
+        # el último día. Se descuenta TODO el stock de Atención Abierta (Bodega AA +
+        # Farmacia AA) — el de Bodega Fármacos vive en otra ubicación física y solo
+        # decide la acción (traspaso vs. compra externa), no reduce la necesidad.
+        dias_req    = dc + ENTREGA_BODFARM_DIAS + RESERVA_BODFARM_DIAS
+        req_ciclo   = math.ceil(cdl * dias_req) if cdl > 0 else 0
         fe          = int(fe_map.get(med, 1)) or 1
         rep         = _ceil_fe(max(0, req_ciclo - (sbod + sfarm)), fe)
 
@@ -436,13 +439,15 @@ def write_h2(ws, rows, hoy, semana, dias_ciclo):
     _subtit(ws,
         f'Ciclo 10d hábiles (inicio {CICLO_INICIO.strftime("%d-%m")}, repite c/2 semanas) | Quedan {dias_ciclo}d | '
         f'Cob. Bod.AA = Stock Bod.AA ÷ CDL (días de cobertura actual, antes del pedido) | '
-        f'A Reponer = max(0, CDL×{dias_ciclo}d − (Stock Bod.AA + Stock Farm.AA)), '
+        f'Req. ciclo = CDL × ({dias_ciclo}d del ciclo + {ENTREGA_BODFARM_DIAS}d de entrega del próximo pedido '
+        f'+ {RESERVA_BODFARM_DIAS}d de reserva) | '
+        f'A Reponer = max(0, Req. ciclo − (Stock Bod.AA + Stock Farm.AA)), '
         f'redondeado al empaque CENABAST | '
         f'Stock Bod.Fármacos solo decide la acción: pedir traspaso o compra externa | '
         f'Ámbar = compra externa a Bod.Fármacos',
-        len(HDRS2))
+        len(HDRS2), height=48)
     hdrs = list(HDRS2)
-    hdrs[6] = (f'Req. ciclo ({dias_ciclo}d, ud)', 13)
+    hdrs[6] = (f'Req. ciclo ({dias_ciclo}+{ENTREGA_BODFARM_DIAS}+{RESERVA_BODFARM_DIAS}d, ud)', 13)
     _hdr(ws, 3, hdrs)
     for i, vals in enumerate(rows, 4):
         _fila_crit(ws, i, vals, vals[1], {2, 3, 4, 5, 6, 7, 8}, cols_fmt1d={4})
