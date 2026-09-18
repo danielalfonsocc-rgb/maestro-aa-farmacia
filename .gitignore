@@ -118,3 +118,6 @@ Resumen_Pedidos_AA*.xlsx
 
 # ── Lock runtime de sesión Claude Code (específico de cada máquina) ──────────
 .claude/scheduled_tasks.lock
+
+# Linea base de "Productos Solicitado" por ciclo (pedido_fusion.py, columna Ya pedido ciclo)
+_pedido_fusion_programacion.json

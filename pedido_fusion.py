@@ -27,17 +27,21 @@ Uso:
     py pedido_fusion.py --forzar-dialisis
     py pedido_fusion.py --todos
 """
-import os, math, datetime as dt, argparse, glob, json
+import os, re, math, datetime as dt, argparse, glob, json
 import pandas as pd
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from utils_aa import norm_erp, ENTREGA_BODFARM_DIAS, RESERVA_BODFARM_DIAS
+from utils_aa import norm_erp, HOMOLOGACION, ENTREGA_BODFARM_DIAS, RESERVA_BODFARM_DIAS
 
 WORK_DIR     = os.path.dirname(os.path.abspath(__file__))
 FERIADOS_CSV = os.path.join(WORK_DIR, 'feriados_chile.csv')
 LISTA_MANUAL_JSON = os.path.join(WORK_DIR, 'lista_manual_faltantes.json')
+# Línea base de "Productos Solicitado" al inicio del ciclo + último valor visto
+# de cada mes, para la columna "Ya pedido ciclo" de Bod_Farmacos.
+PROG_ESTADO_JSON = os.path.join(WORK_DIR, '_pedido_fusion_programacion.json')
+PATRON_REPORTE_PROG = 'cantidad_de_productos_consumidos_en_centro_de_costo_farmacia*.xlsx'
 BUFFER_SS    = 1    # días de safety stock (blindaje reapertura lunes)
 EXTRA_CRIT   = 1    # días extra SS para criticidad ≤ 2
 UMBRAL_PREQUIEBRE = 10   # días de cobertura farmacia bajo los cuales una bodega
@@ -369,6 +373,98 @@ def write_h1(ws, rows, dias_ef, hoy, semana):
     ws.page_setup.orientation = 'landscape'
 
 
+# ─────────────── Programación SSASUR: lo ya pedido en el ciclo ──────────────
+
+def _clave(nombre):
+    n = norm_erp(nombre)
+    return HOMOLOGACION.get(n, n)
+
+
+def _base_desde_planilla(pa, inicio, fin):
+    """(periodo, {clave: solicitado}, archivo) según la hoja de inventario del
+    ciclo, que guarda "Cantidad Solicitada" del reporte de la mañana en que se
+    generó. Usa la versión en blanco (.bak) si ya se le aplicó el conteo."""
+    f = pa._planilla_del_ciclo(inicio, fin)
+    if not f:
+        return None
+    bak = f[:-len('.xlsx')] + '.bak.xlsx'
+    src = bak if os.path.exists(bak) else f
+    try:
+        meta = str(pd.read_excel(src, header=None, nrows=2, engine='openpyxl').iloc[1, 0])
+        df = pd.read_excel(src, header=2, engine='openpyxl')
+    except Exception:
+        return None
+    if 'Cantidad Solicitada' not in df.columns:
+        return None
+    m = re.search(r'mes de (\w+) de (\d{4})', meta, re.IGNORECASE)
+    mes = pa.MESES_ES.get(m.group(1).strip().upper()) if m else None
+    periodo = f'{m.group(2)}-{mes:02d}' if mes else None
+    sol = pd.to_numeric(df['Cantidad Solicitada'], errors='coerce').fillna(0)
+    base = {_clave(med): float(v) for med, v in zip(df['Medicamento'].astype(str), sol)}
+    return periodo, base, os.path.basename(src)
+
+
+def _programacion_ciclo(hoy):
+    """Lo ya pedido en el ciclo y el saldo del mes, según el reporte de
+    Programación de SSASUR (el mismo que usa programacion_aa.py, lo baja
+    AUTO_SSASUR PASO 4b).
+
+    "Productos Solicitado" es acumulado del MES, así que lo pedido en el ciclo
+    = solicitado hoy − solicitado al inicio del ciclo. La línea base se guarda en
+    PROG_ESTADO_JSON la primera vez que corre en el ciclo (el primer día hábil
+    corre con el reporte de esa mañana, antes de pedir); si falta, se toma de la
+    hoja de inventario del ciclo. Si el ciclo cruza de mes se suma lo pedido al
+    final del mes anterior (último reporte visto de ese mes) más lo del mes nuevo.
+
+    El reporte no registra recepción ("Productos Recepcionados" viene en 0), así
+    que lo ya pedido puede estar ya en el stock: es informativo, no se descuenta
+    de A Reponer. Devuelve None si no hay reporte."""
+    import programacion_aa as pa   # diferido: programacion_aa importa este módulo
+    ruta = pa._mas_reciente(PATRON_REPORTE_PROG, extra_dirs=[pa._downloads_dir()])
+    if not ruta:
+        return None
+    prog_raw, sol_raw, periodo, meta = pa._leer_reporte_ssasur(ruta)
+    prog = {k: float(v) for k, v in prog_raw.items() if pd.notna(v)}
+    sol  = {k: float(v) for k, v in sol_raw.items() if pd.notna(v)}
+
+    inicio, fin = pa._ventana_ciclo(hoy)
+    try:
+        with open(PROG_ESTADO_JSON, encoding='utf-8') as fh:
+            est = json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        est = {}
+    if est.get('ciclo_inicio') != inicio.isoformat():
+        base = _base_desde_planilla(pa, inicio, fin)
+        completa = base is None
+        if base is None:
+            base = (periodo, sol, os.path.basename(ruta))
+        est.update(ciclo_inicio=inicio.isoformat(), base_periodo=base[0] or periodo,
+                   base_sol=base[1], base_fuente=base[2], base_completa=completa)
+    if periodo:
+        por_mes = est.setdefault('ultimo_por_mes', {})
+        por_mes[periodo] = sol
+        for viejo in sorted(por_mes)[:-3]:
+            del por_mes[viejo]
+    with open(PROG_ESTADO_JSON, 'w', encoding='utf-8') as fh:
+        json.dump(est, fh, ensure_ascii=False)
+
+    base_sol, base_per = est['base_sol'], est['base_periodo']
+    cierre = est.get('ultimo_por_mes', {}).get(base_per, {})
+    ya = {}
+    for k in set(sol) | set(base_sol):
+        if k not in base_sol and not est.get('base_completa'):
+            continue   # no estaba en la hoja de inventario del ciclo: sin línea base
+        b = base_sol.get(k, 0.0)
+        if base_per == periodo:
+            v = sol.get(k, 0.0) - b
+        else:
+            v = (cierre.get(k, b) - b) + sol.get(k, 0.0)
+        ya[k] = max(0, int(round(v)))
+    saldo = {k: int(round(v - sol.get(k, 0.0))) for k, v in prog.items()}
+    return {'ya': ya, 'saldo': saldo, 'inicio': inicio, 'obtenido': meta,
+            'base_fuente': est.get('base_fuente', '')}
+
+
 # ─────────────── Hoja 2: Bodega AA → Bodega Fármacos ────────────────────────
 
 HDRS2 = [
@@ -380,10 +476,14 @@ HDRS2 = [
     ('Stock Bod. Fármacos',      14),
     ('Req. ciclo (ud)',          13),   # CDL × (dias_ciclo + entrega + reserva); header dinámico en write_h2
     ('A Reponer (ud)',           13),   # max(0, req_ciclo - (sbod+sfarm)), redondeado al Fe
+    ('Ya pedido ciclo (ud)',     13),   # Productos Solicitado hoy − al inicio del ciclo (_programacion_ciclo)
+    ('Saldo program. mes (ud)',  13),   # Programado − Solicitado del mes
     ('Accion',                   44),
 ]
 
-def calc_h2(df_bod, fe_map, hoy, fer):
+def calc_h2(df_bod, fe_map, hoy, fer, prog=None):
+    """prog = resultado de _programacion_ciclo(); sin él las columnas de
+    programación quedan vacías (pedido_fusion_simple.py no lo pasa)."""
     dc = _dias_ciclo(hoy, fer)
     rows = []
     for _, r in df_bod.iterrows():
@@ -422,8 +522,13 @@ def calc_h2(df_bod, fe_map, hoy, fer):
             falt = rep - sbfarm
             accion = f'Bod.Fármacos: {sbfarm} ud disponibles | COMPRA EXTERNA: {falt} ud'
 
+        ya_ped = saldo = None
+        if prog:
+            ya_ped = prog['ya'].get(_clave(med))
+            saldo  = prog['saldo'].get(_clave(med))
+
         rows.append({
-            'v': (med, crit, sbod, cob_bod, sfarm, sbfarm, req_ciclo, rep, accion),
+            'v': (med, crit, sbod, cob_bod, sfarm, sbfarm, req_ciclo, rep, ya_ped, saldo, accion),
             '_nv': _nivel(crit), '_rep': rep,
         })
 
@@ -431,7 +536,7 @@ def calc_h2(df_bod, fe_map, hoy, fer):
     return dc, [x['v'] for x in rows]
 
 
-def write_h2(ws, rows, hoy, semana, dias_ciclo):
+def write_h2(ws, rows, hoy, semana, dias_ciclo, prog=None):
     _titulo(ws,
         f'BODEGA AA → BODEGA FÁRMACOS  ·  Ciclo {dias_ciclo}d hábiles restantes  ·  '
         f'{hoy.strftime("%d/%m/%Y")}  ·  S{semana}',
@@ -444,23 +549,35 @@ def write_h2(ws, rows, hoy, semana, dias_ciclo):
         f'A Reponer = max(0, Req. ciclo − (Stock Bod.AA + Stock Farm.AA)), '
         f'redondeado al empaque CENABAST | '
         f'Stock Bod.Fármacos solo decide la acción: pedir traspaso o compra externa | '
-        f'Ámbar = compra externa a Bod.Fármacos',
-        len(HDRS2), height=48)
+        f'Ámbar en Acción = compra externa a Bod.Fármacos | '
+        + (f'Ya pedido ciclo = "Productos Solicitado" del reporte de Programación SSASUR hoy − al inicio '
+           f'del ciclo ({prog["inicio"].strftime("%d-%m")}, base: {prog["base_fuente"]}); el reporte no '
+           f'registra recepción, así que parte puede estar ya en el stock y no se descuenta de A Reponer | '
+           f'Saldo program. = Programado − Solicitado del mes; ámbar = A Reponer supera el saldo | '
+           f'{prog["obtenido"]}'
+           if prog else
+           'Sin reporte de Programación SSASUR: columnas Ya pedido ciclo y Saldo program. vacías'),
+        len(HDRS2), height=72)
     hdrs = list(HDRS2)
     hdrs[6] = (f'Req. ciclo ({dias_ciclo}+{ENTREGA_BODFARM_DIAS}+{RESERVA_BODFARM_DIAS}d, ud)', 13)
     _hdr(ws, 3, hdrs)
     for i, vals in enumerate(rows, 4):
-        _fila_crit(ws, i, vals, vals[1], {2, 3, 4, 5, 6, 7, 8}, cols_fmt1d={4})
-        ac = str(vals[8])
+        _fila_crit(ws, i, vals, vals[1], {2, 3, 4, 5, 6, 7, 8, 9, 10}, cols_fmt1d={4})
+        ac = str(vals[10])
         if 'COMPRA EXTERNA' in ac:
-            c = ws.cell(i, 9)
+            c = ws.cell(i, 11)
             c.fill = _pfill('FEF08A')
             c.font = Font(name='Arial', size=10, color='854D0E', bold=True)
+        rep, saldo = vals[7], vals[9]
+        if prog and rep > 0 and rep > (saldo or 0):
+            c = ws.cell(i, 10)
+            c.fill = _pfill('FEF3C7')
+            c.font = Font(name='Arial', size=10, color='92400E', bold=True)
     ws.freeze_panes = 'A4'
     if rows:
         last = 3 + len(rows)
         ws.auto_filter.ref = f'A3:{get_column_letter(len(HDRS2))}{last}'
-        _totals(ws, 4, last, len(HDRS2), {8})
+        _totals(ws, 4, last, len(HDRS2), {8, 9})
         ws.print_area = f'A1:{get_column_letter(len(HDRS2))}{last + 1}'
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
@@ -838,7 +955,12 @@ def main():
             m = str(r.get('Medicamento', '')).strip()
             fe_map[m] = int(_n(r.get('Unidades_Caja', 1))) or 1
 
-    dc, r2 = calc_h2(data['bod'], fe_map, hoy, fer)
+    try:
+        prog = _programacion_ciclo(hoy)
+    except Exception as e:   # la planilla de pedidos no debe caerse por el reporte
+        print(f'  [aviso] Reporte de Programación no disponible: {e}')
+        prog = None
+    dc, r2 = calc_h2(data['bod'], fe_map, hoy, fer, prog)
     # rep_h2_map: lo que la hoja Bod_Farmacos ya trae para cada med (CDL combinado,
     # incluye diálisis) — se usa para netear el pedido urgente de Farm_Bod y el de
     # Diálisis a Bod.Fármacos, y no pedir dos veces contra el mismo déficit.
@@ -859,7 +981,7 @@ def main():
     wb = openpyxl.Workbook()
     ws1 = wb.active; ws1.title = 'Farm_Bod'
     write_h1(ws1,                             r1, def_, hoy, sem)
-    write_h2(wb.create_sheet('Bod_Farmacos'), r2, hoy, sem, dc)
+    write_h2(wb.create_sheet('Bod_Farmacos'), r2, hoy, sem, dc, prog)
     write_h3(wb.create_sheet('Dialisis'),     r3, hoy, sem, es_semana_pedido)
     write_h4(wb.create_sheet('Faltantes_AA'), r4, hoy)
     write_h4b(wb.create_sheet('Por_Agotarse'), r4b, hoy)
@@ -870,13 +992,17 @@ def main():
     wb.save(sal)
 
     # índices: h1=(med,crit,sfarm,cob_actual,cdl,ud,accion1,accion2)                  → ud@5
-    #          h2=(med,crit,sbod,cob_bod,sfarm,sbfarm,req_ciclo,rep,accion)          → rep@7
+    #          h2=(med,crit,sbod,cob_bod,sfarm,sbfarm,req_ciclo,rep,ya_ped,saldo,accion) → rep@7
     #          h3=(med,fe,mensual,cob_farm,apfarm,cob_bod,apbod,obs)                 → apfarm@4, apbod@6
     n1 = sum(1 for v in r1 if v[5] > 0)
     n2 = sum(1 for v in r2 if v[7] > 0)
     n3 = sum(1 for v in r3 if (v[4] + v[6]) > 0)
     print(f'Farm->Bod       : {len(r1)} meds ({n1} con pedido)')
     print(f'Bod->Farmacos   : {len(r2)} meds ({n2} con reposicion)')
+    if prog:
+        n_ya = sum(1 for v in r2 if (v[8] or 0) > 0)
+        print(f'                  {n_ya} ya pedidos en el ciclo desde {prog["inicio"].strftime("%d-%m")} '
+              f'(base: {prog["base_fuente"]})')
     print(f'Dialisis        : {len(r3)} meds ({n3} con faltante)'
           f'{"  [S3 — semana de pedido]" if es_semana_pedido else "  [solo consulta, pedido real en S3]"}')
     print(f'Faltantes AA 30d: {len(r4)} meds sin poder despachar en Atencion Abierta')
